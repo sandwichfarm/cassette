@@ -10,60 +10,55 @@ A simple WebAssembly module written in Zig that provides basic increment and add
 ## Prerequisites
 
 - [Zig](https://ziglang.org/download/) (latest version recommended)
-
-### Installing Zig on macOS ARM (Apple Silicon)
-
-Using Homebrew:
-```bash
-brew install zig
-```
-
-Or using the official binary:
-```bash
-# Download latest version
-curl -L https://ziglang.org/download/0.11.0/zig-macos-aarch64-0.11.0.tar.xz -o zig.tar.xz
-
-# Extract
-tar xf zig.tar.xz
-
-# Move to a suitable location
-sudo mv zig-macos-aarch64-0.11.0 /usr/local/zig
-
-# Add to PATH (add this to your ~/.zshrc or ~/.bash_profile)
-export PATH=$PATH:/usr/local/zig
-```
-
-Verify installation:
-```bash
-zig version
-```
+- Node.js (for testing with JavaScript)
+- wasmtime (optional, for CLI testing)
 
 ## Building
 
-To build the WebAssembly module:
+Build the WebAssembly module:
 
 ```bash
-zig build -Doptimize=ReleaseSmall
+zig cc -target wasm32-freestanding \
+    -O3 \
+    -Wl,--export=increment \
+    -Wl,--export=add \
+    -Wl,--no-entry \
+    -nostdlib \
+    -o incrementer.wasm \
+    src/main.zig
 ```
 
-The compiled WebAssembly file will be available in `zig-out/lib/incrementer.wasm`
+## Testing
 
-## Usage in JavaScript
+### Using Node.js (ESM)
+
+Create a test file `test.mjs`:
 
 ```javascript
-// Load the WASM module
-const wasmModule = await WebAssembly.instantiateStreaming(
-    fetch('incrementer.wasm'),
-    {}
-);
+import { readFile } from 'node:fs/promises';
 
-const { increment, add } = wasmModule.instance.exports;
+const wasmBuffer = await readFile('incrementer.wasm');
+const wasmModule = await WebAssembly.instantiate(wasmBuffer);
+const instance = wasmModule.instance;
 
-// Use the increment function
-console.log(increment(41));  // Outputs: 42
+console.log('increment(41) =', instance.exports.increment(41));
+console.log('add(20, 22) =', instance.exports.add(20, 22));
+```
 
-// Use the add function
-console.log(add(20, 22));   // Outputs: 42
+Run the test:
+```bash
+node test.mjs
+```
+
+### Using wasmtime CLI
+
+Test individual functions:
+```bash
+# Test increment
+wasmtime incrementer.wasm --invoke increment 41 --show-return
+
+# Test add
+wasmtime incrementer.wasm --invoke add 20 22 --show-return
 ```
 
 ## Project Structure
