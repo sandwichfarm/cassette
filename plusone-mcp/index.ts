@@ -26,9 +26,9 @@ async function main() {
   server.tool("plusone",
     { a: z.number() },
     async ({ a }) => {
-      const result = wasmExports.increment(a);
+      const text = String(wasmExports.increment(a));
       return {
-        content: [{ type: "text", text: String(result) }]
+        content: [{ type: "text", text }]
       }
     }
   );

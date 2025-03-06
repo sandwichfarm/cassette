@@ -11,18 +11,18 @@ A simple WebAssembly module written in Zig that provides basic increment and add
 
 - [Zig](https://ziglang.org/download/) (latest version recommended)
 - Node.js (for testing with JavaScript)
-- wasmtime (optional, for CLI testing)
+- [wasmtime](https://wasmtime.dev/) (optional, for CLI testing)
+- [wasmer](https://wasmer.io/) (optional, for CLI testing)
 
 ## Building
 
 Build the WebAssembly module:
 
 ```bash
-zig build-lib src/main.zig \
-    -target wasm32-freestanding \
-    -dynamic \
-    -O ReleaseSmall
+zig build
 ```
+
+The WASM file will be output to `zig-out/bin/incrementer.wasm`.
 
 ## Testing
 
@@ -33,7 +33,7 @@ Create a test file `test.mjs`:
 ```javascript
 import { readFile } from 'node:fs/promises';
 
-const wasmBuffer = await readFile('incrementer.wasm');
+const wasmBuffer = await readFile('zig-out/bin/incrementer.wasm');
 const wasmModule = await WebAssembly.instantiate(wasmBuffer);
 const instance = wasmModule.instance;
 
@@ -51,10 +51,21 @@ node test.mjs
 Test individual functions:
 ```bash
 # Test increment
-wasmtime incrementer.wasm --invoke increment 41 --show-return
+wasmtime zig-out/bin/incrementer.wasm --invoke increment 41 --show-return
 
 # Test add
-wasmtime incrementer.wasm --invoke add 20 22 --show-return
+wasmtime zig-out/bin/incrementer.wasm --invoke add 20 22 --show-return
+```
+
+### Using wasmer CLI
+
+Test individual functions:
+```bash
+# Test increment
+wasmer run zig-out/bin/incrementer.wasm --invoke increment 41
+
+# Test add
+wasmer run zig-out/bin/incrementer.wasm --invoke add 20 22
 ```
 
 ## Project Structure
@@ -62,9 +73,10 @@ wasmtime incrementer.wasm --invoke add 20 22 --show-return
 ```
 incrementer/
 ├── src/
-│   └── main.zig    # Source code with WASM functions
-├── build.zig       # Build configuration
-└── README.md       # This file
+│   ├── main.zig        # Source code with WASM functions
+│   └── auto_describe.zig # Automatic schema generation
+├── build.zig           # Build configuration
+└── README.md           # This file
 ```
 
 ## Build Configuration
@@ -74,6 +86,7 @@ The project is configured to:
 - Use 64KB of initial memory
 - Strip debug information for smaller binary size
 - Enable memory import from JavaScript
+- Automatically generate function schemas and describe function
 
 ## License
 
