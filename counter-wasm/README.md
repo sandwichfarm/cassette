@@ -54,16 +54,6 @@ wasmer run zig-out/bin/counter.wasm -i increment 1
 wasmer run zig-out/bin/counter.wasm -i decrement 1
 ```
 
-## Project Structure
-
-```
-incrementer/
-├── src/
-│   └── main.zig    # Source code with WASM functions
-├── build.zig       # Build configuration
-└── README.md       # This file
-```
-
 ## Build Configuration
 
 The project is configured to:
