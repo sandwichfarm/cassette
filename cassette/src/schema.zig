@@ -32,30 +32,31 @@ pub fn generateFunctionSchema(comptime func: anytype) []const u8 {
         const param_name = if (param.name) |name| name else "arg" ++ std.fmt.comptimePrint("{d}", .{i});
         const param_type = param.ty;
         const type_name = getTypeName(param_type);
-        
+
         if (i == 0) {
             schema = std.fmt.comptimePrint("{{\"{s}\": \"{s}\"", .{ param_name, type_name });
         } else {
             schema = std.fmt.comptimePrint("{s}, \"{s}\": \"{s}\"", .{ schema, param_name, type_name });
         }
     }
-    
+
     return std.fmt.comptimePrint("{s}}}", .{schema});
 }
 
 /// Creates a WASM-compatible string pointer from a comptime string
 pub fn createWasmString(comptime str: []const u8) [*:0]const u8 {
-    return @ptrCast([*:0]const u8, str);
+    // Return a pointer to the first character of the string.
+    return &str[0];
 }
 
 /// Automatically generates a describe function for all exported functions
-pub fn createDescribeFunction(comptime exports: type) fn() [*:0]const u8 {
+pub fn createDescribeFunction(comptime exports: type) fn () [*:0]const u8 {
     var schema_parts: []const u8 = "";
     var first = true;
 
     inline for (std.meta.fields(exports)) |field| {
         const value = @field(exports, field.name);
-        if (@TypeOf(value) == fn() [*:0]const u8) {
+        if (@TypeOf(value) == fn () [*:0]const u8) {
             const func_schema = value();
             if (first) {
                 schema_parts = std.fmt.comptimePrint("{{\"{s}\": {s}", .{ field.name, func_schema });
@@ -76,11 +77,13 @@ pub fn createDescribeFunction(comptime exports: type) fn() [*:0]const u8 {
 }
 
 /// Helper macro to create a schema getter function for a given function
-pub fn createSchemaGetter(comptime func: anytype, comptime getter_name: []const u8) fn() [*:0]const u8 {
+pub fn createSchemaGetter(comptime func: anytype, comptime _getter_name: []const u8) fn () [*:0]const u8 {
+    // Suppress the unused parameter warning.
+    _ = _getter_name;
     const schema = generateFunctionSchema(func);
     return struct {
         pub fn getter() [*:0]const u8 {
             return createWasmString(schema);
         }
     }.getter;
-} 
+}
