@@ -11,10 +11,11 @@ const server = new McpServer({
 
 interface WasmExports {
   increment: (value: number) => number;
+  decrement: (value: number) => number;
 }
 
 async function loadWasmModule(): Promise<WasmExports> {
-  const wasmPath = join(process.cwd(), '../plusone-wasm', 'incrementer.wasm');
+  const wasmPath = join(process.cwd(), '../counter-wasm/zig-out/bin', 'counter.wasm');
   const wasmBuffer = await readFile(wasmPath);
   const wasmModule = await WebAssembly.instantiate(wasmBuffer);
   return wasmModule.instance.exports as unknown as WasmExports;
@@ -30,6 +31,14 @@ async function main() {
       return {
         content: [{ type: "text", text: String(result) }]
       }
+    }
+  );
+
+  server.tool("minusone",
+    { a: z.number() },
+    async ({ a }) => {
+      const result = wasmExports.decrement(a);
+      return { content: [{ type: "text", text: String(result) }] }
     }
   );
   await server.connect(transport);
