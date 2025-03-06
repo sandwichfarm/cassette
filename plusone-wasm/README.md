@@ -18,10 +18,7 @@ A simple WebAssembly module written in Zig that provides basic increment and add
 Build the WebAssembly module:
 
 ```bash
-zig build-lib src/main.zig \
-    -target wasm32-freestanding \
-    -dynamic \
-    -O ReleaseSmall
+zig build
 ```
 
 ## Testing
@@ -51,10 +48,10 @@ node test.mjs
 Test individual functions:
 ```bash
 # Test increment
-wasmtime incrementer.wasm --invoke increment 41 --show-return
+wasmer run zig-out/bin/counter.wasm -i increment 1
 
 # Test add
-wasmtime incrementer.wasm --invoke add 20 22 --show-return
+wasmer run zig-out/bin/counter.wasm -i decrement 1
 ```
 
 ## Project Structure
