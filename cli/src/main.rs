@@ -44,7 +44,7 @@ mod generator {
             let name = name.unwrap_or_else(|| format!("cassette-{}", Uuid::new_v4().to_string().split('-').next().unwrap()));
             let description = description.unwrap_or_else(|| "Generated Nostr events cassette".to_string());
             let author = author.unwrap_or_else(|| "Cassette CLI".to_string());
-            let output_dir = output_dir.unwrap_or_else(|| PathBuf::from("."));
+            let output_dir = output_dir.unwrap_or_else(|| PathBuf::from("cassettes"));
 
             Self {
                 events,
@@ -241,22 +241,25 @@ mod generator {
                 return Ok(());
             }
 
-            // Run wasm-bindgen to generate JavaScript bindings
+            // Run wasm-bindgen to generate JavaScript bindings with the web target
+            // This ensures clean naming and export names as specified with js_name attributes
             let status = Command::new("wasm-bindgen")
                 .args(&[
                     wasm_path.to_str().unwrap(),
                     "--out-dir", self.output_dir.to_str().unwrap(),
-                    "--target", "web"
+                    "--target", "web",
+                    "--no-typescript", // Optional: If you want to skip TypeScript generation
                 ])
                 .status();
 
             match status {
                 Ok(status) if status.success() => {
-                    println!("JavaScript bindings generated successfully");
+                    println!("JavaScript bindings generated successfully using standardized interface");
                     Ok(())
                 },
                 Ok(_) => {
                     println!("Warning: wasm-bindgen returned an error. JavaScript bindings may not have been generated correctly.");
+                    println!("Ensure your cassette implements the standardized WebAssembly interface.");
                     Ok(())
                 },
                 Err(e) => {
@@ -301,6 +304,14 @@ enum Commands {
         /// Whether to actually generate the WASM module (default: true)
         #[arg(long, default_value = "true")]
         generate: bool,
+
+        /// Skip JavaScript bindings generation, distribute only the .wasm file
+        #[arg(
+            long = "no-bindings",
+            help = "Skip JavaScript bindings generation, distribute only the .wasm file",
+            action = clap::ArgAction::SetTrue
+        )]
+        no_bindings: bool,
     },
 }
 
@@ -314,7 +325,8 @@ fn main() -> Result<()> {
             description, 
             author, 
             output,
-            generate
+            generate,
+            no_bindings
         } => {
             // Either read the file or stdin
             let input = match input_file {
@@ -333,7 +345,7 @@ fn main() -> Result<()> {
             };
 
             // Process the input events
-            process_events(&input, name.clone(), description.clone(), author.clone(), output.clone(), *generate)?;
+            process_events(&input, name.clone(), description.clone(), author.clone(), output.clone(), *generate, *no_bindings)?;
             
             Ok(())
         }
@@ -346,7 +358,8 @@ fn process_events(
     description: Option<String>, 
     author: Option<String>,
     output_dir: Option<PathBuf>,
-    should_generate: bool
+    should_generate: bool,
+    no_bindings: bool
 ) -> Result<()> {
     // Parse the input as JSON
     let events: Value = serde_json::from_str(input)
@@ -451,6 +464,96 @@ fn process_events(
         println!("  WASM module generation was disabled.");
         println!("  Run with --generate=true to create the actual WebAssembly module.");
     }
+    
+    // Call the generate_wasm_module function first to get the WASM file
+    let wasm_path = generate_wasm_module(&cassette_name, &cassette_description, &cassette_author, &output_dir.unwrap().join("Cargo.toml"), &output_dir.unwrap())?;
+
+    // Then optionally generate JS bindings
+    generate_js_bindings(&wasm_path, &output_dir.unwrap().join("dist"), no_bindings)?;
+    
+    Ok(())
+}
+
+// Function to generate a WASM module
+fn generate_wasm_module(
+    name: &str,
+    description: &str,
+    author: &str,
+    cargo_path: &Path,
+    output_dir: &Path,
+) -> Result<PathBuf> {
+    // Build the WASM file
+    println!("  Building WebAssembly module...");
+    let status = Command::new(cargo_path)
+        .args(["build", "--target", "wasm32-unknown-unknown", "--release"])
+        .current_dir(output_dir)
+        .status()?;
+    
+    if !status.success() {
+        return Err(anyhow!("Failed to build WASM module. Cargo build returned error code."));
+    }
+    
+    // Get the package name sanitized for Cargo
+    let package_name_sanitized = name.replace(' ', "_").to_lowercase();
+    
+    // Create the target directory for the WASM file
+    let wasm_dir = output_dir.join("dist");
+    fs::create_dir_all(&wasm_dir)?;
+    
+    // Paths to the WASM files
+    let source_wasm = output_dir
+        .join("target")
+        .join("wasm32-unknown-unknown")
+        .join("release")
+        .join(format!("{}.wasm", package_name_sanitized));
+    
+    // Copy the WASM file to the dist directory
+    let dest_wasm = wasm_dir.join(format!("{}.wasm", package_name_sanitized));
+    fs::copy(&source_wasm, &dest_wasm)?;
+    
+    // Return the path to the WASM file
+    Ok(dest_wasm)
+}
+
+// Function to generate JavaScript bindings (optional)
+fn generate_js_bindings(wasm_file: &Path, output_dir: &Path, no_bindings: bool) -> Result<()> {
+    if no_bindings {
+        println!("  Skipping JavaScript bindings generation");
+        println!("  The WASM file can be loaded directly using the standardized interface");
+        return Ok(());
+    }
+    
+    // Check if wasm-bindgen is installed
+    let wasm_bindgen_version = Command::new("wasm-bindgen")
+        .arg("--version")
+        .output();
+    
+    if wasm_bindgen_version.is_err() {
+        println!("  Note: wasm-bindgen-cli not installed. JavaScript bindings will not be generated.");
+        println!("  The WASM file can still be loaded directly using the standardized interface.");
+        return Ok(());
+    }
+    
+    // Generate JavaScript bindings using wasm-bindgen
+    println!("  Generating JavaScript bindings with wasm-bindgen...");
+    
+    let status = Command::new("wasm-bindgen")
+        .args([
+            wasm_file.to_str().unwrap(),
+            "--out-dir", output_dir.to_str().unwrap(),
+            "--target", "web",
+            "--no-typescript",   // Skip TypeScript generation
+        ])
+        .status()?;
+    
+    if !status.success() {
+        println!("  ⚠️ Warning: Failed to generate JavaScript bindings");
+        println!("  The WASM file can still be loaded directly using the standardized interface.");
+        return Ok(());
+    }
+    
+    println!("  JavaScript bindings generated successfully using standardized interface");
+    println!("  Note: Make sure your cassette implements the standardized interface");
     
     Ok(())
 }

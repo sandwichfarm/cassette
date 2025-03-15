@@ -6,7 +6,7 @@
 
 # Set up directories
 OUTPUT_DIR="./test-output"
-EVENTS_FILE="./test-events.json"
+EVENTS_FILE="./notes.json"
 CUSTOM_DIR="./custom-cassette"
 
 echo "Testing both cassette creation approaches..."
@@ -15,33 +15,6 @@ mkdir -p $OUTPUT_DIR
 # -------- Approach 1: JSON-based cassette with 'cassette dub' --------
 echo ""
 echo "===== Approach 1: Creating a cassette from JSON events ====="
-
-# Create a sample events file
-echo "Creating sample events.json file..."
-cat > $EVENTS_FILE << 'EOF'
-{
-  "events": [
-    ["EVENT", "abc123", {
-      "id": "abcdef1234567890",
-      "pubkey": "e8b487c079b0f67c695ae6c4c2552a47f38adfa2533cc5926bd2c102942fdcb7",
-      "created_at": 1683556800,
-      "kind": 1,
-      "tags": [["t", "test"], ["t", "example"]],
-      "content": "This is a test event",
-      "sig": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-    }],
-    ["EVENT", "abc123", {
-      "id": "0123456789abcdef",
-      "pubkey": "e8b487c079b0f67c695ae6c4c2552a47f38adfa2533cc5926bd2c102942fdcb7",
-      "created_at": 1683556810,
-      "kind": 1,
-      "tags": [["t", "sample"]],
-      "content": "Another test event",
-      "sig": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-    }]
-  ]
-}
-EOF
 
 # Run the dub command
 echo "Running 'cassette dub' command..."

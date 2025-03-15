@@ -13,7 +13,7 @@ const __dirname = dirname(__filename);
 const PORT = parseInt(process.env.PORT || "3001");
 
 // Directory containing WASM modules
-const WASM_DIR = join(__dirname, "wasm");
+const WASM_DIR = join(__dirname, "../cassettes");
 
 // Type for subscription data
 interface SubscriptionData {
@@ -35,219 +35,197 @@ interface Cassette {
   };
 }
 
-// Load cassettes from the WASM directory
+// Load all available cassettes
 async function loadCassettes(): Promise<Cassette[]> {
-  console.log(`Loading cassettes from: ${WASM_DIR}`);
-  
+  const WASM_DIR = '../cassettes';
   const cassettes: Cassette[] = [];
   
-  try {
-    // Array of cassettes to load directly
-    const directCassettes = [
-      {
-        name: 'sandwichs_favs',
-        jsFile: './wasm/sandwichs_favs.js',
-        exportName: 'SandwichsFavs'
-      },
-      {
-        name: 'sandwich_notes',
-        jsFile: './wasm/SandwichNotes.js',
-        exportName: 'SandwichNotes'
-      },
-      {
-        name: 'custom_cassette',
-        jsFile: './wasm/custom_cassette.js',
-        exportName: 'CustomCassette'
-      }
-    ];
-    
-    // Load each cassette directly
-    for (const cassetteInfo of directCassettes) {
-      try {
-        console.log(`Loading ${cassetteInfo.name} module directly from ${cassetteInfo.jsFile}`);
-        
-        // Try to import the module
-        const importedModule = await import(cassetteInfo.jsFile);
-        const moduleExport = importedModule[cassetteInfo.exportName];
-        const initWasm = importedModule.default;
-        
-        // Initialize the WASM module if needed
-        if (typeof initWasm === 'function') {
-          await initWasm();
+  console.log(`Loading cassettes from: ${join(process.cwd(), WASM_DIR)}`);
+  
+  // Get all files and directories in WASM_DIR
+  const fileEntries = readdirSync(WASM_DIR, { withFileTypes: true });
+  
+  // Check for .wasm files directly in the WASM_DIR
+  const wasmFiles = fileEntries
+    .filter(dirent => !dirent.isDirectory() && dirent.name.endsWith('.wasm'));
+  
+  // Load modules from .wasm files directly
+  for (const wasmFile of wasmFiles) {
+    const cassetteName = wasmFile.name.replace('.wasm', '');
+    try {
+      console.log(`Loading cassette from WASM file: ${wasmFile.name}`);
+      
+      // Read the .wasm file
+      const wasmPath = join(WASM_DIR, wasmFile.name);
+      const wasmBuffer = readFileSync(wasmPath);
+      
+      // Create a memory instance
+      const memory = new WebAssembly.Memory({ initial: 16 });
+      
+      // Standard imports object for all cassettes
+      const importObject = {
+        env: {
+          memory: memory,
+        },
+        // Standard wasm-bindgen helpers
+        __wbindgen_placeholder__: {
+          __wbindgen_string_new: (ptr: number, len: number) => {
+            const buf = new Uint8Array(memory.buffer).subarray(ptr, ptr + len);
+            return new TextDecoder('utf-8').decode(buf);
+          },
+          __wbindgen_throw: (ptr: number, len: number) => {
+            const buf = new Uint8Array(memory.buffer).subarray(ptr, ptr + len);
+            throw new Error(new TextDecoder('utf-8').decode(buf));
+          },
+          __wbindgen_memory: () => memory
         }
-        
-        if (moduleExport && typeof moduleExport.describe === 'function') {
-          console.log(`${cassetteInfo.name} module loaded, checking for describe method`);
-          const description = moduleExport.describe();
-          console.log(`${cassetteInfo.name} description: ${description}`);
-          
-          // Create the cassette object
-          cassettes.push({
-            name: cassetteInfo.name,
-            instance: {
-              [cassetteInfo.exportName]: moduleExport,
-              req: moduleExport.req?.bind(moduleExport),
-              close: moduleExport.close?.bind(moduleExport)
-            },
-            schemas: {
-              incoming: [{ type: "array" }],
-              outgoing: [{ type: "array" }]
+      };
+      
+      // Compile and instantiate the WebAssembly module
+      const wasmModule = await WebAssembly.instantiate(wasmBuffer, importObject);
+      const exports = wasmModule.instance.exports;
+      
+      // Check for both standardized and legacy naming conventions
+      const describeFn = exports.describe as Function || exports.describe_wasm as Function || exports.DESCRIBE as Function;
+      const reqFn = exports.req as Function || exports.req_wasm as Function || exports.REQ as Function;
+      const closeFn = exports.close as Function || exports.close_wasm as Function || exports.CLOSE as Function;
+      const allocFn = exports.allocString as Function || exports.alloc_string as Function;
+      const deallocFn = exports.deallocString as Function || exports.dealloc_string as Function;
+      
+      // Verify the module has the required functions
+      if (!describeFn) {
+        console.warn(`Cassette ${cassetteName} is missing the describe function`);
+        continue;
+      }
+      
+      if (!reqFn) {
+        console.warn(`Cassette ${cassetteName} is missing the req function`);
+        continue;
+      }
+      
+      // Create a standardized wrapper for the module
+      const cassetteWrapper = {
+        req: function(request: string) {
+          if (allocFn && deallocFn) {
+            // Using memory management functions
+            const encoder = new TextEncoder();
+            const requestData = encoder.encode(request);
+            
+            // Allocate memory for the request
+            const requestPtr = allocFn(requestData.length) as number;
+            
+            // Copy data to the WASM memory
+            const memoryView = new Uint8Array(memory.buffer);
+            for (let i = 0; i < requestData.length; i++) {
+              memoryView[requestPtr + i] = requestData[i];
             }
-          });
-          
-          console.log(`Successfully loaded ${cassetteInfo.name} module directly`);
-        } else {
-          console.warn(`Module ${cassetteInfo.name} found but does not have a describe method`);
+            
+            // Call the request function
+            const resultPtr = reqFn(requestPtr, requestData.length) as number;
+            
+            // Get the result length by finding null terminator
+            let resultLength = 0;
+            while (memoryView[resultPtr + resultLength] !== 0) {
+              resultLength++;
+            }
+            
+            // Extract the result string
+            const resultData = memoryView.slice(resultPtr, resultPtr + resultLength);
+            const result = new TextDecoder().decode(resultData);
+            
+            // Free allocated memory
+            deallocFn(requestPtr, requestData.length);
+            
+            return result;
+          } else {
+            // Direct call approach
+            return reqFn(request) as string;
+          }
+        },
+        
+        close: function(closeRequest: string) {
+          if (closeFn) {
+            if (allocFn && deallocFn) {
+              // Using memory management functions
+              const encoder = new TextEncoder();
+              const requestData = encoder.encode(closeRequest);
+              
+              // Allocate memory for the request
+              const requestPtr = allocFn(requestData.length) as number;
+              
+              // Copy data to the WASM memory
+              const memoryView = new Uint8Array(memory.buffer);
+              for (let i = 0; i < requestData.length; i++) {
+                memoryView[requestPtr + i] = requestData[i];
+              }
+              
+              // Call the close function
+              const resultPtr = closeFn(requestPtr, requestData.length) as number;
+              
+              // Get the result length by finding null terminator
+              let resultLength = 0;
+              while (memoryView[resultPtr + resultLength] !== 0) {
+                resultLength++;
+              }
+              
+              // Extract the result string
+              const resultData = memoryView.slice(resultPtr, resultPtr + resultLength);
+              const result = new TextDecoder().decode(resultData);
+              
+              // Free allocated memory
+              deallocFn(requestPtr, requestData.length);
+              
+              return result;
+            } else {
+              // Direct call approach
+              return closeFn(closeRequest) as string;
+            }
+          } else {
+            return JSON.stringify({"notice": ["NOTICE", "Close not implemented"]});
+          }
+        },
+        
+        describe: function() {
+          return describeFn() as string;
+        }
+      };
+      
+      // Get cassette metadata from the describe function
+      let description = describeFn() as string;
+      console.log(`${cassetteName} description: ${description}`);
+      
+      // Parse description to get schema information
+      let incomingSchemas: any[] = [{ type: "array" }];
+      let outgoingSchemas: any[] = [{ type: "array" }];
+      
+      try {
+        const descriptionObj = JSON.parse(description);
+        // Here we'll assume incoming schemas are for REQ messages
+        // and outgoing schemas are for EVENT messages
+        if (descriptionObj && descriptionObj.req) {
+          incomingSchemas = [{ type: "array" }]; // Simple schema that accepts any array
+        }
+        if (descriptionObj) {
+          outgoingSchemas = [{ type: "array" }]; // Simple schema that accepts any array
         }
       } catch (err) {
-        console.error(`Failed to directly load ${cassetteInfo.name}:`, err);
+        console.warn(`Failed to parse description for cassette ${cassetteName}:`, err);
       }
-    }
-    
-    // If no cassettes were loaded directly, fall back to directory scanning
-    if (cassettes.length === 0) {
-      console.log(`No cassettes loaded directly, falling back to directory scanning method`);
       
-      // Get all files and directories in WASM_DIR
-      const fileEntries = readdirSync(WASM_DIR, { withFileTypes: true });
-      
-      // Check for direct .js files (not _bg.js files) in the WASM_DIR
-      const jsModules = fileEntries
-        .filter(dirent => !dirent.isDirectory() && dirent.name.endsWith('.js') && !dirent.name.endsWith('_bg.js'));
-      
-      // Load modules from direct .js files
-      for (const jsModule of jsModules) {
-        const cassetteName = jsModule.name.replace('.js', '');
-        try {
-          console.log(`Loading cassette from file: ${jsModule.name}`);
-          
-          // Import the cassette module
-          const modulePath = join(WASM_DIR, jsModule.name);
-          const module = await import(modulePath);
-          
-          // Try to get schemas from the module's describe method
-          let incomingSchemas: any[] = [];
-          let outgoingSchemas: any[] = [];
-          
-          try {
-            if (module && typeof module.default === 'function') {
-              // Initialize WASM module if needed
-              await module.default();
-            }
-            
-            // Try different possible capitalization of the module name
-            const moduleNames = [
-              cassetteName,                              // sandwichs_favs
-              cassetteName.charAt(0).toUpperCase() + cassetteName.slice(1), // Sandwichs_favs
-              'SandwichsFavs',                          // SandwichsFavs
-              'sandwichsFavs',                           // sandwichsFavs
-              'SandwichNotes',                          // SandwichNotes
-              'CustomCassette'                          // CustomCassette
-            ];
-            
-            let moduleFound = false;
-            
-            for (const moduleName of moduleNames) {
-              if (!moduleFound && module[moduleName] && typeof module[moduleName].describe === 'function') {
-                console.log(`Found module with name: ${moduleName}`);
-                console.log(`Getting schemas from ${moduleName}'s describe() method`);
-                const description = module[moduleName].describe();
-                console.log(`Module description: ${description}`);
-                
-                try {
-                  const descriptionObj = JSON.parse(description);
-                  // Here we'll assume incoming schemas are for REQ messages
-                  // and outgoing schemas are for EVENT messages
-                  if (descriptionObj && descriptionObj.req) {
-                    incomingSchemas = [{ type: "array" }]; // Simple schema that accepts any array
-                  }
-                  if (descriptionObj) {
-                    outgoingSchemas = [{ type: "array" }]; // Simple schema that accepts any array
-                  }
-                  
-                  moduleFound = true;
-                  break; // Exit the loop once we've found and processed a module
-                } catch (err) {
-                  console.warn(`Failed to parse description for module ${moduleName}:`, err);
-                }
-              }
-            }
-            
-            // Fallback to checking for a schemas file with the same name
-            if (!moduleFound) {
-              console.log(`No describe() method found, checking for schema file`);
-              const schemaPath = join(WASM_DIR, `${cassetteName}.schemas.json`);
-              if (existsSync(schemaPath)) {
-                const schemas = JSON.parse(readFileSync(schemaPath, 'utf-8'));
-                incomingSchemas = schemas.incoming || [];
-                outgoingSchemas = schemas.outgoing || [];
-              }
-            }
-          } catch (err) {
-            console.warn(`Failed to load schemas for cassette ${cassetteName}:`, err);
-          }
-          
-          cassettes.push({
-            name: cassetteName,
-            instance: module,
-            schemas: {
-              incoming: incomingSchemas,
-              outgoing: outgoingSchemas
-            }
-          });
-          
-          console.log(`Successfully loaded cassette: ${cassetteName}`);
-        } catch (err) {
-          console.error(`Failed to load cassette file ${jsModule.name}:`, err);
+      // Add the cassette to the list
+      cassettes.push({
+        name: cassetteName,
+        instance: cassetteWrapper,
+        schemas: {
+          incoming: incomingSchemas,
+          outgoing: outgoingSchemas
         }
-      }
+      });
       
-      // Also process directories for backward compatibility
-      const directoryEntries = readdirSync(WASM_DIR, { withFileTypes: true });
-      for (const dirent of directoryEntries) {
-        if (dirent.isDirectory()) {
-          const cassetteName = dirent.name;
-          const cassettePath = join(WASM_DIR, cassetteName);
-          
-          try {
-            console.log(`Loading cassette from directory: ${cassetteName}`);
-            
-            // Import the cassette module
-            const module = await import(join(cassettePath, "index.js"));
-            
-            // Try to load schemas if available
-            let incomingSchemas: any[] = [];
-            let outgoingSchemas: any[] = [];
-            
-            try {
-              const schemaPath = join(cassettePath, "schemas.json");
-              if (existsSync(schemaPath)) {
-                const schemas = JSON.parse(readFileSync(schemaPath, 'utf-8'));
-                incomingSchemas = schemas.incoming || [];
-                outgoingSchemas = schemas.outgoing || [];
-              }
-            } catch (err) {
-              console.warn(`Failed to load schemas for cassette ${cassetteName}:`, err);
-            }
-            
-            cassettes.push({
-              name: cassetteName,
-              instance: module,
-              schemas: {
-                incoming: incomingSchemas,
-                outgoing: outgoingSchemas
-              }
-            });
-            
-            console.log(`Successfully loaded cassette: ${cassetteName}`);
-          } catch (err) {
-            console.error(`Failed to load cassette ${cassetteName}:`, err);
-          }
-        }
-      }
+      console.log(`Successfully loaded cassette: ${cassetteName}`);
+    } catch (err) {
+      console.error(`Failed to load cassette ${cassetteName}:`, err);
     }
-  } catch (err) {
-    console.error("Error loading cassettes:", err);
   }
   
   return cassettes;

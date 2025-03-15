@@ -22,6 +22,12 @@ pub struct CassetteSchema {
     pub items: Option<Value>,
 }
 
+/// Include the standardized WebAssembly interface module
+pub mod wasm_interface;
+
+// Re-export the macro for convenience
+// pub use crate::impl_standard_cassette;
+
 impl Default for CassetteSchema {
     fn default() -> Self {
         Self {

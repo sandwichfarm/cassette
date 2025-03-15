@@ -15,7 +15,8 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const boomboxDir = path.resolve(__dirname, '..');
-const wasmDir = path.resolve(boomboxDir, 'wasm');
+const rootDir = path.resolve(boomboxDir, '..');
+const wasmDir = path.resolve(rootDir, 'cassettes');
 
 console.log('Manually updating WASM bindings...');
 

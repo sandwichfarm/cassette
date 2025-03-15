@@ -1,0 +1,1398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cassette Runtime Loader</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .card {
+      background-color: white;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .input-group {
+      display: flex;
+      margin-bottom: 10px;
+    }
+    .input-group input {
+      flex: 1;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px 0 0 4px;
+    }
+    .input-group button {
+      padding: 8px 16px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 0 4px 4px 0;
+      cursor: pointer;
+    }
+    .logs {
+      background-color: #222;
+      color: #f5f5f5;
+      padding: 10px;
+      border-radius: 4px;
+      font-family: monospace;
+      height: 300px;
+      overflow-y: auto;
+    }
+    .log-entry {
+      margin-bottom: 5px;
+      line-height: 1.4;
+    }
+    .receive {
+      color: #4CAF50;
+    }
+    .send {
+      color: #2196F3;
+    }
+    .error {
+      color: #f44336;
+    }
+    h2 {
+      margin-top: 0;
+    }
+    .flex {
+      display: flex;
+      gap: 20px;
+    }
+    .flex > div {
+      flex: 1;
+    }
+    .preset-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 10px;
+    }
+    .preset-buttons button {
+      padding: 5px 10px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .tab-container {
+      display: flex;
+      border-bottom: 1px solid #ddd;
+      margin-bottom: 15px;
+    }
+    .tab {
+      padding: 10px 20px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      border-radius: 4px 4px 0 0;
+    }
+    .tab.active {
+      border: 1px solid #ddd;
+      border-bottom: none;
+      background-color: white;
+    }
+    .tab-panel {
+      display: none;
+    }
+    .tab-panel.active {
+      display: block;
+    }
+    #drop-zone {
+      border: 2px dashed #ccc;
+      border-radius: 8px;
+      padding: 25px;
+      text-align: center;
+      margin-bottom: 20px;
+      background-color: #f9f9f9;
+      transition: all 0.3s;
+    }
+    #drop-zone.drag-over {
+      background-color: #e3f2fd;
+      border-color: #2196F3;
+    }
+    .custom-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+    .custom-tab {
+      position: relative;
+      padding-right: 30px;
+    }
+    .remove-tab {
+      position: absolute;
+      right: 5px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: #ff5252;
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 18px;
+      height: 18px;
+      font-size: 10px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .loaded-cassettes {
+      margin-top: 10px;
+    }
+    .cassette-badge {
+      background-color: #e0f7fa;
+      color: #006064;
+      padding: 5px 10px;
+      border-radius: 15px;
+      font-size: 12px;
+      margin-right: 5px;
+      margin-bottom: 5px;
+      display: inline-block;
+    }
+    .response-card {
+      margin-top: 10px;
+      background-color: #f0f8ff;
+      border-left: 4px solid #007bff;
+      padding: 10px;
+    }
+    .json-content {
+      white-space: pre-wrap;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .tab-info {
+      font-size: 12px;
+      color: #777;
+      margin-top: 5px;
+    }
+    .test-panel {
+      margin-top: 15px;
+    }
+    .metric {
+      display: inline-block;
+      margin-right: 15px;
+      font-size: 14px;
+    }
+    .metric-value {
+      font-weight: bold;
+      color: #007bff;
+    }
+    .empty-state {
+      text-align: center;
+      padding: 40px;
+      color: #888;
+    }
+    .empty-state i {
+      font-size: 48px;
+      margin-bottom: 10px;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Cassette Runtime Loader</h1>
+    
+    <div class="card">
+      <h2>Load Cassette</h2>
+      <div id="drop-zone">
+        <p>Drag and drop a cassette file (.wasm) here</p>
+        <p>Or</p>
+        <input type="file" id="file-input" accept=".wasm">
+      </div>
+      
+      <div class="loaded-cassettes">
+        <h3>Loaded Cassettes:</h3>
+        <div id="loaded-cassettes-list">
+          <div class="empty-state">
+            <i>📦</i>
+            <p>No cassettes loaded yet</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <div class="tab-container" id="tab-container">
+      <div id="custom-tabs" class="custom-tabs"></div>
+    </div>
+    
+    <div id="tab-panels">
+      <!-- Tab panels will be dynamically created here -->
+      <div class="empty-state">
+        <i>💿</i>
+        <p>Load a cassette to get started</p>
+      </div>
+    </div>
+    
+    <div class="card">
+      <h2>Console</h2>
+      <div class="logs" id="logs"></div>
+      <button id="clear-logs" style="margin-top: 10px;">Clear Console</button>
+    </div>
+  </div>
+
+  <script>
+    // wasm-bindgen support functions
+    // These are common bindings needed by cassettes compiled with wasm-bindgen
+    const wasmBindgenHelpers = {
+      __wbg_instanceof_Window_acc97ff9f5d2c7b4(idx) {
+        return getObject(idx) instanceof Window ? 1 : 0;
+      },
+      __wbg_self_1b7a39e3a92c949c() {
+        return addHeapObject(self);
+      },
+      __wbg_window_5f4faef6c12b79ec() {
+        return addHeapObject(window);
+      },
+      __wbg_globalThis_1d39714405582d3c() {
+        return addHeapObject(globalThis);
+      },
+      __wbg_global_651f05c6a0944d1c() {
+        return addHeapObject(global);
+      },
+      __wbg_new0_c0be7df4b6bd481f() {
+        return addHeapObject(new Date());
+      },
+      __wbg_new_06d86c1d6bd287aa(year, month, day) {
+        return addHeapObject(new Date(year, month, day));
+      },
+      __wbg_getTime_46267b1c24877e30(idx) {
+        return getObject(idx).getTime();
+      },
+      __wbg_new_d87f272aeb688dea(ms) {
+        return addHeapObject(new Date(ms));
+      },
+      __wbg_getTimezoneOffset_e2c40efd7e7dd5b5(idx) {
+        return getObject(idx).getTimezoneOffset();
+      },
+      __wbg_now_797e975be4b79ec0() {
+        return Date.now();
+      },
+      __wbg_log_c180b836187d3c94(idx) {
+        console.log(getObject(idx));
+      },
+      __wbg_error_7f083efc6bc6144c(idx) {
+        console.error(getObject(idx));
+      },
+      __wbg_random_b94d07baf2c1b8dd() {
+        return Math.random();
+      },
+      __wbg_parse_3ac95b51fc312db8(idx) {
+        return addHeapObject(JSON.parse(getStringFromWasm(idx)));
+      },
+      __wbg_stringify_029a979dfb73aa17(idx) {
+        return addHeapObject(JSON.stringify(getObject(idx)));
+      },
+      __wbg_length_0b194abde938d0c6(idx) {
+        return getObject(idx).length;
+      },
+      __wbg_from_26c6030a4218f888(idx) {
+        return addHeapObject(String.from(getObject(idx)));
+      },
+      __wbg_buffer_f897a8d118faac54(idx) {
+        return addHeapObject(getObject(idx).buffer);
+      },
+      __wbg_newwithbyteoffsetandlength_4825d050b49fd6e7(idx, offset, len) {
+        return addHeapObject(new Uint8Array(getObject(idx), offset, len));
+      },
+      __wbg_new_8125e318e6245eed(len) {
+        return addHeapObject(new Uint8Array(len));
+      },
+      __wbg_set_5cf0d749532802b5(idx, offset, value_idx, len) {
+        getObject(idx).set(getObject(value_idx), offset);
+      },
+      __wbg_byteLength_5f1abb9d0f73f112(idx) {
+        return getObject(idx).byteLength;
+      },
+      __wbindgen_is_undefined(idx) {
+        return getObject(idx) === undefined ? 1 : 0;
+      },
+      __wbindgen_object_clone_ref(idx) {
+        return addHeapObject(getObject(idx));
+      },
+      __wbindgen_object_drop_ref(idx) {
+        takeObject(idx);
+      },
+      __wbindgen_string_new(ptr, len) {
+        return addHeapObject(getStringFromWasm(ptr, len));
+      },
+      __wbindgen_string_get(idx, ptr) {
+        const obj = getObject(idx);
+        const str = typeof obj === 'string' ? obj : '';
+        const encoded = new TextEncoder().encode(str);
+        const view = getUint8Memory();
+        for (let i = 0; i < encoded.length; i++) {
+          view[ptr + i] = encoded[i];
+        }
+        return encoded.length;
+      },
+      __wbindgen_cb_drop(idx) {
+        const obj = takeObject(idx);
+        if (obj.cnt-- == 1) {
+          obj.a = 0;
+          return 1;
+        }
+        return 0;
+      },
+      __wbindgen_throw(ptr, len) {
+        throw new Error(getStringFromWasm(ptr, len));
+      },
+      __wbindgen_memory() {
+        return addHeapObject(memory);
+      },
+      __wbindgen_closure_wrapper(ptr, value, dtor) {
+        return addHeapObject(makeClosure(ptr, value, dtor));
+      },
+      // Additional wasm-bindgen helpers
+      __wbg_new_abda76e883ba8a5f: function() {
+        return addHeapObject(new Error());
+      },
+      __wbg_stack_658279fe44541cf6: function(arg0, arg1) {
+        const obj = getObject(arg1);
+        const ret = typeof(obj) === 'object' && obj !== null ? obj.stack : undefined;
+        const ptr0 = isLikeNone(ret) ? 0 : passStringToWasm0(ret);
+        const len0 = WASM_VECTOR_LEN;
+        setInt32(arg0, ptr0);
+        setInt32(arg0 + 4, len0);
+      },
+      __wbg_error_f851667af71bcfc6: function(arg0, arg1) {
+        try {
+          console.error(getStringFromWasm0(arg0, arg1));
+        } finally {
+          deallocate_wasm_memory(arg0, arg1);
+        }
+      },
+      // Stub for required functions, add implementation as needed
+      __wbg_log_1f7f93998ab961f7: function() {
+        console.log.apply(console, arguments);
+      }
+    };
+
+    // Utility functions for wasm-bindgen
+    let memory;
+    let heap_next = 0;
+    let heap = new Array(32).fill(undefined);
+    heap.push(undefined, null, true, false);
+    
+    function getObject(idx) { return heap[idx]; }
+    function addHeapObject(obj) {
+      if (heap_next === heap.length) heap.push(heap.length + 1);
+      const idx = heap_next;
+      heap_next = heap[idx];
+      heap[idx] = obj;
+      return idx;
+    }
+    function dropObject(idx) {
+      if (idx < 36) return;
+      heap[idx] = heap_next;
+      heap_next = idx;
+    }
+    function takeObject(idx) {
+      const ret = getObject(idx);
+      dropObject(idx);
+      return ret;
+    }
+    function getStringFromWasm(ptr, len) {
+      return new TextDecoder('utf-8').decode(new Uint8Array(memory.buffer).subarray(ptr, ptr + len));
+    }
+    function getUint8Memory() {
+      return new Uint8Array(memory.buffer);
+    }
+    function makeClosure(arg0_ptr, arg1_idx, dtor_ptr) {
+      const closure = function(arg0, arg1) {
+        // TBD: implement if needed for callbacks
+      };
+      return closure;
+    }
+
+    // Helper function to find exported functions by various possible names
+    function findExportFunction(exports, possibleNames) {
+      // Common prefixes that might be used in exports
+      const commonPrefixes = ['', 'testcassette_', 'test_', 'custom_cassette_', 'sandwichs_favs_', 'testcass_', 'cassette_'];
+      
+      console.log("Searching for functions matching:", possibleNames);
+      
+      // First try exact matches from possible names
+      for (const name of possibleNames) {
+        if (exports[name] && typeof exports[name] === 'function') {
+          console.log(`Found direct function match: ${name}`);
+          return exports[name];
+        }
+      }
+      
+      // Then try with prefixes
+      for (const prefix of commonPrefixes) {
+        for (const name of possibleNames) {
+          const prefixedName = prefix + name;
+          if (exports[prefixedName] && typeof exports[prefixedName] === 'function') {
+            console.log(`Found prefixed function match: ${prefixedName}`);
+            return exports[prefixedName];
+          }
+        }
+      }
+      
+      // Then check for camelCase and snake_case variations
+      for (const name of possibleNames) {
+        // Convert to camelCase if it's not already
+        const camelCase = name.replace(/_([a-z])/g, (g) => g[1].toUpperCase());
+        if (camelCase !== name && exports[camelCase] && typeof exports[camelCase] === 'function') {
+          console.log(`Found camelCase function match: ${camelCase}`);
+          return exports[camelCase];
+        }
+        
+        // Convert to snake_case if it's not already
+        const snakeCase = name.replace(/([A-Z])/g, "_$1").toLowerCase();
+        if (snakeCase !== name && exports[snakeCase] && typeof exports[snakeCase] === 'function') {
+          console.log(`Found snake_case function match: ${snakeCase}`);
+          return exports[snakeCase];
+        }
+      }
+      
+      // If still not found, check if any export ends with one of the possible names
+      for (const exportName of Object.keys(exports)) {
+        if (typeof exports[exportName] === 'function') {
+          for (const name of possibleNames) {
+            // Check if the export name ends with the function name (case-insensitive)
+            if (exportName.toLowerCase().endsWith(name.toLowerCase())) {
+              console.log(`Found function by suffix match: ${exportName}`);
+              return exports[exportName];
+            }
+          }
+        }
+      }
+      
+      // Look for nested objects that might have our functions
+      for (const key of Object.keys(exports)) {
+        const value = exports[key];
+        if (typeof value === 'object' && value !== null) {
+          console.log(`Checking nested object: ${key}`);
+          for (const name of possibleNames) {
+            if (value[name] && typeof value[name] === 'function') {
+              console.log(`Found function in nested object: ${key}.${name}`);
+              return value[name];
+            }
+          }
+        }
+      }
+      
+      // Finally, check if there are property accessors (getters) that might provide the function
+      for (const name of possibleNames) {
+        try {
+          const descriptor = Object.getOwnPropertyDescriptor(exports, name);
+          if (descriptor && typeof descriptor.get === 'function') {
+            console.log(`Found getter function for: ${name}`);
+            const fn = descriptor.get.call(exports);
+            if (typeof fn === 'function') {
+              return fn;
+            }
+          }
+        } catch (e) {
+          console.log(`Error checking property descriptor for ${name}:`, e);
+        }
+      }
+      
+      return null;
+    }
+
+    let activeCassetteId = null;
+    let loadedCassettes = {};
+    
+    document.addEventListener('DOMContentLoaded', function() {
+      // Set up drag and drop for cassette files
+      const dropZone = document.getElementById('drop-zone');
+      const fileInput = document.getElementById('file-input');
+      
+      // File input change handler
+      fileInput.addEventListener('change', function(e) {
+        if (e.target.files.length > 0) {
+          handleCassetteFile(e.target.files[0]);
+        }
+      });
+      
+      // Drag and drop handlers
+      dropZone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        dropZone.classList.add('drag-over');
+      });
+      
+      dropZone.addEventListener('dragleave', function() {
+        dropZone.classList.remove('drag-over');
+      });
+      
+      dropZone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        dropZone.classList.remove('drag-over');
+        
+        if (e.dataTransfer.files.length > 0) {
+          const files = e.dataTransfer.files;
+          for (let i = 0; i < files.length; i++) {
+            handleCassetteFile(files[i]);
+          }
+        }
+      });
+      
+      // Clear logs
+      document.getElementById('clear-logs').addEventListener('click', () => {
+        document.getElementById('logs').innerHTML = '';
+      });
+      
+      // Try to load available cassettes automatically
+      loadAvailableCassettes();
+    });
+    
+    function handleCassetteFile(file) {
+      if (!file.name.endsWith('.wasm')) {
+        addLogEntry(`Invalid file type. Only .wasm files are supported.`, 'error');
+        return;
+      }
+      
+      // Generate a unique ID for this cassette
+      const cassetteId = generateCassetteId(file.name);
+      
+      // Create a FileReader to read the file
+      const reader = new FileReader();
+      
+      reader.onload = function(e) {
+        try {
+          // Handle WASM file directly
+          loadWasmCassette(e.target.result, cassetteId);
+        } catch (error) {
+          addLogEntry(`Error loading cassette: ${error.message}`, 'error');
+        }
+      };
+      
+      reader.onerror = function() {
+        addLogEntry(`Failed to read file: ${file.name}`, 'error');
+      };
+      
+      reader.readAsArrayBuffer(file);
+    }
+    
+    function generateCassetteId(fileName) {
+      // Extract base name without extension
+      const baseName = fileName.replace(/\.[^/.]+$/, "");
+      // Convert to a valid JavaScript identifier
+      const validId = baseName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+      // Add timestamp to ensure uniqueness
+      return `${validId}_${Date.now()}`;
+    }
+    
+    // Load a WASM cassette directly from the .wasm file
+    async function loadWasmCassette(arrayBuffer, cassetteId) {
+      try {
+        addLogEntry(`Compiling WebAssembly module (${arrayBuffer.byteLength} bytes)...`, 'receive');
+        
+        // Create a new memory instance
+        const memory = new WebAssembly.Memory({ initial: 16 });
+        
+        // First try to compile the module without instantiating it
+        const module = await WebAssembly.compile(arrayBuffer);
+        
+        // Get the imports the module is requesting
+        const imports = WebAssembly.Module.imports(module);
+        console.log("Module requires these imports:", imports);
+        
+        // Build a dynamic import object based on the module's requirements
+        const importObject = {
+          env: {
+            memory: memory
+          },
+          // Add a standardized namespace for wasm-bindgen functions
+          __wbindgen_placeholder__: {
+            __wbindgen_string_new: function(ptr, len) {
+              const buf = new Uint8Array(memory.buffer).subarray(ptr, ptr + len);
+              return addHeapObject(new TextDecoder('utf-8').decode(buf));
+            },
+            __wbindgen_throw: function(ptr, len) {
+              const buf = new Uint8Array(memory.buffer).subarray(ptr, ptr + len);
+              throw new Error(new TextDecoder('utf-8').decode(buf));
+            }
+          },
+          // Add standardized console bindings that many cassettes use
+          console: {
+            log: function(...args) {
+              console.log(...args);
+              return 0;
+            },
+            error: function(...args) {
+              console.error(...args);
+              return 0;
+            }
+          }
+        };
+        
+        // Add any namespace the module requires
+        imports.forEach(imp => {
+          if (!importObject[imp.module]) {
+            importObject[imp.module] = {};
+          }
+          
+          // Only add a stub function if the import doesn't already exist
+          if (!(imp.name in importObject[imp.module])) {
+            if (imp.kind === 'function') {
+              // Create a more intelligent stub based on function name patterns
+              if (imp.name.includes('log') || imp.name.includes('console')) {
+                importObject[imp.module][imp.name] = function() {
+                  console.log(`[WASM ${imp.module}.${imp.name}]:`, ...Array.from(arguments));
+                  return 0;
+                };
+              } else if (imp.name.includes('error')) {
+                importObject[imp.module][imp.name] = function() {
+                  console.error(`[WASM ${imp.module}.${imp.name}]:`, ...Array.from(arguments));
+                  return 0;
+                };
+              } else {
+                // Default stub function that logs calls
+                importObject[imp.module][imp.name] = function() {
+                  console.log(`Called import ${imp.module}.${imp.name} with args:`, arguments);
+                  return 0;
+                };
+              }
+            } else if (imp.kind === 'global') {
+              // Add stub for global imports
+              importObject[imp.module][imp.name] = 0;
+            }
+          }
+        });
+        
+        // Now we can instantiate with the proper imports
+        addLogEntry(`Instantiating WebAssembly module...`, 'receive');
+        const instance = await WebAssembly.instantiate(module, importObject);
+        const exports = instance.exports;
+        
+        console.log("Module exports:", Object.keys(exports));
+        // Log all exports with their types for debugging
+        Object.keys(exports).forEach(key => {
+          console.log(`Export: ${key}, Type: ${typeof exports[key]}`);
+          
+          // For functions, try to get some info about their signature
+          if (typeof exports[key] === 'function') {
+            try {
+              // Get function toString to help with debugging
+              const fnStr = exports[key].toString();
+              console.log(`  Function ${key} signature: ${fnStr.substring(0, 100)}...`);
+            } catch (e) {
+              console.log(`  Function ${key} toString failed: ${e.message}`);
+            }
+          }
+        });
+        
+        addLogEntry(`WebAssembly module instantiated with exports: ${Object.keys(exports).join(", ")}`, 'receive');
+        
+        // Check for standardized interface functions with more possible naming patterns
+        const describeFn = findExportFunction(exports, [
+          'describe', 'describe_wasm', 'DESCRIBE', 'getInfo', 'get_info', 
+          'getMetadata', 'get_metadata', 'metadata', 'info', 'getDetails', 
+          'get_details', 'getDescription', 'get_description', 'details',
+          'about', 'getAbout', 'get_about', 'manifest', 'getManifest'
+        ]);
+        
+        const reqFn = findExportFunction(exports, [
+          'req', 'req_wasm', 'REQ', 'request', 'process_request', 'processRequest',
+          'handleRequest', 'handle_request', 'handleReq', 'handle_req', 
+          'process', 'processReq', 'process_req', 'call', 'invoke', 
+          'execute', 'run', 'handle', 'event', 'processEvent', 'process_event',
+          'handleEvent', 'handle_event', 'emit', 'submit', 'send'
+        ]);
+        
+        const closeFn = findExportFunction(exports, [
+          'close', 'close_wasm', 'CLOSE', 'closeSubscription', 'close_subscription', 
+          'unsubscribe', 'disconnect', 'end', 'finish', 'complete', 'terminate',
+          'destroy', 'cleanup', 'dispose'
+        ]);
+        
+        // Check for memory management functions with more possible naming patterns
+        const allocFn = findExportFunction(exports, ['allocString', 'alloc_string', 'alloc', 'malloc', 'allocate']);
+        const deallocFn = findExportFunction(exports, ['deallocString', 'dealloc_string', 'dealloc', 'free', 'deallocate']);
+        
+        // Log what we found to help debugging
+        addLogEntry(`Found functions - describe: ${!!describeFn}, req: ${!!reqFn}, close: ${!!closeFn}, alloc: ${!!allocFn}, dealloc: ${!!deallocFn}`, 'receive');
+        
+        // For demonstration purposes, if describe is not found, try to use any function that might return a string
+        let autoDetectedDescribeFn = null;
+        if (!describeFn) {
+          // Look for any exported function that doesn't take parameters and might be a describe function
+          for (const key of Object.keys(exports)) {
+            if (typeof exports[key] === 'function') {
+              try {
+                const result = exports[key]();
+                // If it returns a value and doesn't crash, it might be our describe function
+                if (result !== undefined) {
+                  autoDetectedDescribeFn = exports[key];
+                  addLogEntry(`Auto-detected possible describe function: ${key}`, 'receive');
+                  break;
+                }
+              } catch (e) {
+                // Skip functions that cause errors when called without parameters
+              }
+            }
+          }
+          
+          // If we still don't have a describe function, check for constructor/factory pattern
+          if (!autoDetectedDescribeFn) {
+            const constructorCandidates = ['default', 'new', 'TestCassette', 'Cassette', 'CustomCassette'];
+            for (const name of constructorCandidates) {
+              if (exports[name] && typeof exports[name] === 'function') {
+                try {
+                  // Try to instantiate it
+                  const instance = new exports[name]();
+                  // Check if the instance has the methods we need
+                  if (instance && typeof instance.describe === 'function') {
+                    addLogEntry(`Found constructor '${name}' with describe method`, 'receive');
+                    // Create a wrapper function that returns the result of instance.describe()
+                    autoDetectedDescribeFn = function() {
+                      return instance.describe();
+                    };
+                    // Store the instance for potential reuse with other methods
+                    autoDetectedDescribeFn.instance = instance;
+                    break;
+                  }
+                } catch (e) {
+                  console.log(`Failed to instantiate ${name}: ${e.message}`);
+                }
+              }
+            }
+          }
+        }
+        
+        // If we still don't have a describe function, throw an error
+        if (!describeFn && !autoDetectedDescribeFn) {
+          // Create a more detailed error message
+          const errorMsg = `WebAssembly module missing required 'describe' function.\nAvailable exports: ${Object.keys(exports).join(', ')}`;
+          addLogEntry(errorMsg, 'error');
+          throw new Error(errorMsg);
+        }
+        
+        // Try to detect req function from constructor pattern if not found directly
+        let autoDetectedReqFn = null;
+        if (!reqFn) {
+          // Check if we already found a constructor instance for describe
+          if (autoDetectedDescribeFn && autoDetectedDescribeFn.instance) {
+            // Check if this instance also has a req method
+            if (typeof autoDetectedDescribeFn.instance.req === 'function') {
+              autoDetectedReqFn = function(requestJson) {
+                return autoDetectedDescribeFn.instance.req(requestJson);
+              };
+              addLogEntry(`Using req method from the same constructor instance`, 'receive');
+            }
+          } else {
+            // Try constructor pattern specifically for req
+            const constructorCandidates = ['default', 'new', 'TestCassette', 'Cassette', 'CustomCassette'];
+            for (const name of constructorCandidates) {
+              if (exports[name] && typeof exports[name] === 'function') {
+                try {
+                  // Try to instantiate it
+                  const instance = new exports[name]();
+                  // Check if the instance has the methods we need
+                  if (instance && typeof instance.req === 'function') {
+                    addLogEntry(`Found constructor '${name}' with req method`, 'receive');
+                    // Create a wrapper function that returns the result of instance.req()
+                    autoDetectedReqFn = function(requestJson) {
+                      return instance.req(requestJson);
+                    };
+                    break;
+                  }
+                } catch (e) {
+                  console.log(`Failed to instantiate ${name} for req: ${e.message}`);
+                }
+              }
+            }
+          }
+        }
+        
+        if (!reqFn && !autoDetectedReqFn) {
+          // Create a more detailed error message
+          const errorMsg = `WebAssembly module missing required 'req' function.\nAvailable exports: ${Object.keys(exports).join(', ')}`;
+          addLogEntry(errorMsg, 'error');
+          throw new Error(errorMsg);
+        }
+        
+        addLogEntry(`Found required exports for standardized interface`, 'receive');
+        
+        // Use the functions we found (either standardized or auto-detected)
+        const actualDescribeFn = describeFn || autoDetectedDescribeFn;
+        const actualReqFn = reqFn || autoDetectedReqFn;
+        
+        // Create a wrapper function to make it easier to work with the WebAssembly module
+        const cassetteWrapper = {
+          describe: function() {
+            try {
+              // Call the describe function and get the result
+              const result = actualDescribeFn();
+              
+              console.log("Result from describe is type:", typeof result);
+              
+              // If the result is a string, return it directly
+              if (typeof result === 'string') {
+                console.log("Direct string result:", result);
+                return result;
+              }
+              
+              // If the result is an array with two elements [ptr, len], handle it
+              if (Array.isArray(result) && result.length === 2) {
+                const ptr = result[0];
+                const len = result[1];
+                
+                // Read the string from memory using TextDecoder
+                const memory_array = new Uint8Array(memory.buffer, ptr, len);
+                const response = new TextDecoder('utf-8').decode(memory_array);
+                console.log("[ptr, len] result:", response);
+                
+                // If there's a dealloc function, free the memory
+                if (deallocFn) {
+                  deallocFn(ptr, len);
+                }
+                
+                return response;
+              }
+              
+              // If the result is a number, assume it's a pointer to a null-terminated string
+              if (typeof result === 'number') {
+                const mem = new Uint8Array(memory.buffer);
+                let response = "";
+                let i = result;
+                const maxLen = 10000; // Safety limit to prevent infinite loops
+                let count = 0;
+                
+                while (i < mem.length && mem[i] !== 0 && count < maxLen) {
+                  response += String.fromCharCode(mem[i]);
+                  i++;
+                  count++;
+                }
+                
+                console.log("Pointer result:", response);
+                
+                if (count === 0) {
+                  console.error("Empty string at pointer:", result);
+                  return JSON.stringify({
+                    error: "Empty response from describe function"
+                  });
+                }
+                
+                return response;
+              }
+              
+              // Handle other types of results
+              console.error("Unknown result type:", typeof result);
+              return JSON.stringify({
+                error: "Unknown result type: " + typeof result
+              });
+            } catch (error) {
+              console.error("Error in describe function:", error);
+              return JSON.stringify({
+                error: error.message
+              });
+            }
+          },
+          
+          req: function(requestStr) {
+            try {
+              console.log("Calling req function with:", requestStr);
+              
+              // Try parsing the request string to handle it as JSON if needed
+              let parsedRequest;
+              try {
+                parsedRequest = JSON.parse(requestStr);
+                console.log("Parsed request as JSON:", parsedRequest);
+              } catch (e) {
+                // Not valid JSON, will use as string
+                console.log("Request is not valid JSON, using as string");
+              }
+              
+              // First try calling with the raw string
+              let result = actualReqFn(requestStr);
+              console.log("Result from req(string) is type:", typeof result, result);
+              
+              // If undefined, try with parsed JSON if available
+              if (result === undefined && parsedRequest) {
+                console.log("Trying req with parsed JSON object");
+                result = actualReqFn(parsedRequest);
+                console.log("Result from req(object) is type:", typeof result, result);
+              }
+              
+              // If still undefined, try calling the function with an allocated memory pointer
+              if (result === undefined && allocFn && deallocFn) {
+                console.log("Trying req with memory allocation");
+                const bytes = new TextEncoder().encode(requestStr);
+                const ptr = allocFn(bytes.length);
+                
+                const mem = new Uint8Array(memory.buffer);
+                for (let i = 0; i < bytes.length; i++) {
+                  mem[ptr + i] = bytes[i];
+                }
+                mem[ptr + bytes.length] = 0; // Null terminator
+                
+                result = actualReqFn(ptr);
+                console.log("Result from req(ptr) is type:", typeof result, result);
+                
+                // Free the allocated memory for the request
+                deallocFn(ptr, bytes.length);
+              }
+              
+              // If still undefined, one more attempt with an array buffer
+              if (result === undefined) {
+                console.log("Trying req with array buffer");
+                const bytes = new TextEncoder().encode(requestStr);
+                result = actualReqFn(bytes);
+                console.log("Result from req(bytes) is type:", typeof result, result);
+              }
+              
+              // If we got a valid result at any point
+              if (result !== undefined) {
+                // If the result is a string, return it directly
+                if (typeof result === 'string') {
+                  console.log("Direct string result:", result);
+                  return result;
+                }
+                
+                // If the result is an array with two elements [ptr, len], handle it
+                if (Array.isArray(result) && result.length === 2) {
+                  const ptr = result[0];
+                  const len = result[1];
+                  
+                  // Read the string from memory using TextDecoder
+                  const memory_array = new Uint8Array(memory.buffer, ptr, len);
+                  const response = new TextDecoder('utf-8').decode(memory_array);
+                  console.log("[ptr, len] result:", response);
+                  
+                  // If there's a dealloc function, free the memory
+                  if (deallocFn) {
+                    deallocFn(ptr, len);
+                  }
+                  
+                  return response;
+                }
+                
+                // If the result is a number, assume it's a pointer to a null-terminated string
+                if (typeof result === 'number') {
+                  const mem = new Uint8Array(memory.buffer);
+                  let response = "";
+                  let i = result;
+                  const maxLen = 10000; // Safety limit to prevent infinite loops
+                  let count = 0;
+                  
+                  while (i < mem.length && mem[i] !== 0 && count < maxLen) {
+                    response += String.fromCharCode(mem[i]);
+                    i++;
+                    count++;
+                  }
+                  
+                  console.log("Pointer result:", response);
+                  
+                  if (count === 0) {
+                    console.error("Empty string at pointer:", result);
+                    return JSON.stringify({
+                      "notice": ["NOTICE", "Empty response from cassette"]
+                    });
+                  }
+                  
+                  return response;
+                }
+                
+                // For other types, try to stringify them
+                try {
+                  console.log("Stringifying non-string result:", result);
+                  return JSON.stringify(result);
+                } catch (e) {
+                  console.error("Failed to stringify result:", e);
+                }
+              }
+              
+              // If we reach here, we couldn't get a usable result
+              console.error("Could not get valid result from req function");
+              const errorResponse = {
+                "notice": ["NOTICE", "Function returned undefined. This might indicate an issue with the cassette implementation or interface mismatch. Check console for debug logs."]
+              };
+              addLogEntry("Function returned undefined. Try examining the WebAssembly exports in the browser console.", 'error');
+              return JSON.stringify(errorResponse);
+            } catch (error) {
+              console.error("Error in req function:", error);
+              return JSON.stringify({
+                "notice": ["NOTICE", error.message]
+              });
+            }
+          },
+          
+          close: function(closeStr) {
+            if (!closeFn) {
+              return JSON.stringify({
+                notice: ["NOTICE", "Close function not implemented by this module"]
+              });
+            }
+            
+            try {
+              // Similar approach as req function
+              if (allocFn && deallocFn) {
+                const bytes = new TextEncoder().encode(closeStr);
+                const ptr = allocFn(bytes.length);
+                
+                const mem = new Uint8Array(memory.buffer);
+                for (let i = 0; i < bytes.length; i++) {
+                  mem[ptr + i] = bytes[i];
+                }
+                mem[ptr + bytes.length] = 0; // Null terminator
+                
+                const resultPtr = closeFn(ptr);
+                
+                deallocFn(ptr, bytes.length);
+                
+                let response = "";
+                let i = resultPtr;
+                while (i < mem.length && mem[i] !== 0) {
+                  response += String.fromCharCode(mem[i]);
+                  i++;
+                }
+                
+                return response;
+              } else {
+                const resultPtr = closeFn(closeStr);
+                
+                const mem = new Uint8Array(memory.buffer);
+                let response = "";
+                let i = resultPtr;
+                while (i < mem.length && mem[i] !== 0) {
+                  response += String.fromCharCode(mem[i]);
+                  i++;
+                }
+                
+                return response;
+              }
+            } catch (error) {
+              console.error("Error calling close function:", error);
+              return JSON.stringify({
+                error: error.message
+              });
+            }
+          },
+          
+          getInfo: function() {
+            try {
+              const descriptionStr = this.describe();
+              const info = JSON.parse(descriptionStr);
+              return info;
+            } catch (error) {
+              console.error("Error parsing info:", error);
+              return {
+                name: cassetteId,
+                description: "Error: " + error.message,
+                version: "unknown"
+              };
+            }
+          }
+        };
+        
+        // Get metadata from the describe function
+        const metadata = cassetteWrapper.getInfo();
+        const name = metadata.name || metadata.metadata?.name || cassetteId;
+        const description = metadata.description || metadata.metadata?.description || "No description available";
+        
+        addLogEntry(`Loaded cassette: ${name} - ${description}`, 'receive');
+        
+        // Store the cassette in our registry
+        loadedCassettes[cassetteId] = {
+          id: cassetteId,
+          fileName: cassetteId + ".wasm",
+          name: name,
+          description: description,
+          instance: cassetteWrapper,
+          metrics: {
+            requestsProcessed: 0,
+            eventsGenerated: 0,
+            closesHandled: 0
+          }
+        };
+        
+        // Add a UI tab for this cassette
+        addCassetteTab(cassetteId, name);
+        
+        // Update the UI
+        updateLoadedCassettesDisplay();
+        
+        // Set as active if it's the first cassette
+        if (Object.keys(loadedCassettes).length === 1) {
+          document.querySelector(`.tab[data-tab="${cassetteId}"]`).click();
+        }
+        
+        return cassetteId;
+      } catch (error) {
+        addLogEntry(`Failed to load WebAssembly module: ${error.message}`, 'error');
+        throw error;
+      }
+    }
+    
+    function registerCassette(cassetteId, fileName, cassetteName, cassetteObj) {
+      // Add to our loaded cassettes
+      loadedCassettes[cassetteId] = {
+        id: cassetteId,
+        fileName: fileName,
+        name: cassetteName,
+        instance: cassetteObj,
+        metrics: {
+          requestsProcessed: 0,
+          eventsGenerated: 0,
+          closesHandled: 0
+        }
+      };
+      
+      // Add a new tab for this cassette
+      addCassetteTab(cassetteId, cassetteName);
+      
+      // Update the display
+      updateLoadedCassettesDisplay();
+      
+      // Set as active if it's the first cassette
+      if (Object.keys(loadedCassettes).length === 1) {
+        document.querySelector(`.tab[data-tab="${cassetteId}"]`).click();
+      }
+      
+      addLogEntry(`Successfully loaded cassette: ${cassetteName} from ${fileName}`, 'receive');
+      addLogEntry(`Cassette description: ${cassetteObj.describe()}`, 'receive');
+    }
+    
+    function addCassetteTab(cassetteId, cassetteName) {
+      const customTabsContainer = document.getElementById('custom-tabs');
+      
+      // Create the tab
+      const tab = document.createElement('div');
+      tab.className = 'tab custom-tab';
+      tab.dataset.tab = cassetteId;
+      tab.textContent = cassetteName;
+      
+      // Add remove button
+      const removeButton = document.createElement('button');
+      removeButton.className = 'remove-tab';
+      removeButton.innerHTML = '&times;';
+      removeButton.addEventListener('click', (e) => {
+        e.stopPropagation();
+        removeCassette(cassetteId);
+      });
+      
+      tab.appendChild(removeButton);
+      
+      // Add click handler
+      tab.addEventListener('click', () => {
+        // Deactivate all tabs
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+        
+        // Activate this tab
+        tab.classList.add('active');
+        activeCassetteId = cassetteId;
+        
+        // Show or create panel
+        const panelId = `${cassetteId}-panel`;
+        let panel = document.getElementById(panelId);
+        
+        if (panel) {
+          panel.classList.add('active');
+        } else {
+          createCassettePanel(cassetteId);
+        }
+      });
+      
+      // Add to container
+      customTabsContainer.appendChild(tab);
+      
+      // Remove "No cassettes loaded" message if this is the first cassette
+      const tabContainer = document.getElementById('tab-container');
+      if (Object.keys(loadedCassettes).length === 1) {
+        document.getElementById('tab-panels').innerHTML = ''; // Clear the empty state
+      }
+    }
+    
+    function createCassettePanel(cassetteId) {
+      const cassette = loadedCassettes[cassetteId];
+      const tabPanelsContainer = document.getElementById('tab-panels');
+      
+      // Create panel
+      const panel = document.createElement('div');
+      panel.className = 'tab-panel card active';
+      panel.id = `${cassetteId}-panel`;
+      
+      // Display cassette info
+      const infoDiv = document.createElement('div');
+      infoDiv.innerHTML = `
+        <h2>${cassette.name}</h2>
+        <div class="tab-info">File: ${cassette.fileName}</div>
+        <div class="test-panel">
+          <h3>Test Cassette</h3>
+          <div class="metrics">
+            <span class="metric">Requests processed: <span class="metric-value" id="${cassetteId}-requests">0</span></span>
+            <span class="metric">Events generated: <span class="metric-value" id="${cassetteId}-events">0</span></span>
+            <span class="metric">Closes handled: <span class="metric-value" id="${cassetteId}-closes">0</span></span>
+          </div>
+          
+          <div class="input-group" style="margin-top: 15px;">
+            <input type="text" id="${cassetteId}-request" placeholder='["REQ", "sub1", {"kinds": [1]}]'>
+            <button id="${cassetteId}-send">Process Request</button>
+          </div>
+          
+          <div class="preset-buttons">
+            <button data-target="${cassetteId}" data-message='["REQ", "sub1", {"kinds": [1]}]'>Request Kind 1</button>
+            <button data-target="${cassetteId}" data-message='["REQ", "sub2", {"authors": ["e771af0b05c8e95fcdf6feb3500544d2fb1ccd384788e9f490bb3ee28e8ed66f"]}]'>Request by Author</button>
+            <button data-target="${cassetteId}" data-message='["REQ", "sub3", {"#t": ["test"]}]'>Request by Tag</button>
+            <button data-target="${cassetteId}" data-message='["REQ", "sub4", {"#custom": ["echo"]}]'>Custom: Echo</button>
+            <button data-target="${cassetteId}" data-message='["REQ", "sub5", {"#custom": ["random"]}]'>Custom: Random</button>
+            <button data-target="${cassetteId}" data-message='["CLOSE", "sub1"]'>Close Sub1</button>
+          </div>
+          
+          <div id="${cassetteId}-response" class="response-card" style="display: none;">
+            <h4>Response:</h4>
+            <div id="${cassetteId}-response-content" class="json-content"></div>
+          </div>
+        </div>
+      `;
+      panel.appendChild(infoDiv);
+      
+      // Add panel to container
+      tabPanelsContainer.appendChild(panel);
+      
+      // Add event listeners
+      document.getElementById(`${cassetteId}-send`).addEventListener('click', () => {
+        const requestInput = document.getElementById(`${cassetteId}-request`);
+        const requestStr = requestInput.value;
+        const responseStr = cassette.instance.req(requestStr);
+        const responseDiv = document.getElementById(`${cassetteId}-response-content`);
+        responseDiv.textContent = JSON.stringify(JSON.parse(responseStr), null, 2);
+        document.getElementById(`${cassetteId}-response`).style.display = 'block';
+      });
+      
+      document.querySelectorAll(`.preset-buttons button[data-target="${cassetteId}"]`).forEach(button => {
+        button.addEventListener('click', () => {
+          const requestInput = document.getElementById(`${cassetteId}-request`);
+          requestInput.value = button.dataset.message;
+        });
+      });
+    }
+    
+    function removeCassette(cassetteId) {
+      // Remove from our loaded cassettes
+      delete loadedCassettes[cassetteId];
+      
+      // Remove the tab
+      const tab = document.querySelector(`.tab[data-tab="${cassetteId}"]`);
+      tab.parentNode.removeChild(tab);
+      
+      // Remove the panel
+      const panel = document.getElementById(`${cassetteId}-panel`);
+      panel.parentNode.removeChild(panel);
+      
+      // Update the display
+      updateLoadedCassettesDisplay();
+      
+      // If there are still cassettes, activate the first one
+      if (Object.keys(loadedCassettes).length > 0) {
+        const firstCassetteId = Object.keys(loadedCassettes)[0];
+        document.querySelector(`.tab[data-tab="${firstCassetteId}"]`).click();
+      }
+    }
+    
+    function updateLoadedCassettesDisplay() {
+      const loadedCassettesList = document.getElementById('loaded-cassettes-list');
+      loadedCassettesList.innerHTML = '';
+      
+      if (Object.keys(loadedCassettes).length === 0) {
+        loadedCassettesList.innerHTML = `
+          <div class="empty-state">
+            <i>📦</i>
+            <p>No cassettes loaded yet</p>
+          </div>
+        `;
+      } else {
+        for (const cassetteId of Object.keys(loadedCassettes)) {
+          const cassette = loadedCassettes[cassetteId];
+          const badge = document.createElement('div');
+          badge.className = 'cassette-badge';
+          badge.textContent = cassette.name;
+          loadedCassettesList.appendChild(badge);
+        }
+      }
+    }
+    
+    function addLogEntry(message, type) {
+      const logsDiv = document.getElementById('logs');
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+      entry.textContent = message;
+      logsDiv.appendChild(entry);
+      logsDiv.scrollTop = logsDiv.scrollHeight;
+    }
+    
+    // Function to load available cassettes directly from the standard location
+    async function loadAvailableCassettes() {
+      addLogEntry("Checking for available cassettes in the standard location (client-side)...", 'receive');
+      
+      try {
+        // Search for cassettes in multiple potential locations
+        const possibleLocations = [
+          '../cassettes/', // Standard location
+          '../cli/', // CLI folder
+          './' // Current directory
+        ];
+        
+        // List of known cassette files to check for
+        const knownCassettes = [
+          'minimal_cassette.wasm',
+          'test_standardized_interface_bg.wasm',
+          'test_cassette.wasm', // From CLI folder
+          'test-cassette.wasm'  // Alternative naming
+        ];
+        
+        let loadedCount = 0;
+        
+        // Try each location and cassette combination
+        for (const location of possibleLocations) {
+          for (const cassetteName of knownCassettes) {
+            try {
+              // Check if the cassette file exists using a HEAD request
+              const response = await fetch(location + cassetteName, { method: 'HEAD' });
+              
+              if (response.ok) {
+                addLogEntry(`Found cassette: ${location}${cassetteName}`, 'receive');
+                
+                // Try to load the cassette
+                const cassetteResponse = await fetch(location + cassetteName);
+                const arrayBuffer = await cassetteResponse.arrayBuffer();
+                
+                // Generate cassette ID and load it
+                const cassetteId = generateCassetteId(cassetteName);
+                await loadWasmCassette(arrayBuffer, cassetteId);
+                
+                addLogEntry(`Successfully loaded ${cassetteName} from ${location}`, 'receive');
+                loadedCount++;
+              }
+            } catch (error) {
+              console.error(`Error loading cassette ${location}${cassetteName}:`, error);
+            }
+          }
+        }
+        
+        // Display message for manual uploads if needed
+        if (loadedCount === 0) {
+          addLogEntry("No cassettes were automatically loaded. You can drag and drop .wasm files to load them.", 'receive');
+        } else {
+          addLogEntry(`Successfully loaded ${loadedCount} cassettes from standard locations.`, 'receive');
+        }
+      } catch (error) {
+        console.error("Error in loadAvailableCassettes:", error);
+        addLogEntry(`Failed to check for available cassettes: ${error.message}`, 'error');
+        addLogEntry("You can drag and drop .wasm files to load them manually.", 'receive');
+      }
+    }
+  </script>
+</body>
+</html>

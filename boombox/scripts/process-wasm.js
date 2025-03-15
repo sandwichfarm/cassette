@@ -21,7 +21,7 @@ const boomboxDir = path.resolve(rootDir, 'boombox');
 const sandwichsFavsDir = path.resolve(rootDir, 'sandwichs-favs');
 
 // Destination directory for the WASM file
-const wasmDir = path.resolve(boomboxDir, 'wasm');
+const wasmDir = path.resolve(rootDir, 'cassettes');
 
 // Source WASM file path
 const sourceWasmPath = path.resolve(

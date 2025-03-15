@@ -9,6 +9,18 @@ The project consists of:
 - **sandwichs-favs**: A Rust implementation of a Nostr relay that gets compiled to WebAssembly
 - **boombox**: A TypeScript server that loads and interacts with the WebAssembly module
 - **nostr-proxy**: A WebSocket proxy for testing Nostr clients
+- **cassettes**: Directory containing all WebAssembly cassette modules and their bindings
+- **cassette-tools**: Rust library for building standardized WebAssembly cassettes
+- **cli**: Command-line tool for creating and managing cassettes
+
+## Directory Structure
+
+- `cassettes/`: Contains all WebAssembly (.wasm) files and their JavaScript bindings
+- `boombox/`: WebSocket server that loads and runs cassettes
+- `cli/`: Command-line tool for creating cassettes from events or templates
+- `cassette-tools/`: Shared Rust library for implementing the standardized interface
+- `gui/`: Web interface for testing and managing cassettes
+- `test-standardized-interface/`: Example implementation of the standardized interface
 
 ## Build Instructions
 
@@ -28,7 +40,7 @@ make build-wasm
 
 This will:
 1. Navigate to the `sandwichs-favs` directory and build the Rust project targeting WebAssembly
-2. Process the WASM file to generate JavaScript bindings
+2. Process the WASM file to generate JavaScript bindings and place them in the `cassettes` directory
 
 If you prefer to do this manually:
 
@@ -38,10 +50,31 @@ If you prefer to do this manually:
    cargo build --target wasm32-unknown-unknown
    ```
 
-2. Process the WASM file to generate JavaScript bindings:
+2. Process the WASM file to generate JavaScript bindings in the cassettes directory:
    ```bash
-   cd ../boombox
-   bun scripts/process-wasm.js
+   cd ..
+   bun boombox/scripts/process-wasm.js
+   ```
+
+### Building Custom Cassettes
+
+To build a custom cassette and place it in the cassettes directory:
+
+1. Create a new cassette project or use an existing one:
+   ```bash
+   cd test-standardized-interface
+   cargo build --target wasm32-unknown-unknown --release
+   ```
+
+2. Copy the WebAssembly file to the cassettes directory:
+   ```bash
+   cp target/wasm32-unknown-unknown/release/test_standardized_interface.wasm ../cassettes/
+   ```
+
+3. Generate JavaScript bindings:
+   ```bash
+   cd ..
+   wasm-bindgen cassettes/test_standardized_interface.wasm --out-dir cassettes --target web
    ```
 
 ### Running the Integration Tests
@@ -163,4 +196,104 @@ const reqMsg = ['REQ', '1:', {'&t': ['value1', 'value2']}];
    echo "method1,method2" | bun scripts/update-wasm-bindings.js
    ```
 
-For more details on the WebAssembly binding structure and common issues, see the `WASM-QUICKSTART.md` file. 
+For more details on the WebAssembly binding structure and common issues, see the `WASM-QUICKSTART.md` file.
+
+# Cassette Project
+
+This project provides a framework for creating and testing Nostr relay cassettes - WebAssembly modules that can simulate relay behavior for testing client applications.
+
+## Directory Structure
+
+- **cli/** - Command-line interface for generating and managing cassettes
+- **cassette-tools/** - Core library for cassette development
+- **boombox/** - Node.js/Bun runtime for running cassettes in a server environment
+- **gui/** - Web interface for testing cassettes directly in the browser
+
+## Standardized WebAssembly Interface
+
+The Cassette Project uses a standardized WebAssembly interface, which allows cassettes to be distributed as standalone `.wasm` files without requiring JavaScript bindings.
+
+### Key Benefits
+
+- **Simplified Distribution**: Only the `.wasm` file is required for distribution
+- **No Binding Files**: No need to generate or distribute JavaScript binding files for each cassette
+- **Consistent Interface**: All cassettes implement the same interface, making them easily interchangeable
+- **More Efficient**: Smaller download size, simpler loading process
+
+### Standard Interface Functions
+
+All cassettes implement these standard functions, which are accessed directly by the framework:
+
+- **describe()** - Returns JSON metadata about the cassette
+- **getSchema()** - Returns JSON schema for the cassette
+- **req(requestJson)** - Processes requests and returns responses
+- **close(closeJson)** - Handles subscription closures
+- **allocString(len)** and **deallocString(ptr, len)** - Optional memory management helpers
+
+### Loading WebAssembly Cassettes
+
+Both the Boombox server and the GUI interface can load WebAssembly cassettes directly:
+
+```javascript
+// Create a standardized import object
+const importObject = {
+  env: { memory: new WebAssembly.Memory({ initial: 16 }) },
+  // Minimal required helpers
+  __wbindgen_placeholder__: {
+    __wbindgen_string_new: (ptr, len) => { /* String helper */ },
+    __wbindgen_throw: (ptr, len) => { /* Error helper */ }
+  }
+};
+
+// Instantiate the WebAssembly module
+const result = await WebAssembly.instantiate(wasmArrayBuffer, importObject);
+const exports = result.instance.exports;
+
+// Access the standardized interface
+const metadata = exports.describe();
+const response = exports.req(requestJson);
+```
+
+### Building Cassettes
+
+When building cassettes with the CLI, you can use the `--no-bindings` flag to skip JavaScript binding generation:
+
+```bash
+cassette dub --no-bindings -n "My Cassette" -d "Description" -a "Author" input.json
+```
+
+This will generate just the `.wasm` file, which can be directly loaded by the Boombox server or GUI interface.
+
+For more details, see the [WASM-QUICKSTART.md](WASM-QUICKSTART.md) guide.
+
+## Usage
+
+- To create a new cassette, use the CLI: `cassette dub <events.json>`
+- To test cassettes in the browser, use the GUI: http://localhost:8002/
+- To run cassettes in a Node.js environment, use Boombox
+
+## Development
+
+See each subdirectory for specific development instructions.
+
+### Running the Boombox Server
+
+To run the Boombox server:
+
+```bash
+cd boombox
+bun index.ts
+```
+
+The server will start on port 3001 and load all WebAssembly modules from the `cassettes` directory. The server will automatically detect and load any `.wasm` files in this directory that implement the standardized interface.
+
+You should see output like:
+```
+Loading cassettes from: /path/to/cassettes
+Loading cassette from WASM file: custom_cassette.wasm
+Loading cassette from WASM file: test_standardized_interface.wasm
+Successfully loaded cassette: custom_cassette
+Successfully loaded cassette: test_standardized_interface
+Loaded 2 cassettes
+Boombox server running on port 3001
+``` 
