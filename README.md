@@ -20,6 +20,18 @@ The project consists of:
 
 ### Building the WASM Module
 
+You can build the WebAssembly module using the Makefile:
+
+```bash
+make build-wasm
+```
+
+This will:
+1. Navigate to the `sandwichs-favs` directory and build the Rust project targeting WebAssembly
+2. Process the WASM file to generate JavaScript bindings
+
+If you prefer to do this manually:
+
 1. Navigate to the `sandwichs-favs` directory and build the Rust project targeting WebAssembly:
    ```bash
    cd sandwichs-favs
@@ -32,33 +44,25 @@ The project consists of:
    bun scripts/process-wasm.js
    ```
 
-That's it! The WebAssembly module is now built and ready to be used by the boombox server.
+### Running the Integration Tests
 
-### Running the Integration Test
-
-The project includes an integration test script that starts both the boombox server and nostr-proxy server and automatically tests all supported filters:
+The project includes several Makefile commands to simplify testing:
 
 ```bash
-./integration-test.sh
+# Run all integration tests (starts services if needed)
+make test
+
+# Only start the boombox and nostr-proxy services without running tests
+make start-services
+
+# Run just the filter tests (assumes services are already running)
+make test-filters
+
+# Display all available commands
+make help
 ```
 
-This will:
-1. Start the boombox and nostr-proxy servers if they're not already running
-2. Run a series of tests for each supported filter:
-   - Limit and Kind filters
-   - Since timestamp filter
-   - Until timestamp filter
-   - Event ID filter
-   - Author filter
-   - NIP-119 AND tag filter
-
-If you only want to start the servers without running tests, use:
-
-```bash
-./integration-test.sh --no-tests
-```
-
-After the servers are running, you can also manually test the Nostr relay functionality with various commands:
+After the servers are running, you can manually test the Nostr relay functionality with various commands:
 
 ```bash
 # Request 5 notes of kind 1
@@ -74,7 +78,7 @@ nak req -u 1741400000 localhost:3001
 nak req -i 380c1dd962349cecbaf65eca3c66574f93ebbf7b1c1e5d7ed5bfc253c94c5211 localhost:3001
 
 # Request notes with NIP-119 AND tag filtering (notes that have both 'value1' AND 'value2' t-tags)
-node test-nip119.js
+make test-filters
 ```
 
 ### Logs and Debugging
@@ -89,10 +93,10 @@ tail -f ./logs/boombox.log
 tail -f ./logs/nostr-proxy.log
 ```
 
-To stop all servers:
+To stop all servers and clean up logs:
 
 ```bash
-pkill -f 'bun run'
+make clean
 ```
 
 ## Nostr Protocol Implementation
@@ -144,12 +148,16 @@ const reqMsg = ['REQ', '1:', {'&t': ['value1', 'value2']}];
 - `nostr-proxy/`: A WebSocket proxy for testing
   - `index.ts`: The proxy server implementation
 
+- `tests/`: Integration tests
+  - `integration-test.sh`: Main integration test script
+  - `test-nip119.js`: Tests NIP-119 AND tag filtering
+
 ## Advanced Customization
 
 ### Adding New Methods to the WebAssembly Module
 
 1. Add the method to the Rust code in `sandwichs-favs/src/lib.rs`
-2. Rebuild the WebAssembly module
+2. Rebuild the WebAssembly module with `make build-wasm`
 3. Update the bindings (if needed) with:
    ```bash
    echo "method1,method2" | bun scripts/update-wasm-bindings.js
