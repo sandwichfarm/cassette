@@ -18,6 +18,62 @@ function getStringFromWasm0(ptr, len) {
     return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
 }
 
+let WASM_VECTOR_LEN = 0;
+
+const cachedTextEncoder = (typeof TextEncoder !== 'undefined' ? new TextEncoder('utf-8') : { encode: () => { throw Error('TextEncoder not available') } } );
+
+const encodeString = (typeof cachedTextEncoder.encodeInto === 'function'
+    ? function (arg, view) {
+    return cachedTextEncoder.encodeInto(arg, view);
+}
+    : function (arg, view) {
+    const buf = cachedTextEncoder.encode(arg);
+    view.set(buf);
+    return {
+        read: arg.length,
+        written: buf.length
+    };
+});
+
+function passStringToWasm0(arg, malloc, realloc) {
+
+    if (realloc === undefined) {
+        const buf = cachedTextEncoder.encode(arg);
+        const ptr = malloc(buf.length, 1) >>> 0;
+        getUint8ArrayMemory0().subarray(ptr, ptr + buf.length).set(buf);
+        WASM_VECTOR_LEN = buf.length;
+        return ptr;
+    }
+
+    let len = arg.length;
+    let ptr = malloc(len, 1) >>> 0;
+
+    const mem = getUint8ArrayMemory0();
+
+    let offset = 0;
+
+    for (; offset < len; offset++) {
+        const code = arg.charCodeAt(offset);
+        if (code > 0x7F) break;
+        mem[ptr + offset] = code;
+    }
+
+    if (offset !== len) {
+        if (offset !== 0) {
+            arg = arg.slice(offset);
+        }
+        ptr = realloc(ptr, len, len = offset + arg.length * 3, 1) >>> 0;
+        const view = getUint8ArrayMemory0().subarray(ptr + offset, ptr + len);
+        const ret = encodeString(arg, view);
+
+        offset += ret.written;
+        ptr = realloc(ptr, len, offset, 1) >>> 0;
+    }
+
+    WASM_VECTOR_LEN = offset;
+    return ptr;
+}
+
 const SandwichsFavsFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_sandwichsfavs_free(ptr >>> 0, 1));
@@ -51,13 +107,6 @@ export class SandwichsFavs {
         }
     }
     /**
-     * @returns {bigint}
-     */
-    static calculate() {
-        const ret = wasm.sandwichsfavs_calculate();
-        return BigInt.asUintN(64, ret);
-    }
-    /**
      * @returns {string}
      */
     static get_schema() {
@@ -73,48 +122,41 @@ export class SandwichsFavs {
         }
     }
     /**
+     * Process a NIP-01 REQ message and return either an EVENT or NOTICE response
+     * @param {string} request_json
      * @returns {string}
      */
-    static get_client_req_schema() {
-        let deferred1_0;
-        let deferred1_1;
+    static req(request_json) {
+        let deferred2_0;
+        let deferred2_1;
         try {
-            const ret = wasm.sandwichsfavs_get_client_req_schema();
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
+            const ptr0 = passStringToWasm0(request_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.sandwichsfavs_req(ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
             return getStringFromWasm0(ret[0], ret[1]);
         } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
     }
     /**
+     * Handle NIP-01 CLOSE message
+     * @param {string} close_json
      * @returns {string}
      */
-    static get_relay_event_schema() {
-        let deferred1_0;
-        let deferred1_1;
+    static close(close_json) {
+        let deferred2_0;
+        let deferred2_1;
         try {
-            const ret = wasm.sandwichsfavs_get_relay_event_schema();
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
+            const ptr0 = passStringToWasm0(close_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.sandwichsfavs_close(ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
             return getStringFromWasm0(ret[0], ret[1]);
         } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
-        }
-    }
-    /**
-     * @returns {string}
-     */
-    static get_relay_notice_schema() {
-        let deferred1_0;
-        let deferred1_1;
-        try {
-            const ret = wasm.sandwichsfavs_get_relay_notice_schema();
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
     }
 }
