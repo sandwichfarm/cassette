@@ -1,0 +1,1 @@
+/Users/futurepaul/dev/sec/cassette/sandwichs-favs/target/wasm32-unknown-unknown/debug/sandwichs_favs.wasm: /Users/futurepaul/dev/sec/cassette/cassette-tools/src/lib.rs /Users/futurepaul/dev/sec/cassette/sandwichs-favs/src/lib.rs
