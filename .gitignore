@@ -9,6 +9,11 @@
 
 # Generated WASM files
 *.wasm
+*.js
+*.d.ts
+*.wasm.d.ts
+*.wasm_bg.wasm
+*.wasm_bg.wasm.d.ts
 
 # Boombox Node.js/Bun files
 **/node_modules/
@@ -27,3 +32,4 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo 
+

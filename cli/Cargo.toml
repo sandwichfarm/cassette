@@ -1,0 +1,25 @@
+[package]
+name = "cassette-cli"
+version = "0.1.0"
+edition = "2021"
+description = "CLI tool for creating and managing Cassette platform modules"
+
+# Set the binary name to "cassette"
+[[bin]]
+name = "cassette"
+path = "src/main.rs"
+
+# Keep the library functionality
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cassette-tools = { path = "../cassette-tools" }
+wasm-bindgen = "0.2"
+serde_json = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+anyhow = "1.0"
+tempfile = "3.8"
+handlebars = "4.3"
+uuid = { version = "1.4", features = ["v4"] }
+chrono = "0.4"

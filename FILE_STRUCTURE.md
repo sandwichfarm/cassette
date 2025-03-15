@@ -5,6 +5,19 @@ SandwichsFavs Cassette/
 ├── WASM-QUICKSTART.md - Quick start guide for working with WebAssembly in this project.
 ├── FILE_STRUCTURE.md - Overview of the project's directory and file organization.
 ├── .gitignore - Global Git ignore rules for the project.
+├── Makefile - Build automation rules for compiling and testing the project.
+├── CHANGELOG.md - Record of version changes and updates to the project.
+├── package.json - Root project configuration for Node.js dependencies.
+├── package-lock.json - Locked versions of Node.js dependencies.
+├── integration-test.sh - Shell script for running integration tests.
+├── test-close.js - JavaScript test for connection closing behavior.
+│
+├── tests/ - Directory containing test files for the project.
+│   ├── test-nip119.js - Tests for NIP-119 implementation.
+│   ├── integration-test.sh - Shell script for running integration tests inside tests directory.
+│   └── .gitkeep - Empty file used to ensure the directory is included in Git.
+│
+├── logs/ - Directory for storing application logs.
 │
 ├── sandwichs-favs/ - Rust WASM project implementing Nostr relay functionality for the Cassette platform.
 │   ├── src/ - Source code for the Rust implementation.
@@ -14,6 +27,20 @@ SandwichsFavs Cassette/
 │   ├── Cargo.lock - Locked versions of dependencies to ensure reproducible builds.
 │   ├── notes.json - Sample Nostr notes data for testing.
 │   ├── .gitignore - Git ignore rules specific to the Rust project.
+│   └── target/ - Build output directory containing compiled artifacts.
+│
+├── cli/ - CLI tool for creating and managing Cassette platform modules.
+│   ├── src/ - Source code for the CLI implementation.
+│   │   ├── lib.rs - Library code implementing the cassette functionality.
+│   │   ├── main.rs - CLI executable entry point with subcommands for cassette operations.
+│   │   └── templates/ - Templates for generating Rust code for cassettes.
+│   │       ├── cassette_template.rs - Template for the Rust implementation of a cassette.
+│   │       └── Cargo.toml - Template for the cassette project configuration.
+│   ├── Cargo.toml - Rust project configuration with CLI dependencies.
+│   ├── Cargo.lock - Locked versions of dependencies.
+│   ├── notes.json - Sample Nostr notes data for testing.
+│   ├── README.md - Documentation for the CLI tool and its usage.
+│   ├── .gitignore - Git ignore rules specific to the CLI project.
 │   └── target/ - Build output directory containing compiled artifacts.
 │
 ├── boombox/ - JavaScript/TypeScript WebSocket server that loads and communicates with cassettes.
@@ -31,20 +58,25 @@ SandwichsFavs Cassette/
 │   ├── bun.lock - Dependency lock file for Bun package manager.
 │   ├── tsconfig.json - TypeScript compiler configuration.
 │   ├── README.md - Documentation for the JavaScript test suite.
-│   └── .gitignore - Git ignore rules for the Node.js project.
+│   ├── .gitignore - Git ignore rules for the Node.js project.
+│   └── node_modules/ - Directory containing installed Node.js dependencies.
 │
 ├── nostr-proxy/ - Simple WebSocket proxy for Nostr relay messages.
 │   ├── index.ts - WebSocket server that forwards messages to the boombox.
 │   ├── package.json - Node.js project configuration with dependencies and scripts.
+│   ├── bun.lock - Dependency lock file for Bun package manager.
 │   ├── tsconfig.json - TypeScript compiler configuration.
 │   ├── README.md - Documentation for the proxy usage.
-│   └── .gitignore - Git ignore rules specific to the proxy project.
+│   ├── .gitignore - Git ignore rules specific to the proxy project.
+│   └── node_modules/ - Directory containing installed Node.js dependencies.
 │
 ├── cassette-tools/ - Rust library providing core functionality for cassette projects.
 │   ├── src/ - Source code for the cassette-tools library.
 │   │   └── lib.rs - Library code defining the Cassette trait and schema structures.
 │   ├── Cargo.toml - Rust project configuration for the cassette-tools library.
 │   └── .gitignore - Git ignore rules specific to the cassette-tools project.
+│
+├── node_modules/ - Root directory containing installed Node.js dependencies.
 │
 └── schemata/ - Collection of JSON schemas for Nostr protocol formats.
     ├── bundle/ - Bundled schemas for easy import in JavaScript applications.
