@@ -6,6 +6,9 @@ export class SandwichsFavs {
   static describe(): string;
   static calculate(): bigint;
   static get_schema(): string;
+  static get_client_req_schema(): string;
+  static get_relay_event_schema(): string;
+  static get_relay_notice_schema(): string;
 }
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -16,6 +19,9 @@ export interface InitOutput {
   readonly sandwichsfavs_describe: () => [number, number];
   readonly sandwichsfavs_calculate: () => bigint;
   readonly sandwichsfavs_get_schema: () => [number, number];
+  readonly sandwichsfavs_get_client_req_schema: () => [number, number];
+  readonly sandwichsfavs_get_relay_event_schema: () => [number, number];
+  readonly sandwichsfavs_get_relay_notice_schema: () => [number, number];
   readonly __wbindgen_export_0: WebAssembly.Table;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_start: () => void;

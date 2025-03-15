@@ -72,6 +72,51 @@ export class SandwichsFavs {
             wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
         }
     }
+    /**
+     * @returns {string}
+     */
+    static get_client_req_schema() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.sandwichsfavs_get_client_req_schema();
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @returns {string}
+     */
+    static get_relay_event_schema() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.sandwichsfavs_get_relay_event_schema();
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @returns {string}
+     */
+    static get_relay_notice_schema() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.sandwichsfavs_get_relay_notice_schema();
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
 }
 
 async function __wbg_load(module, imports) {

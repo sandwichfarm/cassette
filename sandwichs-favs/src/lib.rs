@@ -1,4 +1,5 @@
 use cassette_tools::{Cassette, CassetteSchema, one_plus_one};
+use cassette_tools::nip01::{ClientReq, RelayEvent, RelayNotice};
 use wasm_bindgen::prelude::*;
 use serde_json::json;
 
@@ -20,6 +21,21 @@ impl SandwichsFavs {
     #[wasm_bindgen]
     pub fn get_schema() -> String {
         <Self as Cassette>::get_schema_json()
+    }
+    
+    #[wasm_bindgen]
+    pub fn get_client_req_schema() -> String {
+        <ClientReq as Cassette>::get_schema_json()
+    }
+    
+    #[wasm_bindgen]
+    pub fn get_relay_event_schema() -> String {
+        <RelayEvent as Cassette>::get_schema_json() 
+    }
+    
+    #[wasm_bindgen]
+    pub fn get_relay_notice_schema() -> String {
+        <RelayNotice as Cassette>::get_schema_json()
     }
 }
 
@@ -53,6 +69,7 @@ impl Cassette for SandwichsFavs {
                 }
             }),
             required: vec!["name".to_string(), "ingredients".to_string()],
+            items: None,
         }
     }
 } 
