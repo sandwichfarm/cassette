@@ -1,0 +1,17 @@
+{
+  "name": "nostr-proxy",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.5",
+    "@types/node": "^20.10.6",
+    "typescript": "^5.3.3"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

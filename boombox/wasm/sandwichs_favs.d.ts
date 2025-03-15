@@ -4,11 +4,15 @@ export class SandwichsFavs {
   private constructor();
   free(): void;
   static describe(): string;
-  static calculate(): bigint;
   static get_schema(): string;
-  static get_client_req_schema(): string;
-  static get_relay_event_schema(): string;
-  static get_relay_notice_schema(): string;
+  /**
+   * Process a NIP-01 REQ message and return either an EVENT or NOTICE response
+   */
+  static req(request_json: string): string;
+  /**
+   * Handle NIP-01 CLOSE message
+   */
+  static close(close_json: string): string;
 }
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -17,13 +21,13 @@ export interface InitOutput {
   readonly memory: WebAssembly.Memory;
   readonly __wbg_sandwichsfavs_free: (a: number, b: number) => void;
   readonly sandwichsfavs_describe: () => [number, number];
-  readonly sandwichsfavs_calculate: () => bigint;
   readonly sandwichsfavs_get_schema: () => [number, number];
-  readonly sandwichsfavs_get_client_req_schema: () => [number, number];
-  readonly sandwichsfavs_get_relay_event_schema: () => [number, number];
-  readonly sandwichsfavs_get_relay_notice_schema: () => [number, number];
+  readonly sandwichsfavs_req: (a: number, b: number) => [number, number];
+  readonly sandwichsfavs_close: (a: number, b: number) => [number, number];
   readonly __wbindgen_export_0: WebAssembly.Table;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+  readonly __wbindgen_malloc: (a: number, b: number) => number;
+  readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_start: () => void;
 }
 
