@@ -96,6 +96,7 @@ impl SandwichsFavs {
                     let mut kind_filter: Option<Vec<i64>> = None;
                     let mut author_filter: Option<Vec<String>> = None;
                     let mut tags_filter: Option<Vec<(String, String)>> = None;
+                    let mut and_tags_filter: Option<Vec<(String, Vec<String>)>> = None;
                     let mut since_filter: Option<i64> = None;
                     let mut until_filter: Option<i64> = None;
                     let mut limit_filter: Option<usize> = None;
@@ -172,6 +173,33 @@ impl SandwichsFavs {
                             
                             if !tag_filters.is_empty() {
                                 tags_filter = Some(tag_filters);
+                            }
+                            
+                            // Implementing NIP-119 AND tag filtering
+                            // Collect all keys starting with '&' and their corresponding values as AND conditions
+                            let and_tag_filters: Vec<(String, Vec<String>)> = filter.keys()
+                                .filter(|k| k.starts_with('&'))
+                                .filter_map(|k| {
+                                    let tag_key = k.trim_start_matches('&');
+                                    if let Some(values) = filter.get(k).and_then(|v| v.as_array()) {
+                                        // Get all values for this tag key as AND conditions
+                                        let tag_values: Vec<String> = values.iter()
+                                            .filter_map(|v| v.as_str().map(String::from))
+                                            .collect();
+                                        
+                                        if !tag_values.is_empty() {
+                                            Some((tag_key.to_string(), tag_values))
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            
+                            if !and_tag_filters.is_empty() {
+                                and_tags_filter = Some(and_tag_filters);
                             }
                             
                             // Legacy created_at filter (for backward compatibility)
@@ -283,6 +311,38 @@ impl SandwichsFavs {
                                                 } else {
                                                     false
                                                 }
+                                            })
+                                        })
+                                    } else {
+                                        false
+                                    }
+                                })
+                                .collect();
+                        }
+                        
+                        // Filter by AND tags if specified (NIP-119)
+                        if let Some(and_tag_filters) = and_tags_filter {
+                            filtered_notes = filtered_notes.into_iter()
+                                .filter(|note| {
+                                    if let Some(tags) = note.get("tags").and_then(|t| t.as_array()) {
+                                        // For each AND tag filter group
+                                        and_tag_filters.iter().all(|(key, values)| {
+                                            // All values in this group must match for the same tag key
+                                            values.iter().all(|value| {
+                                                // Look for at least one tag that matches this key-value pair
+                                                tags.iter().any(|tag| {
+                                                    if let Some(tag_array) = tag.as_array() {
+                                                        if tag_array.len() >= 2 {
+                                                            let tag_type = tag_array[0].as_str().unwrap_or("");
+                                                            let tag_value = tag_array[1].as_str().unwrap_or("");
+                                                            tag_type == key && tag_value == value
+                                                        } else {
+                                                            false
+                                                        }
+                                                    } else {
+                                                        false
+                                                    }
+                                                })
                                             })
                                         })
                                     } else {

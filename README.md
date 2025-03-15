@@ -1,6 +1,6 @@
 # SandwichsFavs Cassette
 
-A WASM-based Nostr relay implementation for the Cassette platform. This project demonstrates how to implement NIP-01 compliant Nostr relay functionality using WebAssembly.
+A WASM-based Nostr relay implementation for the Cassette platform. This project demonstrates how to implement NIP-01 and NIP-119 compliant Nostr relay functionality using WebAssembly.
 
 ## Project Overview
 
@@ -36,13 +36,29 @@ That's it! The WebAssembly module is now built and ready to be used by the boomb
 
 ### Running the Integration Test
 
-The project includes an integration test script that starts both the boombox server and nostr-proxy server:
+The project includes an integration test script that starts both the boombox server and nostr-proxy server and automatically tests all supported filters:
 
 ```bash
 ./integration-test.sh
 ```
 
-After the servers are running, you can test the Nostr relay functionality with various commands:
+This will:
+1. Start the boombox and nostr-proxy servers if they're not already running
+2. Run a series of tests for each supported filter:
+   - Limit and Kind filters
+   - Since timestamp filter
+   - Until timestamp filter
+   - Event ID filter
+   - Author filter
+   - NIP-119 AND tag filter
+
+If you only want to start the servers without running tests, use:
+
+```bash
+./integration-test.sh --no-tests
+```
+
+After the servers are running, you can also manually test the Nostr relay functionality with various commands:
 
 ```bash
 # Request 5 notes of kind 1
@@ -52,10 +68,13 @@ nak req -l 5 -k 1 localhost:3001
 nak req -s 1741380000 localhost:3001
 
 # Request notes with timestamps before a specific time
-nak req -u 1741300000 localhost:3001
+nak req -u 1741400000 localhost:3001
 
 # Request notes by a specific ID
-nak req '{"ids":["380c1dd962349cecbaf65eca3c66574f93ebbf7b1c1e5d7ed5bfc253c94c5211"]}' localhost:3001
+nak req -i 380c1dd962349cecbaf65eca3c66574f93ebbf7b1c1e5d7ed5bfc253c94c5211 localhost:3001
+
+# Request notes with NIP-119 AND tag filtering (notes that have both 'value1' AND 'value2' t-tags)
+node test-nip119.js
 ```
 
 ### Logs and Debugging
@@ -78,7 +97,9 @@ pkill -f 'bun run'
 
 ## Nostr Protocol Implementation
 
-The WebAssembly module implements the following NIP-01 message types:
+The WebAssembly module implements the following NIP specifications:
+
+### NIP-01: Basic Protocol
 
 1. **REQ**: For requesting notes with various filters:
    - `kinds`: Filter by event kind
@@ -92,6 +113,22 @@ The WebAssembly module implements the following NIP-01 message types:
 2. **EVENT**: For sending events from the relay to clients
 
 3. **CLOSE**: For closing subscriptions
+
+### NIP-119: AND Tag Queries
+
+This implementation supports AND conditions for tag filtering using the '&' prefix:
+
+- `&t`: Match events with ALL specified 't' tag values
+- `&e`: Match events with ALL specified 'e' tag values
+- etc.
+
+This allows for more precise filtering by requiring that all specified values for a given tag type must be present, rather than just any one of them.
+
+Example usage in a test script:
+```javascript
+// Request events that have both 'value1' AND 'value2' as 't' tags
+const reqMsg = ['REQ', '1:', {'&t': ['value1', 'value2']}];
+```
 
 ## Project Structure
 
