@@ -42,45 +42,77 @@ async function loadCassettes(): Promise<Cassette[]> {
   const cassettes: Cassette[] = [];
   
   try {
-    // First, try to load SandwichsFavs module directly
-    try {
-      console.log(`Loading SandwichsFavs module directly`);
-      const { SandwichsFavs, default: initWasm } = await import('./wasm/sandwichs_favs.js');
-      
-      // Initialize the WASM module
-      await initWasm();
-      
-      console.log(`SandwichsFavs module loaded, checking for describe method`);
-      
-      if (typeof SandwichsFavs.describe === 'function') {
-        const description = SandwichsFavs.describe();
-        console.log(`SandwichsFavs description: ${description}`);
-        
-        // Create the cassette object
-        cassettes.push({
-          name: 'sandwichs_favs',
-          instance: {
-            SandwichsFavs,
-            req: SandwichsFavs.req.bind(SandwichsFavs),
-            close: SandwichsFavs.close.bind(SandwichsFavs)
-          },
-          schemas: {
-            incoming: [{ type: "array" }],
-            outgoing: [{ type: "array" }]
-          }
-        });
-        
-        console.log(`Successfully loaded SandwichsFavs module directly`);
+    // Array of cassettes to load directly
+    const directCassettes = [
+      {
+        name: 'sandwichs_favs',
+        jsFile: './wasm/sandwichs_favs.js',
+        exportName: 'SandwichsFavs'
+      },
+      {
+        name: 'sandwich_notes',
+        jsFile: './wasm/SandwichNotes.js',
+        exportName: 'SandwichNotes'
+      },
+      {
+        name: 'custom_cassette',
+        jsFile: './wasm/custom_cassette.js',
+        exportName: 'CustomCassette'
       }
-    } catch (err) {
-      console.error(`Failed to directly load SandwichsFavs:`, err);
-      console.log(`Falling back to directory scanning method`);
+    ];
+    
+    // Load each cassette directly
+    for (const cassetteInfo of directCassettes) {
+      try {
+        console.log(`Loading ${cassetteInfo.name} module directly from ${cassetteInfo.jsFile}`);
+        
+        // Try to import the module
+        const importedModule = await import(cassetteInfo.jsFile);
+        const moduleExport = importedModule[cassetteInfo.exportName];
+        const initWasm = importedModule.default;
+        
+        // Initialize the WASM module if needed
+        if (typeof initWasm === 'function') {
+          await initWasm();
+        }
+        
+        if (moduleExport && typeof moduleExport.describe === 'function') {
+          console.log(`${cassetteInfo.name} module loaded, checking for describe method`);
+          const description = moduleExport.describe();
+          console.log(`${cassetteInfo.name} description: ${description}`);
+          
+          // Create the cassette object
+          cassettes.push({
+            name: cassetteInfo.name,
+            instance: {
+              [cassetteInfo.exportName]: moduleExport,
+              req: moduleExport.req?.bind(moduleExport),
+              close: moduleExport.close?.bind(moduleExport)
+            },
+            schemas: {
+              incoming: [{ type: "array" }],
+              outgoing: [{ type: "array" }]
+            }
+          });
+          
+          console.log(`Successfully loaded ${cassetteInfo.name} module directly`);
+        } else {
+          console.warn(`Module ${cassetteInfo.name} found but does not have a describe method`);
+        }
+      } catch (err) {
+        console.error(`Failed to directly load ${cassetteInfo.name}:`, err);
+      }
+    }
+    
+    // If no cassettes were loaded directly, fall back to directory scanning
+    if (cassettes.length === 0) {
+      console.log(`No cassettes loaded directly, falling back to directory scanning method`);
       
       // Get all files and directories in WASM_DIR
-      const dirents = readdirSync(WASM_DIR, { withFileTypes: true });
+      const fileEntries = readdirSync(WASM_DIR, { withFileTypes: true });
       
       // Check for direct .js files (not _bg.js files) in the WASM_DIR
-      const jsModules = dirents
+      const jsModules = fileEntries
         .filter(dirent => !dirent.isDirectory() && dirent.name.endsWith('.js') && !dirent.name.endsWith('_bg.js'));
       
       // Load modules from direct .js files
@@ -108,7 +140,9 @@ async function loadCassettes(): Promise<Cassette[]> {
               cassetteName,                              // sandwichs_favs
               cassetteName.charAt(0).toUpperCase() + cassetteName.slice(1), // Sandwichs_favs
               'SandwichsFavs',                          // SandwichsFavs
-              'sandwichsFavs'                           // sandwichsFavs
+              'sandwichsFavs',                           // sandwichsFavs
+              'SandwichNotes',                          // SandwichNotes
+              'CustomCassette'                          // CustomCassette
             ];
             
             let moduleFound = false;
@@ -167,48 +201,48 @@ async function loadCassettes(): Promise<Cassette[]> {
           console.error(`Failed to load cassette file ${jsModule.name}:`, err);
         }
       }
-    }
-    
-    // Also process directories for backward compatibility
-    const dirents = readdirSync(WASM_DIR, { withFileTypes: true });
-    for (const dirent of dirents) {
-      if (dirent.isDirectory()) {
-        const cassetteName = dirent.name;
-        const cassettePath = join(WASM_DIR, cassetteName);
-        
-        try {
-          console.log(`Loading cassette from directory: ${cassetteName}`);
-          
-          // Import the cassette module
-          const module = await import(join(cassettePath, "index.js"));
-          
-          // Try to load schemas if available
-          let incomingSchemas: any[] = [];
-          let outgoingSchemas: any[] = [];
+      
+      // Also process directories for backward compatibility
+      const directoryEntries = readdirSync(WASM_DIR, { withFileTypes: true });
+      for (const dirent of directoryEntries) {
+        if (dirent.isDirectory()) {
+          const cassetteName = dirent.name;
+          const cassettePath = join(WASM_DIR, cassetteName);
           
           try {
-            const schemaPath = join(cassettePath, "schemas.json");
-            if (existsSync(schemaPath)) {
-              const schemas = JSON.parse(readFileSync(schemaPath, 'utf-8'));
-              incomingSchemas = schemas.incoming || [];
-              outgoingSchemas = schemas.outgoing || [];
+            console.log(`Loading cassette from directory: ${cassetteName}`);
+            
+            // Import the cassette module
+            const module = await import(join(cassettePath, "index.js"));
+            
+            // Try to load schemas if available
+            let incomingSchemas: any[] = [];
+            let outgoingSchemas: any[] = [];
+            
+            try {
+              const schemaPath = join(cassettePath, "schemas.json");
+              if (existsSync(schemaPath)) {
+                const schemas = JSON.parse(readFileSync(schemaPath, 'utf-8'));
+                incomingSchemas = schemas.incoming || [];
+                outgoingSchemas = schemas.outgoing || [];
+              }
+            } catch (err) {
+              console.warn(`Failed to load schemas for cassette ${cassetteName}:`, err);
             }
+            
+            cassettes.push({
+              name: cassetteName,
+              instance: module,
+              schemas: {
+                incoming: incomingSchemas,
+                outgoing: outgoingSchemas
+              }
+            });
+            
+            console.log(`Successfully loaded cassette: ${cassetteName}`);
           } catch (err) {
-            console.warn(`Failed to load schemas for cassette ${cassetteName}:`, err);
+            console.error(`Failed to load cassette ${cassetteName}:`, err);
           }
-          
-          cassettes.push({
-            name: cassetteName,
-            instance: module,
-            schemas: {
-              incoming: incomingSchemas,
-              outgoing: outgoingSchemas
-            }
-          });
-          
-          console.log(`Successfully loaded cassette: ${cassetteName}`);
-        } catch (err) {
-          console.error(`Failed to load cassette ${cassetteName}:`, err);
         }
       }
     }
@@ -359,8 +393,23 @@ function handleReqMessage(ws: ServerWebSocket<WebSocketData>, message: any[]) {
         console.log(`Processing subscription with cassette: ${cassette.name}`);
         
         // Get the appropriate req function depending on the cassette structure
-        const reqFunction = cassette.instance.req || 
-                          (cassette.instance.SandwichsFavs && cassette.instance.SandwichsFavs.req);
+        let reqFunction = cassette.instance.req || 
+                          (cassette.instance.SandwichsFavs && cassette.instance.SandwichsFavs.req) ||
+                          (cassette.instance.SandwichNotes && cassette.instance.SandwichNotes.req) ||
+                          (cassette.instance.CustomCassette && cassette.instance.CustomCassette.req);
+        
+        if (!reqFunction) {
+          // Try to find the req function by checking all exports
+          const exportNames = Object.keys(cassette.instance);
+          for (const exportName of exportNames) {
+            const exportedValue = cassette.instance[exportName];
+            if (exportedValue && typeof exportedValue.req === 'function') {
+              console.log(`Found req function in export: ${exportName}`);
+              reqFunction = exportedValue.req.bind(exportedValue);
+              break;
+            }
+          }
+        }
         
         // Handle differently based on the cassette's available methods
         if (reqFunction) {
@@ -435,8 +484,23 @@ function handleCloseMessage(ws: ServerWebSocket<WebSocketData>, message: any[]) 
   // Notify cassettes about the closed subscription
   for (const cassette of cassettes) {
     // Get the appropriate close function depending on the cassette structure
-    const closeFunction = cassette.instance.close || 
-                        (cassette.instance.SandwichsFavs && cassette.instance.SandwichsFavs.close);
+    let closeFunction = cassette.instance.close || 
+                      (cassette.instance.SandwichsFavs && cassette.instance.SandwichsFavs.close) ||
+                      (cassette.instance.SandwichNotes && cassette.instance.SandwichNotes.close) ||
+                      (cassette.instance.CustomCassette && cassette.instance.CustomCassette.close);
+    
+    if (!closeFunction) {
+      // Try to find the close function by checking all exports
+      const exportNames = Object.keys(cassette.instance);
+      for (const exportName of exportNames) {
+        const exportedValue = cassette.instance[exportName];
+        if (exportedValue && typeof exportedValue.close === 'function') {
+          console.log(`Found close function in export: ${exportName}`);
+          closeFunction = exportedValue.close.bind(exportedValue);
+          break;
+        }
+      }
+    }
     
     // For cassettes using the close method
     if (closeFunction) {
@@ -448,25 +512,17 @@ function handleCloseMessage(ws: ServerWebSocket<WebSocketData>, message: any[]) 
         const responseStr = closeFunction(closeMessage);
         console.log(`Close response from ${cassette.name}:`, responseStr);
         
-        // Parse and handle response if needed
         try {
+          // Parse the response and send it if it's not empty
           const response = JSON.parse(responseStr);
-          if (response.notice) {
-            ws.send(JSON.stringify(response.notice));
+          if (response) {
+            ws.send(JSON.stringify(response));
           }
-        } catch (parseError) {
-          console.error(`Error parsing close response: ${parseError}`);
+        } catch (error) {
+          console.warn(`Error parsing close response from ${cassette.name}:`, error);
         }
       } catch (error) {
         console.error(`Error in cassette ${cassette.name} close method:`, error);
-      }
-    } 
-    // For cassettes using the closeSubscription method
-    else if (cassette.instance.closeSubscription) {
-      try {
-        cassette.instance.closeSubscription(subscriptionId);
-      } catch (error) {
-        console.error(`Error closing subscription in cassette ${cassette.name}:`, error);
       }
     }
   }
