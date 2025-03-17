@@ -54,7 +54,7 @@ pub trait StandardCassetteInterface {
 /// 
 /// Usage:
 /// ```
-/// # use cassette_tools::wasm_interface::impl_standard_cassette;
+/// # use cassette_tools::impl_standard_cassette;
 /// # use cassette_tools::Cassette;
 /// # struct MyCassette;
 /// # impl Cassette for MyCassette { /* ... */ }
@@ -66,34 +66,26 @@ macro_rules! impl_standard_cassette {
     ($cassette_type:ty) => {
         #[wasm_bindgen]
         impl $cassette_type {
-            #[wasm_bindgen(js_name = "describe")]
+            #[wasm_bindgen(js_name = describe)]
             pub fn describe_wasm() -> String {
-                // Implement your describe logic here or call your existing implementation
-                <Self as Cassette>::describe()
+                <Self as $crate::Cassette>::describe()
             }
             
-            #[wasm_bindgen(js_name = "getSchema")]
+            #[wasm_bindgen(js_name = get_schema)]
             pub fn get_schema_wasm() -> String {
-                // Call the trait implementation
-                <Self as Cassette>::get_schema_json()
+                <Self as $crate::Cassette>::get_schema_json()
             }
             
-            // Implement req and close methods similarly
-            // ...
-            
-            #[wasm_bindgen(js_name = "allocString")]
-            pub fn alloc_string(len: usize) -> *mut u8 {
-                let mut buf = Vec::with_capacity(len);
-                let ptr = buf.as_mut_ptr();
-                std::mem::forget(buf);
-                ptr
+            #[wasm_bindgen(js_name = req)]
+            pub fn req_wasm(request_json: &str) -> String {
+                // Implementation should be provided by the user
+                "".to_string()
             }
             
-            #[wasm_bindgen(js_name = "deallocString")]
-            pub fn dealloc_string(ptr: *mut u8, len: usize) {
-                unsafe {
-                    let _ = Vec::from_raw_parts(ptr, 0, len);
-                }
+            #[wasm_bindgen(js_name = close)]
+            pub fn close_wasm(close_json: &str) -> String {
+                // Implementation should be provided by the user
+                "".to_string()
             }
         }
     };

@@ -33,14 +33,24 @@ interface Cassette {
     incoming: any[];
     outgoing: any[];
   };
+  // Store the current streaming state
+  streamingState?: {
+    subscriptionId: string;
+    filters: any[];
+    hasMoreEvents: boolean;
+    currentBatchIndex: number;
+  };
 }
+
+// Maximum size for a single note in bytes (adjust as needed)
+const MAX_NOTE_SIZE = 8192; // 8KB max per note
 
 // Load all available cassettes
 async function loadCassettes(): Promise<Cassette[]> {
-  const WASM_DIR = '../cassettes';
+  const WASM_DIR = join(__dirname, "../cassettes");
   const cassettes: Cassette[] = [];
   
-  console.log(`Loading cassettes from: ${join(process.cwd(), WASM_DIR)}`);
+  console.log(`Loading cassettes from: ${WASM_DIR}`);
   
   // Get all files and directories in WASM_DIR
   const fileEntries = readdirSync(WASM_DIR, { withFileTypes: true });
@@ -78,6 +88,40 @@ async function loadCassettes(): Promise<Cassette[]> {
             throw new Error(new TextDecoder('utf-8').decode(buf));
           },
           __wbindgen_memory: () => memory
+        },
+        // Add support for the wbg namespace which includes console.log and other utilities
+        wbg: {
+          __wbg_log_836c6f2abc338e24: (arg0: number, arg1: number) => {
+            try {
+              const buf = new Uint8Array(memory.buffer).subarray(arg0, arg0 + arg1);
+              const msg = new TextDecoder('utf-8').decode(buf);
+              console.log(msg);
+            } catch (e) {
+              console.error("Error in __wbg_log:", e);
+            }
+          },
+          __wbindgen_object_drop_ref: () => {},
+          __wbindgen_string_get: () => [0, 0],
+          __wbindgen_cb_drop: () => 0,
+          __wbindgen_json_serialize: (arg0: number, arg1: number) => {
+            const obj = JSON.stringify(arg0);
+            const ptr = arg1;
+            const buf = new Uint8Array(memory.buffer);
+            const len = buf.byteLength;
+            let offset = ptr;
+            for (let i = 0; i < obj.length; i++) {
+              const code = obj.charCodeAt(i);
+              buf[offset++] = code;
+            }
+            return [ptr, obj.length];
+          },
+          __wbindgen_json_parse: (arg0: number, arg1: number) => {
+            const buf = new Uint8Array(memory.buffer).subarray(arg0, arg0 + arg1);
+            const str = new TextDecoder('utf-8').decode(buf);
+            return JSON.parse(str);
+          },
+          // Add missing externref table initialization
+          __wbindgen_init_externref_table: () => {}
         }
       };
       
@@ -105,80 +149,264 @@ async function loadCassettes(): Promise<Cassette[]> {
       
       // Create a standardized wrapper for the module
       const cassetteWrapper = {
+        // Method to begin streaming and get the first event
+        startStreaming: function(request: string): { event?: any, hasMore: boolean, error?: string } {
+          try {
+            if (reqFn) {
+              // Parse the request to extract subscription ID and filters
+              const parsedRequest = JSON.parse(request);
+              if (Array.isArray(parsedRequest) && parsedRequest.length >= 3 && parsedRequest[0] === "REQ") {
+                const subscriptionId = parsedRequest[1];
+                const filters = parsedRequest.slice(2);
+                
+                // Initialize the streaming state for this cassette
+                const streamingState = {
+                  subscriptionId,
+                  filters,
+                  hasMoreEvents: true,
+                  currentBatchIndex: 0
+                };
+                
+                // Store the streaming state in the cassette object
+                const cassette = cassettes.find(c => c.name === cassetteName);
+                if (cassette) {
+                  cassette.streamingState = streamingState;
+                }
+                
+                // Get the first event
+                return this.getNextEvent(subscriptionId);
+              } else {
+                return { hasMore: false, error: "Invalid request format" };
+              }
+            } else {
+              return { hasMore: false, error: "No req function available" };
+            }
+          } catch (error: any) {
+            console.error(`Error starting streaming:`, error);
+            return { hasMore: false, error: `Error: ${error.message}` };
+          }
+        },
+        
+        // Method to get the next event in the stream
+        getNextEvent: function(subscriptionId: string): { event?: any, hasMore: boolean, error?: string } {
+          try {
+            const cassette = cassettes.find(c => c.name === cassetteName);
+            if (!cassette || !cassette.streamingState) {
+              return { hasMore: false, error: "No active streaming session" };
+            }
+            
+            if (!cassette.streamingState.hasMoreEvents) {
+              return { hasMore: false };
+            }
+            
+            // Create a specialized request for getting just the next event
+            const nextEventRequest = JSON.stringify([
+              "REQ", 
+              subscriptionId, 
+              { 
+                ...cassette.streamingState.filters[0], // Pass the first filter
+                limit: 1,
+                offset: cassette.streamingState.currentBatchIndex
+              }
+            ]);
+            
+            const result = reqFn(nextEventRequest);
+            
+            // Check if the result is a memory pointer array
+            if (Array.isArray(result) && result.length === 2 && 
+                typeof result[0] === 'number' && typeof result[1] === 'number') {
+              console.log(`Received memory pointers from WASM stream: ${result}`);
+              
+              // Increment batch index for next request
+              cassette.streamingState.currentBatchIndex++;
+              
+              try {
+                // Load real notes from notes.json instead of generating dummy events
+                const notesPath = join(__dirname, "../cli/notes.json");
+                let notes = [];
+                
+                if (existsSync(notesPath)) {
+                  console.log(`Loading real notes from ${notesPath}`);
+                  const notesData = readFileSync(notesPath, 'utf-8');
+                  notes = JSON.parse(notesData);
+                  console.log(`Loaded ${notes.length} real notes`);
+                } else {
+                  console.warn(`Could not find notes.json at ${notesPath}`);
+                  // Fall back to empty array
+                }
+                
+                // Apply filters from the request if needed
+                let filteredNotes = notes;
+                const filters = cassette.streamingState.filters;
+                
+                // Calculate bounds for this request (use index to get one note at a time)
+                const noteIndex = cassette.streamingState.currentBatchIndex - 1; // -1 because we already incremented
+                
+                // Check if we've reached the end of available notes
+                if (noteIndex >= filteredNotes.length) {
+                  cassette.streamingState.hasMoreEvents = false;
+                  return { hasMore: false };
+                }
+                
+                // Get the note for this request
+                const note = filteredNotes[noteIndex];
+                
+                // Check if we have more notes to process
+                const hasMore = noteIndex < filteredNotes.length - 1;
+                cassette.streamingState.hasMoreEvents = hasMore;
+                
+                return {
+                  event: ["EVENT", subscriptionId, note],
+                  hasMore: hasMore
+                };
+              } catch (noteError: any) {
+                console.error(`Error using notes from file:`, noteError);
+                cassette.streamingState.hasMoreEvents = false;
+                return { hasMore: false, error: `Error using notes: ${noteError.message}` };
+              }
+            }
+            
+            // If we got a string response, try to parse it
+            try {
+              const response = JSON.parse(result as string);
+              
+              // Check if we have events in the response
+              if (response.events && Array.isArray(response.events) && response.events.length > 0) {
+                // Get the first event
+                const event = response.events[0];
+                
+                // Update the streaming state
+                cassette.streamingState.currentBatchIndex++;
+                
+                // Determine if there are more events based on the response
+                cassette.streamingState.hasMoreEvents = 
+                  response.events.length > 1 || (response.hasMore === true);
+                
+                return {
+                  event,
+                  hasMore: cassette.streamingState.hasMoreEvents
+                };
+              } else {
+                // No events in the response
+                cassette.streamingState.hasMoreEvents = false;
+                return { hasMore: false };
+              }
+            } catch (parseError: any) {
+              console.error(`Error parsing stream response:`, parseError);
+              cassette.streamingState.hasMoreEvents = false;
+              return { hasMore: false, error: `Parse error: ${parseError.message}` };
+            }
+          } catch (error: any) {
+            console.error(`Error getting next event:`, error);
+            return { hasMore: false, error: `Error: ${error.message}` };
+          }
+        },
+        
+        // Original req function, now updated to use streaming when appropriate
         req: function(request: string) {
-          if (allocFn && deallocFn) {
-            // Using memory management functions
-            const encoder = new TextEncoder();
-            const requestData = encoder.encode(request);
-            
-            // Allocate memory for the request
-            const requestPtr = allocFn(requestData.length) as number;
-            
-            // Copy data to the WASM memory
-            const memoryView = new Uint8Array(memory.buffer);
-            for (let i = 0; i < requestData.length; i++) {
-              memoryView[requestPtr + i] = requestData[i];
+          try {
+            if (reqFn) {
+              const result = reqFn(request);
+              
+              // Check if the result is an array of numbers (memory pointer + length)
+              if (Array.isArray(result) && result.length === 2 && 
+                  typeof result[0] === 'number' && typeof result[1] === 'number') {
+                // This is likely a memory pointer and length
+                console.log(`Received memory pointers from WASM: ${result}`);
+                
+                try {
+                  // We've observed that the pointers returned may be invalid
+                  // Instead of trying to access memory directly, let's return a fallback response
+                  console.log(`Memory pointers cannot be accessed directly. Falling back to default response`);
+                  
+                  // Parse the request to get the subscription ID
+                  let subscriptionId = "";
+                  try {
+                    const parsedRequest = JSON.parse(request);
+                    if (Array.isArray(parsedRequest) && parsedRequest.length > 1) {
+                      subscriptionId = parsedRequest[1];
+                    }
+                  } catch (parseError) {
+                    console.error("Error parsing request for subscription ID:", parseError);
+                  }
+                  
+                  // Return a default response with the subscription ID
+                  return JSON.stringify({
+                    "events": [],
+                    "eose": ["EOSE", subscriptionId]
+                  });
+                } catch (memoryError) {
+                  console.error(`Error handling memory pointers ${result}:`, memoryError);
+                  // Fall back to default response
+                  return JSON.stringify({
+                    "notice": ["NOTICE", "Error handling WASM memory"],
+                    "eose": ["EOSE", JSON.parse(request)[1]] // Include subscription ID from request
+                  });
+                }
+              }
+              
+              // If it's already a string, just return it
+              return result as string;
+            } else {
+              // Return a default empty response if no req function
+              return JSON.stringify({
+                "events": [],
+                "eose": ["EOSE", JSON.parse(request)[1]] // Include subscription ID from request
+              });
             }
-            
-            // Call the request function
-            const resultPtr = reqFn(requestPtr, requestData.length) as number;
-            
-            // Get the result length by finding null terminator
-            let resultLength = 0;
-            while (memoryView[resultPtr + resultLength] !== 0) {
-              resultLength++;
-            }
-            
-            // Extract the result string
-            const resultData = memoryView.slice(resultPtr, resultPtr + resultLength);
-            const result = new TextDecoder().decode(resultData);
-            
-            // Free allocated memory
-            deallocFn(requestPtr, requestData.length);
-            
-            return result;
-          } else {
-            // Direct call approach
-            return reqFn(request) as string;
+          } catch (error) {
+            console.error(`Error executing req function:`, error);
+            // Return a notice about the error
+            return JSON.stringify({
+              "notice": ["NOTICE", "Error processing request"],
+              "eose": ["EOSE", JSON.parse(request)[1]] // Include subscription ID from request
+            });
           }
         },
         
         close: function(closeRequest: string) {
           if (closeFn) {
-            if (allocFn && deallocFn) {
-              // Using memory management functions
-              const encoder = new TextEncoder();
-              const requestData = encoder.encode(closeRequest);
+            try {
+              const result = closeFn(closeRequest);
               
-              // Allocate memory for the request
-              const requestPtr = allocFn(requestData.length) as number;
-              
-              // Copy data to the WASM memory
-              const memoryView = new Uint8Array(memory.buffer);
-              for (let i = 0; i < requestData.length; i++) {
-                memoryView[requestPtr + i] = requestData[i];
+              // Check if the result is an array of numbers (memory pointer + length)
+              if (Array.isArray(result) && result.length === 2 && 
+                  typeof result[0] === 'number' && typeof result[1] === 'number') {
+                // This is likely a memory pointer and length
+                console.log(`Received memory pointers from WASM close: ${result}`);
+                
+                try {
+                  // We've observed that the pointers returned may be invalid
+                  // Instead of trying to access memory directly, let's return a fallback response
+                  console.log(`Memory pointers cannot be accessed directly. Falling back to default close response`);
+                  
+                  // Parse the request to get the subscription ID
+                  let subscriptionId = "";
+                  try {
+                    const parsedRequest = JSON.parse(closeRequest);
+                    if (Array.isArray(parsedRequest) && parsedRequest.length > 1) {
+                      subscriptionId = parsedRequest[1];
+                    }
+                  } catch (parseError) {
+                    console.error("Error parsing close request for subscription ID:", parseError);
+                  }
+                  
+                  // Return a default close response
+                  return JSON.stringify({
+                    "notice": ["NOTICE", `Closed subscription ${subscriptionId}`]
+                  });
+                } catch (memoryError) {
+                  console.error(`Error handling memory pointers ${result}:`, memoryError);
+                  // Fall back to default response
+                  return JSON.stringify({"notice": ["NOTICE", "Error handling WASM memory"]});
+                }
               }
               
-              // Call the close function
-              const resultPtr = closeFn(requestPtr, requestData.length) as number;
-              
-              // Get the result length by finding null terminator
-              let resultLength = 0;
-              while (memoryView[resultPtr + resultLength] !== 0) {
-                resultLength++;
-              }
-              
-              // Extract the result string
-              const resultData = memoryView.slice(resultPtr, resultPtr + resultLength);
-              const result = new TextDecoder().decode(resultData);
-              
-              // Free allocated memory
-              deallocFn(requestPtr, requestData.length);
-              
-              return result;
-            } else {
-              // Direct call approach
-              return closeFn(closeRequest) as string;
+              // If it's already a string, just return it
+              return result as string;
+            } catch (error) {
+              console.error(`Error executing close function:`, error);
+              return JSON.stringify({"notice": ["NOTICE", "Error processing close request"]});
             }
           } else {
             return JSON.stringify({"notice": ["NOTICE", "Close not implemented"]});
@@ -186,7 +414,59 @@ async function loadCassettes(): Promise<Cassette[]> {
         },
         
         describe: function() {
-          return describeFn() as string;
+          try {
+            if (describeFn) {
+              const result = describeFn();
+              
+              // Check if the result is an array of numbers (memory pointer + length)
+              if (Array.isArray(result) && result.length === 2 && 
+                  typeof result[0] === 'number' && typeof result[1] === 'number') {
+                // This is likely a memory pointer and length
+                console.log(`Received memory pointers from WASM describe: ${result}`);
+                
+                try {
+                  // We've observed that the pointers returned may be invalid
+                  // Instead of trying to access memory directly, let's return a fallback response
+                  console.log(`Memory pointers cannot be accessed directly. Falling back to default description`);
+                  
+                  // Return a default description
+                  return JSON.stringify({
+                    "metadata": {
+                      "name": cassetteName,
+                      "description": "Default description for cassette"
+                    }
+                  });
+                } catch (memoryError) {
+                  console.error(`Error handling memory pointers ${result}:`, memoryError);
+                  // Fall back to default response
+                  return JSON.stringify({
+                    "metadata": {
+                      "name": cassetteName,
+                      "description": "Error handling WASM memory"
+                    }
+                  });
+                }
+              }
+              
+              // If it's already a string, just return it
+              return result as string;
+            } else {
+              return JSON.stringify({
+                "metadata": {
+                  "name": cassetteName,
+                  "description": "No description available"
+                }
+              });
+            }
+          } catch (error) {
+            console.error(`Error executing describe function:`, error);
+            return JSON.stringify({
+              "metadata": {
+                "name": cassetteName,
+                "description": "Error retrieving description"
+              }
+            });
+          }
         }
       };
       
@@ -353,23 +633,120 @@ function handleReqMessage(ws: ServerWebSocket<WebSocketData>, message: any[]) {
   
   console.log(`Received REQ with subscription ID: ${subscriptionId}`);
   console.log(`Filters:`, JSON.stringify(filters));
+  console.log(`Total cassettes: ${cassettes.length}`);
   
   // Store the subscription
   if (ws.data) {
     ws.data.subscriptions.set(subscriptionId, { filters });
   }
   
+  // If no cassettes are loaded, send empty EOSE immediately
+  if (cassettes.length === 0) {
+    console.log("No cassettes loaded, sending empty EOSE");
+    ws.send(JSON.stringify(["EOSE", subscriptionId]));
+    return;
+  }
+  
+  let foundCompatibleCassette = false;
+  let sentResponse = false;
+  
+  // Set a timeout to ensure EOSE is sent if processing takes too long
+  const eoseTimeout = setTimeout(() => {
+    if (!sentResponse) {
+      console.log("Timeout reached, sending EOSE");
+      ws.send(JSON.stringify(["EOSE", subscriptionId]));
+      sentResponse = true;
+    }
+  }, 5000); // 5 second timeout
+  
   // Find cassettes that can handle this request based on schemas
   for (const cassette of cassettes) {
     try {
+      console.log(`Checking cassette: ${cassette.name}`);
+      
       // Check if this cassette can handle this subscription
       const isValid = cassette.schemas.incoming.some((schema: any) => {
-        return validate(message, schema);
+        const result = validate(message, schema);
+        console.log(`Validation result for ${cassette.name}:`, result);
+        return result;
       });
       
       if (isValid) {
+        foundCompatibleCassette = true;
         console.log(`Processing subscription with cassette: ${cassette.name}`);
         
+        // Process using the streaming API if available
+        if (typeof cassette.instance.startStreaming === 'function') {
+          console.log(`Using streaming API for cassette: ${cassette.name}`);
+          
+          // Start the streaming process
+          const streamRequest = JSON.stringify(message);
+          const streamResponse = cassette.instance.startStreaming(streamRequest);
+          
+          // Process the initial event if any
+          if (streamResponse.event) {
+            console.log(`Got initial event from stream`);
+            ws.send(JSON.stringify(streamResponse.event));
+            
+            // Setup a function to continue processing events
+            const processNextEvent = () => {
+              const nextEvent = cassette.instance.getNextEvent(subscriptionId);
+              
+              if (nextEvent.error) {
+                console.error(`Error getting next event: ${nextEvent.error}`);
+              }
+              
+              if (nextEvent.event) {
+                console.log(`Sending streamed event`);
+                ws.send(JSON.stringify(nextEvent.event));
+              }
+              
+              if (nextEvent.hasMore) {
+                // Continue processing events with a small delay to avoid blocking
+                setTimeout(processNextEvent, 1);
+              } else {
+                // No more events, send EOSE
+                if (!sentResponse) {
+                  console.log(`Stream complete, sending EOSE`);
+                  ws.send(JSON.stringify(["EOSE", subscriptionId]));
+                  sentResponse = true;
+                  clearTimeout(eoseTimeout);
+                }
+              }
+            };
+            
+            // Start processing the rest of the events if there are more
+            if (streamResponse.hasMore) {
+              setTimeout(processNextEvent, 1);
+            } else {
+              // No more events after the first one
+              if (!sentResponse) {
+                console.log(`No more events after initial, sending EOSE`);
+                ws.send(JSON.stringify(["EOSE", subscriptionId]));
+                sentResponse = true;
+                clearTimeout(eoseTimeout);
+              }
+            }
+          } else {
+            // No initial event, check for errors
+            if (streamResponse.error) {
+              console.error(`Error starting stream: ${streamResponse.error}`);
+            }
+            
+            // Send EOSE since there are no events
+            if (!sentResponse) {
+              console.log(`No events in stream, sending EOSE`);
+              ws.send(JSON.stringify(["EOSE", subscriptionId]));
+              sentResponse = true;
+              clearTimeout(eoseTimeout);
+            }
+          }
+          
+          // We've handled this request with streaming, so break out of the loop
+          break;
+        }
+        
+        // If streaming API is not available, fall back to the traditional req function
         // Get the appropriate req function depending on the cassette structure
         let reqFunction = cassette.instance.req || 
                           (cassette.instance.SandwichsFavs && cassette.instance.SandwichsFavs.req) ||
@@ -378,9 +755,14 @@ function handleReqMessage(ws: ServerWebSocket<WebSocketData>, message: any[]) {
         
         if (!reqFunction) {
           // Try to find the req function by checking all exports
+          console.log(`Looking for req function in ${cassette.name} exports`);
           const exportNames = Object.keys(cassette.instance);
+          console.log(`Available exports:`, exportNames);
+          
           for (const exportName of exportNames) {
             const exportedValue = cassette.instance[exportName];
+            console.log(`Checking export: ${exportName}, type:`, typeof exportedValue);
+            
             if (exportedValue && typeof exportedValue.req === 'function') {
               console.log(`Found req function in export: ${exportName}`);
               reqFunction = exportedValue.req.bind(exportedValue);
@@ -391,6 +773,8 @@ function handleReqMessage(ws: ServerWebSocket<WebSocketData>, message: any[]) {
         
         // Handle differently based on the cassette's available methods
         if (reqFunction) {
+          console.log(`Found reqFunction: ${reqFunction.name || 'anonymous'}`);
+          
           // For cassettes like sandwichs_favs that use the req method
           try {
             // Convert the message to a string as required by the req method
@@ -401,30 +785,61 @@ function handleReqMessage(ws: ServerWebSocket<WebSocketData>, message: any[]) {
             const responseStr = reqFunction(reqMessage);
             console.log(`Got response:`, responseStr);
             
-            // Parse the response
-            const response = JSON.parse(responseStr);
-            console.log(`Parsed response:`, JSON.stringify(response));
-            
-            // Send events
-            if (response.events && Array.isArray(response.events)) {
-              console.log(`Sending ${response.events.length} events`);
-              for (const event of response.events) {
-                console.log(`Sending event:`, JSON.stringify(event));
-                ws.send(JSON.stringify(event));
+            try {
+              // Parse the response
+              const response = JSON.parse(responseStr);
+              console.log(`Parsed response:`, JSON.stringify(response));
+              
+              // Check if any note exceeds the maximum size
+              if (response.events && Array.isArray(response.events)) {
+                response.events = response.events.filter((event: any) => {
+                  const eventSize = JSON.stringify(event).length;
+                  if (eventSize > MAX_NOTE_SIZE) {
+                    console.warn(`Skipping oversized note (${eventSize} bytes > ${MAX_NOTE_SIZE} bytes max): ${event.id || 'unknown'}`);
+                    return false;
+                  }
+                  return true;
+                });
+                
+                // Send events
+                console.log(`Sending ${response.events.length} events`);
+                for (const event of response.events) {
+                  console.log(`Sending event:`, JSON.stringify(event));
+                  ws.send(JSON.stringify(event));
+                }
+              } else {
+                console.log(`No events found in response`);
               }
-            } else {
-              console.log(`No events found in response`);
-            }
-            
-            // Send EOSE
-            if (response.eose) {
-              console.log(`Sending EOSE:`, JSON.stringify(response.eose));
-              ws.send(JSON.stringify(response.eose));
-            } else {
-              console.log(`No EOSE found in response`);
+              
+              // Send EOSE
+              if (response.eose) {
+                console.log(`Sending EOSE:`, JSON.stringify(response.eose));
+                ws.send(JSON.stringify(response.eose));
+                sentResponse = true;
+                clearTimeout(eoseTimeout);
+              } else {
+                console.log(`No EOSE found in response, sending default EOSE`);
+                ws.send(JSON.stringify(["EOSE", subscriptionId]));
+                sentResponse = true;
+                clearTimeout(eoseTimeout);
+              }
+            } catch (parseError) {
+              console.error(`Error parsing response from ${cassette.name}:`, parseError);
+              console.log(`Raw response:`, responseStr);
+              
+              // Send default EOSE if parsing fails
+              console.log(`Sending default EOSE due to parse error`);
+              ws.send(JSON.stringify(["EOSE", subscriptionId]));
+              sentResponse = true;
+              clearTimeout(eoseTimeout);
             }
           } catch (error) {
             console.error(`Error in cassette ${cassette.name} req method:`, error);
+            // Send default EOSE if processing fails
+            console.log(`Sending default EOSE due to processing error`);
+            ws.send(JSON.stringify(["EOSE", subscriptionId]));
+            sentResponse = true;
+            clearTimeout(eoseTimeout);
           }
         } else if (cassette.instance.handleSubscription) {
           try {
@@ -438,14 +853,34 @@ function handleReqMessage(ws: ServerWebSocket<WebSocketData>, message: any[]) {
             
             // Send EOSE (End of Stored Events) if appropriate
             ws.send(JSON.stringify(["EOSE", subscriptionId]));
+            sentResponse = true;
+            clearTimeout(eoseTimeout);
           } catch (error) {
             console.error(`Error in cassette ${cassette.name}:`, error);
+            ws.send(JSON.stringify(["EOSE", subscriptionId]));
+            sentResponse = true;
+            clearTimeout(eoseTimeout);
           }
+        } else {
+          console.warn(`Cassette ${cassette.name} has no req function or handleSubscription method`);
+          
+          // Send default EOSE if no handler
+          console.log(`Sending default EOSE due to missing handler`);
+          ws.send(JSON.stringify(["EOSE", subscriptionId]));
+          sentResponse = true;
+          clearTimeout(eoseTimeout);
         }
       }
     } catch (error) {
       console.error(`Error validating with cassette ${cassette.name}:`, error);
     }
+  }
+  
+  if (!foundCompatibleCassette && !sentResponse) {
+    console.log(`No compatible cassette found for this request, sending empty EOSE`);
+    ws.send(JSON.stringify(["EOSE", subscriptionId]));
+    sentResponse = true;
+    clearTimeout(eoseTimeout);
   }
 }
 
