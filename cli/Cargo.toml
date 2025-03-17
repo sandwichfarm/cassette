@@ -21,5 +21,5 @@ clap = { version = "4.4", features = ["derive"] }
 anyhow = "1.0"
 tempfile = "3.8"
 handlebars = "4.3"
-uuid = { version = "1.4", features = ["v4"] }
+uuid = { version = "1.4", features = ["v4", "js"] }
 chrono = "0.4"

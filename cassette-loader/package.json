@@ -1,0 +1,47 @@
+{
+  "name": "cassette-loader",
+  "version": "1.0.0",
+  "description": "WASM cassette loader for Nostr Cassettes",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build",
+    "test": "node test.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./browser": {
+      "import": "./dist/browser.js",
+      "require": "./dist/browser.js",
+      "types": "./dist/browser.d.ts"
+    }
+  },
+  "keywords": [
+    "nostr",
+    "wasm",
+    "cassette"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "tslib": "^2.6.2",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.1",
+    "@types/webassembly-js-api": "^0.0.3",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.3.3"
+  }
+}

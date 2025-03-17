@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "test": "bun test",
-    "build:wasm": "cd ../sandwichs-favs && cargo build --target wasm32-unknown-unknown && cd ../boombox && bun scripts/process-wasm.js",
+    "build:wasm": "cd ../sandwichs-favs && cargo build --target wasm32-unknown-unknown && cd .. && bun boombox/scripts/process-wasm.js",
     "update:bindings": "bun scripts/update-wasm-bindings.js"
   },
   "devDependencies": {

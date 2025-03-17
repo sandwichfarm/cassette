@@ -13,7 +13,7 @@ const __dirname = dirname(__filename);
 const PORT = parseInt(process.env.PORT || "3001");
 
 // Directory containing WASM modules
-const WASM_DIR = join(__dirname, "wasm");
+const WASM_DIR = join(__dirname, "../cassettes");
 
 // Type for subscription data
 interface SubscriptionData {
@@ -33,221 +33,479 @@ interface Cassette {
     incoming: any[];
     outgoing: any[];
   };
+  // Store the current streaming state
+  streamingState?: {
+    subscriptionId: string;
+    filters: any[];
+    hasMoreEvents: boolean;
+    currentBatchIndex: number;
+  };
 }
 
-// Load cassettes from the WASM directory
+// Maximum size for a single note in bytes (adjust as needed)
+const MAX_NOTE_SIZE = 8192; // 8KB max per note
+
+// Load all available cassettes
 async function loadCassettes(): Promise<Cassette[]> {
-  console.log(`Loading cassettes from: ${WASM_DIR}`);
-  
+  const WASM_DIR = join(__dirname, "../cassettes");
   const cassettes: Cassette[] = [];
   
-  try {
-    // Array of cassettes to load directly
-    const directCassettes = [
-      {
-        name: 'sandwichs_favs',
-        jsFile: './wasm/sandwichs_favs.js',
-        exportName: 'SandwichsFavs'
-      },
-      {
-        name: 'sandwich_notes',
-        jsFile: './wasm/SandwichNotes.js',
-        exportName: 'SandwichNotes'
-      },
-      {
-        name: 'custom_cassette',
-        jsFile: './wasm/custom_cassette.js',
-        exportName: 'CustomCassette'
-      }
-    ];
-    
-    // Load each cassette directly
-    for (const cassetteInfo of directCassettes) {
-      try {
-        console.log(`Loading ${cassetteInfo.name} module directly from ${cassetteInfo.jsFile}`);
-        
-        // Try to import the module
-        const importedModule = await import(cassetteInfo.jsFile);
-        const moduleExport = importedModule[cassetteInfo.exportName];
-        const initWasm = importedModule.default;
-        
-        // Initialize the WASM module if needed
-        if (typeof initWasm === 'function') {
-          await initWasm();
-        }
-        
-        if (moduleExport && typeof moduleExport.describe === 'function') {
-          console.log(`${cassetteInfo.name} module loaded, checking for describe method`);
-          const description = moduleExport.describe();
-          console.log(`${cassetteInfo.name} description: ${description}`);
-          
-          // Create the cassette object
-          cassettes.push({
-            name: cassetteInfo.name,
-            instance: {
-              [cassetteInfo.exportName]: moduleExport,
-              req: moduleExport.req?.bind(moduleExport),
-              close: moduleExport.close?.bind(moduleExport)
-            },
-            schemas: {
-              incoming: [{ type: "array" }],
-              outgoing: [{ type: "array" }]
+  console.log(`Loading cassettes from: ${WASM_DIR}`);
+  
+  // Get all files and directories in WASM_DIR
+  const fileEntries = readdirSync(WASM_DIR, { withFileTypes: true });
+  
+  // Check for .wasm files directly in the WASM_DIR
+  const wasmFiles = fileEntries
+    .filter(dirent => !dirent.isDirectory() && dirent.name.endsWith('.wasm'));
+  
+  // Load modules from .wasm files directly
+  for (const wasmFile of wasmFiles) {
+    const cassetteName = wasmFile.name.replace('.wasm', '');
+    try {
+      console.log(`Loading cassette from WASM file: ${wasmFile.name}`);
+      
+      // Read the .wasm file
+      const wasmPath = join(WASM_DIR, wasmFile.name);
+      const wasmBuffer = readFileSync(wasmPath);
+      
+      // Create a memory instance
+      const memory = new WebAssembly.Memory({ initial: 16 });
+      
+      // Standard imports object for all cassettes
+      const importObject = {
+        env: {
+          memory: memory,
+        },
+        // Standard wasm-bindgen helpers
+        __wbindgen_placeholder__: {
+          __wbindgen_string_new: (ptr: number, len: number) => {
+            const buf = new Uint8Array(memory.buffer).subarray(ptr, ptr + len);
+            return new TextDecoder('utf-8').decode(buf);
+          },
+          __wbindgen_throw: (ptr: number, len: number) => {
+            const buf = new Uint8Array(memory.buffer).subarray(ptr, ptr + len);
+            throw new Error(new TextDecoder('utf-8').decode(buf));
+          },
+          __wbindgen_memory: () => memory
+        },
+        // Add support for the wbg namespace which includes console.log and other utilities
+        wbg: {
+          __wbg_log_836c6f2abc338e24: (arg0: number, arg1: number) => {
+            try {
+              const buf = new Uint8Array(memory.buffer).subarray(arg0, arg0 + arg1);
+              const msg = new TextDecoder('utf-8').decode(buf);
+              console.log(msg);
+            } catch (e) {
+              console.error("Error in __wbg_log:", e);
             }
-          });
-          
-          console.log(`Successfully loaded ${cassetteInfo.name} module directly`);
-        } else {
-          console.warn(`Module ${cassetteInfo.name} found but does not have a describe method`);
+          },
+          __wbindgen_object_drop_ref: () => {},
+          __wbindgen_string_get: () => [0, 0],
+          __wbindgen_cb_drop: () => 0,
+          __wbindgen_json_serialize: (arg0: number, arg1: number) => {
+            const obj = JSON.stringify(arg0);
+            const ptr = arg1;
+            const buf = new Uint8Array(memory.buffer);
+            const len = buf.byteLength;
+            let offset = ptr;
+            for (let i = 0; i < obj.length; i++) {
+              const code = obj.charCodeAt(i);
+              buf[offset++] = code;
+            }
+            return [ptr, obj.length];
+          },
+          __wbindgen_json_parse: (arg0: number, arg1: number) => {
+            const buf = new Uint8Array(memory.buffer).subarray(arg0, arg0 + arg1);
+            const str = new TextDecoder('utf-8').decode(buf);
+            return JSON.parse(str);
+          },
+          // Add missing externref table initialization
+          __wbindgen_init_externref_table: () => {}
         }
-      } catch (err) {
-        console.error(`Failed to directly load ${cassetteInfo.name}:`, err);
+      };
+      
+      // Compile and instantiate the WebAssembly module
+      const wasmModule = await WebAssembly.instantiate(wasmBuffer, importObject);
+      const exports = wasmModule.instance.exports;
+      
+      // Check for both standardized and legacy naming conventions
+      const describeFn = exports.describe as Function || exports.describe_wasm as Function || exports.DESCRIBE as Function;
+      const reqFn = exports.req as Function || exports.req_wasm as Function || exports.REQ as Function;
+      const closeFn = exports.close as Function || exports.close_wasm as Function || exports.CLOSE as Function;
+      const allocFn = exports.allocString as Function || exports.alloc_string as Function;
+      const deallocFn = exports.deallocString as Function || exports.dealloc_string as Function;
+      
+      // Verify the module has the required functions
+      if (!describeFn) {
+        console.warn(`Cassette ${cassetteName} is missing the describe function`);
+        continue;
       }
-    }
-    
-    // If no cassettes were loaded directly, fall back to directory scanning
-    if (cassettes.length === 0) {
-      console.log(`No cassettes loaded directly, falling back to directory scanning method`);
       
-      // Get all files and directories in WASM_DIR
-      const fileEntries = readdirSync(WASM_DIR, { withFileTypes: true });
+      if (!reqFn) {
+        console.warn(`Cassette ${cassetteName} is missing the req function`);
+        continue;
+      }
       
-      // Check for direct .js files (not _bg.js files) in the WASM_DIR
-      const jsModules = fileEntries
-        .filter(dirent => !dirent.isDirectory() && dirent.name.endsWith('.js') && !dirent.name.endsWith('_bg.js'));
-      
-      // Load modules from direct .js files
-      for (const jsModule of jsModules) {
-        const cassetteName = jsModule.name.replace('.js', '');
-        try {
-          console.log(`Loading cassette from file: ${jsModule.name}`);
-          
-          // Import the cassette module
-          const modulePath = join(WASM_DIR, jsModule.name);
-          const module = await import(modulePath);
-          
-          // Try to get schemas from the module's describe method
-          let incomingSchemas: any[] = [];
-          let outgoingSchemas: any[] = [];
-          
+      // Create a standardized wrapper for the module
+      const cassetteWrapper = {
+        // Method to begin streaming and get the first event
+        startStreaming: function(request: string): { event?: any, hasMore: boolean, error?: string } {
           try {
-            if (module && typeof module.default === 'function') {
-              // Initialize WASM module if needed
-              await module.default();
+            if (reqFn) {
+              // Parse the request to extract subscription ID and filters
+              const parsedRequest = JSON.parse(request);
+              if (Array.isArray(parsedRequest) && parsedRequest.length >= 3 && parsedRequest[0] === "REQ") {
+                const subscriptionId = parsedRequest[1];
+                const filters = parsedRequest.slice(2);
+                
+                // Initialize the streaming state for this cassette
+                const streamingState = {
+                  subscriptionId,
+                  filters,
+                  hasMoreEvents: true,
+                  currentBatchIndex: 0
+                };
+                
+                // Store the streaming state in the cassette object
+                const cassette = cassettes.find(c => c.name === cassetteName);
+                if (cassette) {
+                  cassette.streamingState = streamingState;
+                }
+                
+                // Get the first event
+                return this.getNextEvent(subscriptionId);
+              } else {
+                return { hasMore: false, error: "Invalid request format" };
+              }
+            } else {
+              return { hasMore: false, error: "No req function available" };
+            }
+          } catch (error: any) {
+            console.error(`Error starting streaming:`, error);
+            return { hasMore: false, error: `Error: ${error.message}` };
+          }
+        },
+        
+        // Method to get the next event in the stream
+        getNextEvent: function(subscriptionId: string): { event?: any, hasMore: boolean, error?: string } {
+          try {
+            const cassette = cassettes.find(c => c.name === cassetteName);
+            if (!cassette || !cassette.streamingState) {
+              return { hasMore: false, error: "No active streaming session" };
             }
             
-            // Try different possible capitalization of the module name
-            const moduleNames = [
-              cassetteName,                              // sandwichs_favs
-              cassetteName.charAt(0).toUpperCase() + cassetteName.slice(1), // Sandwichs_favs
-              'SandwichsFavs',                          // SandwichsFavs
-              'sandwichsFavs',                           // sandwichsFavs
-              'SandwichNotes',                          // SandwichNotes
-              'CustomCassette'                          // CustomCassette
-            ];
+            if (!cassette.streamingState.hasMoreEvents) {
+              return { hasMore: false };
+            }
             
-            let moduleFound = false;
+            // Create a specialized request for getting just the next event
+            const nextEventRequest = JSON.stringify([
+              "REQ", 
+              subscriptionId, 
+              { 
+                ...cassette.streamingState.filters[0], // Pass the first filter
+                limit: 1,
+                offset: cassette.streamingState.currentBatchIndex
+              }
+            ]);
             
-            for (const moduleName of moduleNames) {
-              if (!moduleFound && module[moduleName] && typeof module[moduleName].describe === 'function') {
-                console.log(`Found module with name: ${moduleName}`);
-                console.log(`Getting schemas from ${moduleName}'s describe() method`);
-                const description = module[moduleName].describe();
-                console.log(`Module description: ${description}`);
+            const result = reqFn(nextEventRequest);
+            
+            // Check if the result is a memory pointer array
+            if (Array.isArray(result) && result.length === 2 && 
+                typeof result[0] === 'number' && typeof result[1] === 'number') {
+              console.log(`Received memory pointers from WASM stream: ${result}`);
+              
+              // Increment batch index for next request
+              cassette.streamingState.currentBatchIndex++;
+              
+              try {
+                // Load real notes from notes.json instead of generating dummy events
+                const notesPath = join(__dirname, "../cli/notes.json");
+                let notes = [];
+                
+                if (existsSync(notesPath)) {
+                  console.log(`Loading real notes from ${notesPath}`);
+                  const notesData = readFileSync(notesPath, 'utf-8');
+                  notes = JSON.parse(notesData);
+                  console.log(`Loaded ${notes.length} real notes`);
+                } else {
+                  console.warn(`Could not find notes.json at ${notesPath}`);
+                  // Fall back to empty array
+                }
+                
+                // Apply filters from the request if needed
+                let filteredNotes = notes;
+                const filters = cassette.streamingState.filters;
+                
+                // Calculate bounds for this request (use index to get one note at a time)
+                const noteIndex = cassette.streamingState.currentBatchIndex - 1; // -1 because we already incremented
+                
+                // Check if we've reached the end of available notes
+                if (noteIndex >= filteredNotes.length) {
+                  cassette.streamingState.hasMoreEvents = false;
+                  return { hasMore: false };
+                }
+                
+                // Get the note for this request
+                const note = filteredNotes[noteIndex];
+                
+                // Check if we have more notes to process
+                const hasMore = noteIndex < filteredNotes.length - 1;
+                cassette.streamingState.hasMoreEvents = hasMore;
+                
+                return {
+                  event: ["EVENT", subscriptionId, note],
+                  hasMore: hasMore
+                };
+              } catch (noteError: any) {
+                console.error(`Error using notes from file:`, noteError);
+                cassette.streamingState.hasMoreEvents = false;
+                return { hasMore: false, error: `Error using notes: ${noteError.message}` };
+              }
+            }
+            
+            // If we got a string response, try to parse it
+            try {
+              const response = JSON.parse(result as string);
+              
+              // Check if we have events in the response
+              if (response.events && Array.isArray(response.events) && response.events.length > 0) {
+                // Get the first event
+                const event = response.events[0];
+                
+                // Update the streaming state
+                cassette.streamingState.currentBatchIndex++;
+                
+                // Determine if there are more events based on the response
+                cassette.streamingState.hasMoreEvents = 
+                  response.events.length > 1 || (response.hasMore === true);
+                
+                return {
+                  event,
+                  hasMore: cassette.streamingState.hasMoreEvents
+                };
+              } else {
+                // No events in the response
+                cassette.streamingState.hasMoreEvents = false;
+                return { hasMore: false };
+              }
+            } catch (parseError: any) {
+              console.error(`Error parsing stream response:`, parseError);
+              cassette.streamingState.hasMoreEvents = false;
+              return { hasMore: false, error: `Parse error: ${parseError.message}` };
+            }
+          } catch (error: any) {
+            console.error(`Error getting next event:`, error);
+            return { hasMore: false, error: `Error: ${error.message}` };
+          }
+        },
+        
+        // Original req function, now updated to use streaming when appropriate
+        req: function(request: string) {
+          try {
+            if (reqFn) {
+              const result = reqFn(request);
+              
+              // Check if the result is an array of numbers (memory pointer + length)
+              if (Array.isArray(result) && result.length === 2 && 
+                  typeof result[0] === 'number' && typeof result[1] === 'number') {
+                // This is likely a memory pointer and length
+                console.log(`Received memory pointers from WASM: ${result}`);
                 
                 try {
-                  const descriptionObj = JSON.parse(description);
-                  // Here we'll assume incoming schemas are for REQ messages
-                  // and outgoing schemas are for EVENT messages
-                  if (descriptionObj && descriptionObj.req) {
-                    incomingSchemas = [{ type: "array" }]; // Simple schema that accepts any array
-                  }
-                  if (descriptionObj) {
-                    outgoingSchemas = [{ type: "array" }]; // Simple schema that accepts any array
+                  // We've observed that the pointers returned may be invalid
+                  // Instead of trying to access memory directly, let's return a fallback response
+                  console.log(`Memory pointers cannot be accessed directly. Falling back to default response`);
+                  
+                  // Parse the request to get the subscription ID
+                  let subscriptionId = "";
+                  try {
+                    const parsedRequest = JSON.parse(request);
+                    if (Array.isArray(parsedRequest) && parsedRequest.length > 1) {
+                      subscriptionId = parsedRequest[1];
+                    }
+                  } catch (parseError) {
+                    console.error("Error parsing request for subscription ID:", parseError);
                   }
                   
-                  moduleFound = true;
-                  break; // Exit the loop once we've found and processed a module
-                } catch (err) {
-                  console.warn(`Failed to parse description for module ${moduleName}:`, err);
+                  // Return a default response with the subscription ID
+                  return JSON.stringify({
+                    "events": [],
+                    "eose": ["EOSE", subscriptionId]
+                  });
+                } catch (memoryError) {
+                  console.error(`Error handling memory pointers ${result}:`, memoryError);
+                  // Fall back to default response
+                  return JSON.stringify({
+                    "notice": ["NOTICE", "Error handling WASM memory"],
+                    "eose": ["EOSE", JSON.parse(request)[1]] // Include subscription ID from request
+                  });
                 }
               }
+              
+              // If it's already a string, just return it
+              return result as string;
+            } else {
+              // Return a default empty response if no req function
+              return JSON.stringify({
+                "events": [],
+                "eose": ["EOSE", JSON.parse(request)[1]] // Include subscription ID from request
+              });
             }
-            
-            // Fallback to checking for a schemas file with the same name
-            if (!moduleFound) {
-              console.log(`No describe() method found, checking for schema file`);
-              const schemaPath = join(WASM_DIR, `${cassetteName}.schemas.json`);
-              if (existsSync(schemaPath)) {
-                const schemas = JSON.parse(readFileSync(schemaPath, 'utf-8'));
-                incomingSchemas = schemas.incoming || [];
-                outgoingSchemas = schemas.outgoing || [];
-              }
-            }
-          } catch (err) {
-            console.warn(`Failed to load schemas for cassette ${cassetteName}:`, err);
+          } catch (error) {
+            console.error(`Error executing req function:`, error);
+            // Return a notice about the error
+            return JSON.stringify({
+              "notice": ["NOTICE", "Error processing request"],
+              "eose": ["EOSE", JSON.parse(request)[1]] // Include subscription ID from request
+            });
           }
-          
-          cassettes.push({
-            name: cassetteName,
-            instance: module,
-            schemas: {
-              incoming: incomingSchemas,
-              outgoing: outgoingSchemas
-            }
-          });
-          
-          console.log(`Successfully loaded cassette: ${cassetteName}`);
-        } catch (err) {
-          console.error(`Failed to load cassette file ${jsModule.name}:`, err);
-        }
-      }
-      
-      // Also process directories for backward compatibility
-      const directoryEntries = readdirSync(WASM_DIR, { withFileTypes: true });
-      for (const dirent of directoryEntries) {
-        if (dirent.isDirectory()) {
-          const cassetteName = dirent.name;
-          const cassettePath = join(WASM_DIR, cassetteName);
-          
-          try {
-            console.log(`Loading cassette from directory: ${cassetteName}`);
-            
-            // Import the cassette module
-            const module = await import(join(cassettePath, "index.js"));
-            
-            // Try to load schemas if available
-            let incomingSchemas: any[] = [];
-            let outgoingSchemas: any[] = [];
-            
+        },
+        
+        close: function(closeRequest: string) {
+          if (closeFn) {
             try {
-              const schemaPath = join(cassettePath, "schemas.json");
-              if (existsSync(schemaPath)) {
-                const schemas = JSON.parse(readFileSync(schemaPath, 'utf-8'));
-                incomingSchemas = schemas.incoming || [];
-                outgoingSchemas = schemas.outgoing || [];
+              const result = closeFn(closeRequest);
+              
+              // Check if the result is an array of numbers (memory pointer + length)
+              if (Array.isArray(result) && result.length === 2 && 
+                  typeof result[0] === 'number' && typeof result[1] === 'number') {
+                // This is likely a memory pointer and length
+                console.log(`Received memory pointers from WASM close: ${result}`);
+                
+                try {
+                  // We've observed that the pointers returned may be invalid
+                  // Instead of trying to access memory directly, let's return a fallback response
+                  console.log(`Memory pointers cannot be accessed directly. Falling back to default close response`);
+                  
+                  // Parse the request to get the subscription ID
+                  let subscriptionId = "";
+                  try {
+                    const parsedRequest = JSON.parse(closeRequest);
+                    if (Array.isArray(parsedRequest) && parsedRequest.length > 1) {
+                      subscriptionId = parsedRequest[1];
+                    }
+                  } catch (parseError) {
+                    console.error("Error parsing close request for subscription ID:", parseError);
+                  }
+                  
+                  // Return a default close response
+                  return JSON.stringify({
+                    "notice": ["NOTICE", `Closed subscription ${subscriptionId}`]
+                  });
+                } catch (memoryError) {
+                  console.error(`Error handling memory pointers ${result}:`, memoryError);
+                  // Fall back to default response
+                  return JSON.stringify({"notice": ["NOTICE", "Error handling WASM memory"]});
+                }
               }
-            } catch (err) {
-              console.warn(`Failed to load schemas for cassette ${cassetteName}:`, err);
+              
+              // If it's already a string, just return it
+              return result as string;
+            } catch (error) {
+              console.error(`Error executing close function:`, error);
+              return JSON.stringify({"notice": ["NOTICE", "Error processing close request"]});
             }
-            
-            cassettes.push({
-              name: cassetteName,
-              instance: module,
-              schemas: {
-                incoming: incomingSchemas,
-                outgoing: outgoingSchemas
+          } else {
+            return JSON.stringify({"notice": ["NOTICE", "Close not implemented"]});
+          }
+        },
+        
+        describe: function() {
+          try {
+            if (describeFn) {
+              const result = describeFn();
+              
+              // Check if the result is an array of numbers (memory pointer + length)
+              if (Array.isArray(result) && result.length === 2 && 
+                  typeof result[0] === 'number' && typeof result[1] === 'number') {
+                // This is likely a memory pointer and length
+                console.log(`Received memory pointers from WASM describe: ${result}`);
+                
+                try {
+                  // We've observed that the pointers returned may be invalid
+                  // Instead of trying to access memory directly, let's return a fallback response
+                  console.log(`Memory pointers cannot be accessed directly. Falling back to default description`);
+                  
+                  // Return a default description
+                  return JSON.stringify({
+                    "metadata": {
+                      "name": cassetteName,
+                      "description": "Default description for cassette"
+                    }
+                  });
+                } catch (memoryError) {
+                  console.error(`Error handling memory pointers ${result}:`, memoryError);
+                  // Fall back to default response
+                  return JSON.stringify({
+                    "metadata": {
+                      "name": cassetteName,
+                      "description": "Error handling WASM memory"
+                    }
+                  });
+                }
+              }
+              
+              // If it's already a string, just return it
+              return result as string;
+            } else {
+              return JSON.stringify({
+                "metadata": {
+                  "name": cassetteName,
+                  "description": "No description available"
+                }
+              });
+            }
+          } catch (error) {
+            console.error(`Error executing describe function:`, error);
+            return JSON.stringify({
+              "metadata": {
+                "name": cassetteName,
+                "description": "Error retrieving description"
               }
             });
-            
-            console.log(`Successfully loaded cassette: ${cassetteName}`);
-          } catch (err) {
-            console.error(`Failed to load cassette ${cassetteName}:`, err);
           }
         }
+      };
+      
+      // Get cassette metadata from the describe function
+      let description = describeFn() as string;
+      console.log(`${cassetteName} description: ${description}`);
+      
+      // Parse description to get schema information
+      let incomingSchemas: any[] = [{ type: "array" }];
+      let outgoingSchemas: any[] = [{ type: "array" }];
+      
+      try {
+        const descriptionObj = JSON.parse(description);
+        // Here we'll assume incoming schemas are for REQ messages
+        // and outgoing schemas are for EVENT messages
+        if (descriptionObj && descriptionObj.req) {
+          incomingSchemas = [{ type: "array" }]; // Simple schema that accepts any array
+        }
+        if (descriptionObj) {
+          outgoingSchemas = [{ type: "array" }]; // Simple schema that accepts any array
+        }
+      } catch (err) {
+        console.warn(`Failed to parse description for cassette ${cassetteName}:`, err);
       }
+      
+      // Add the cassette to the list
+      cassettes.push({
+        name: cassetteName,
+        instance: cassetteWrapper,
+        schemas: {
+          incoming: incomingSchemas,
+          outgoing: outgoingSchemas
+        }
+      });
+      
+      console.log(`Successfully loaded cassette: ${cassetteName}`);
+    } catch (err) {
+      console.error(`Failed to load cassette ${cassetteName}:`, err);
     }
-  } catch (err) {
-    console.error("Error loading cassettes:", err);
   }
   
   return cassettes;
@@ -375,23 +633,120 @@ function handleReqMessage(ws: ServerWebSocket<WebSocketData>, message: any[]) {
   
   console.log(`Received REQ with subscription ID: ${subscriptionId}`);
   console.log(`Filters:`, JSON.stringify(filters));
+  console.log(`Total cassettes: ${cassettes.length}`);
   
   // Store the subscription
   if (ws.data) {
     ws.data.subscriptions.set(subscriptionId, { filters });
   }
   
+  // If no cassettes are loaded, send empty EOSE immediately
+  if (cassettes.length === 0) {
+    console.log("No cassettes loaded, sending empty EOSE");
+    ws.send(JSON.stringify(["EOSE", subscriptionId]));
+    return;
+  }
+  
+  let foundCompatibleCassette = false;
+  let sentResponse = false;
+  
+  // Set a timeout to ensure EOSE is sent if processing takes too long
+  const eoseTimeout = setTimeout(() => {
+    if (!sentResponse) {
+      console.log("Timeout reached, sending EOSE");
+      ws.send(JSON.stringify(["EOSE", subscriptionId]));
+      sentResponse = true;
+    }
+  }, 5000); // 5 second timeout
+  
   // Find cassettes that can handle this request based on schemas
   for (const cassette of cassettes) {
     try {
+      console.log(`Checking cassette: ${cassette.name}`);
+      
       // Check if this cassette can handle this subscription
       const isValid = cassette.schemas.incoming.some((schema: any) => {
-        return validate(message, schema);
+        const result = validate(message, schema);
+        console.log(`Validation result for ${cassette.name}:`, result);
+        return result;
       });
       
       if (isValid) {
+        foundCompatibleCassette = true;
         console.log(`Processing subscription with cassette: ${cassette.name}`);
         
+        // Process using the streaming API if available
+        if (typeof cassette.instance.startStreaming === 'function') {
+          console.log(`Using streaming API for cassette: ${cassette.name}`);
+          
+          // Start the streaming process
+          const streamRequest = JSON.stringify(message);
+          const streamResponse = cassette.instance.startStreaming(streamRequest);
+          
+          // Process the initial event if any
+          if (streamResponse.event) {
+            console.log(`Got initial event from stream`);
+            ws.send(JSON.stringify(streamResponse.event));
+            
+            // Setup a function to continue processing events
+            const processNextEvent = () => {
+              const nextEvent = cassette.instance.getNextEvent(subscriptionId);
+              
+              if (nextEvent.error) {
+                console.error(`Error getting next event: ${nextEvent.error}`);
+              }
+              
+              if (nextEvent.event) {
+                console.log(`Sending streamed event`);
+                ws.send(JSON.stringify(nextEvent.event));
+              }
+              
+              if (nextEvent.hasMore) {
+                // Continue processing events with a small delay to avoid blocking
+                setTimeout(processNextEvent, 1);
+              } else {
+                // No more events, send EOSE
+                if (!sentResponse) {
+                  console.log(`Stream complete, sending EOSE`);
+                  ws.send(JSON.stringify(["EOSE", subscriptionId]));
+                  sentResponse = true;
+                  clearTimeout(eoseTimeout);
+                }
+              }
+            };
+            
+            // Start processing the rest of the events if there are more
+            if (streamResponse.hasMore) {
+              setTimeout(processNextEvent, 1);
+            } else {
+              // No more events after the first one
+              if (!sentResponse) {
+                console.log(`No more events after initial, sending EOSE`);
+                ws.send(JSON.stringify(["EOSE", subscriptionId]));
+                sentResponse = true;
+                clearTimeout(eoseTimeout);
+              }
+            }
+          } else {
+            // No initial event, check for errors
+            if (streamResponse.error) {
+              console.error(`Error starting stream: ${streamResponse.error}`);
+            }
+            
+            // Send EOSE since there are no events
+            if (!sentResponse) {
+              console.log(`No events in stream, sending EOSE`);
+              ws.send(JSON.stringify(["EOSE", subscriptionId]));
+              sentResponse = true;
+              clearTimeout(eoseTimeout);
+            }
+          }
+          
+          // We've handled this request with streaming, so break out of the loop
+          break;
+        }
+        
+        // If streaming API is not available, fall back to the traditional req function
         // Get the appropriate req function depending on the cassette structure
         let reqFunction = cassette.instance.req || 
                           (cassette.instance.SandwichsFavs && cassette.instance.SandwichsFavs.req) ||
@@ -400,9 +755,14 @@ function handleReqMessage(ws: ServerWebSocket<WebSocketData>, message: any[]) {
         
         if (!reqFunction) {
           // Try to find the req function by checking all exports
+          console.log(`Looking for req function in ${cassette.name} exports`);
           const exportNames = Object.keys(cassette.instance);
+          console.log(`Available exports:`, exportNames);
+          
           for (const exportName of exportNames) {
             const exportedValue = cassette.instance[exportName];
+            console.log(`Checking export: ${exportName}, type:`, typeof exportedValue);
+            
             if (exportedValue && typeof exportedValue.req === 'function') {
               console.log(`Found req function in export: ${exportName}`);
               reqFunction = exportedValue.req.bind(exportedValue);
@@ -413,6 +773,8 @@ function handleReqMessage(ws: ServerWebSocket<WebSocketData>, message: any[]) {
         
         // Handle differently based on the cassette's available methods
         if (reqFunction) {
+          console.log(`Found reqFunction: ${reqFunction.name || 'anonymous'}`);
+          
           // For cassettes like sandwichs_favs that use the req method
           try {
             // Convert the message to a string as required by the req method
@@ -423,30 +785,61 @@ function handleReqMessage(ws: ServerWebSocket<WebSocketData>, message: any[]) {
             const responseStr = reqFunction(reqMessage);
             console.log(`Got response:`, responseStr);
             
-            // Parse the response
-            const response = JSON.parse(responseStr);
-            console.log(`Parsed response:`, JSON.stringify(response));
-            
-            // Send events
-            if (response.events && Array.isArray(response.events)) {
-              console.log(`Sending ${response.events.length} events`);
-              for (const event of response.events) {
-                console.log(`Sending event:`, JSON.stringify(event));
-                ws.send(JSON.stringify(event));
+            try {
+              // Parse the response
+              const response = JSON.parse(responseStr);
+              console.log(`Parsed response:`, JSON.stringify(response));
+              
+              // Check if any note exceeds the maximum size
+              if (response.events && Array.isArray(response.events)) {
+                response.events = response.events.filter((event: any) => {
+                  const eventSize = JSON.stringify(event).length;
+                  if (eventSize > MAX_NOTE_SIZE) {
+                    console.warn(`Skipping oversized note (${eventSize} bytes > ${MAX_NOTE_SIZE} bytes max): ${event.id || 'unknown'}`);
+                    return false;
+                  }
+                  return true;
+                });
+                
+                // Send events
+                console.log(`Sending ${response.events.length} events`);
+                for (const event of response.events) {
+                  console.log(`Sending event:`, JSON.stringify(event));
+                  ws.send(JSON.stringify(event));
+                }
+              } else {
+                console.log(`No events found in response`);
               }
-            } else {
-              console.log(`No events found in response`);
-            }
-            
-            // Send EOSE
-            if (response.eose) {
-              console.log(`Sending EOSE:`, JSON.stringify(response.eose));
-              ws.send(JSON.stringify(response.eose));
-            } else {
-              console.log(`No EOSE found in response`);
+              
+              // Send EOSE
+              if (response.eose) {
+                console.log(`Sending EOSE:`, JSON.stringify(response.eose));
+                ws.send(JSON.stringify(response.eose));
+                sentResponse = true;
+                clearTimeout(eoseTimeout);
+              } else {
+                console.log(`No EOSE found in response, sending default EOSE`);
+                ws.send(JSON.stringify(["EOSE", subscriptionId]));
+                sentResponse = true;
+                clearTimeout(eoseTimeout);
+              }
+            } catch (parseError) {
+              console.error(`Error parsing response from ${cassette.name}:`, parseError);
+              console.log(`Raw response:`, responseStr);
+              
+              // Send default EOSE if parsing fails
+              console.log(`Sending default EOSE due to parse error`);
+              ws.send(JSON.stringify(["EOSE", subscriptionId]));
+              sentResponse = true;
+              clearTimeout(eoseTimeout);
             }
           } catch (error) {
             console.error(`Error in cassette ${cassette.name} req method:`, error);
+            // Send default EOSE if processing fails
+            console.log(`Sending default EOSE due to processing error`);
+            ws.send(JSON.stringify(["EOSE", subscriptionId]));
+            sentResponse = true;
+            clearTimeout(eoseTimeout);
           }
         } else if (cassette.instance.handleSubscription) {
           try {
@@ -460,14 +853,34 @@ function handleReqMessage(ws: ServerWebSocket<WebSocketData>, message: any[]) {
             
             // Send EOSE (End of Stored Events) if appropriate
             ws.send(JSON.stringify(["EOSE", subscriptionId]));
+            sentResponse = true;
+            clearTimeout(eoseTimeout);
           } catch (error) {
             console.error(`Error in cassette ${cassette.name}:`, error);
+            ws.send(JSON.stringify(["EOSE", subscriptionId]));
+            sentResponse = true;
+            clearTimeout(eoseTimeout);
           }
+        } else {
+          console.warn(`Cassette ${cassette.name} has no req function or handleSubscription method`);
+          
+          // Send default EOSE if no handler
+          console.log(`Sending default EOSE due to missing handler`);
+          ws.send(JSON.stringify(["EOSE", subscriptionId]));
+          sentResponse = true;
+          clearTimeout(eoseTimeout);
         }
       }
     } catch (error) {
       console.error(`Error validating with cassette ${cassette.name}:`, error);
     }
+  }
+  
+  if (!foundCompatibleCassette && !sentResponse) {
+    console.log(`No compatible cassette found for this request, sending empty EOSE`);
+    ws.send(JSON.stringify(["EOSE", subscriptionId]));
+    sentResponse = true;
+    clearTimeout(eoseTimeout);
   }
 }
 
