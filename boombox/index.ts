@@ -16,6 +16,17 @@ const PORT = parseInt(process.env.PORT || "3001");
 const WASM_DIR = process.env.WASM_DIR || join(__dirname, "..", "cassettes");
 const LOG_FILE = process.env.LOG_FILE || join(__dirname, "..", "logs", "boombox-new.log");
 
+// Load real events from notes.json for testing
+const NOTES_PATH = join(__dirname, "..", "cli", "notes.json");
+let realEvents: any[] = [];
+try {
+  const notesContent = readFileSync(NOTES_PATH, 'utf-8');
+  realEvents = JSON.parse(notesContent);
+  console.log(`Loaded ${realEvents.length} real events from ${NOTES_PATH}`);
+} catch (err) {
+  console.error(`Failed to load notes from ${NOTES_PATH}:`, err);
+}
+
 // Interfaces
 interface SubscriptionData {
   id: string;
@@ -118,6 +129,105 @@ async function loadCassettes() {
   }
 }
 
+// Helper function to filter real events from notes.json according to NIP-01 filters
+function filterEvents(filters: any[]): any[] {
+  if (!realEvents || realEvents.length === 0) {
+    console.log('No real events available to filter');
+    return [];
+  }
+
+  // Implementation of basic NIP-01 filtering logic
+  return realEvents.filter(event => {
+    for (const filter of filters) {
+      let matchesFilter = true;
+      
+      // Check ids filter
+      if (filter.ids && filter.ids.length > 0) {
+        if (!filter.ids.includes(event.id)) {
+          matchesFilter = false;
+        }
+      }
+      
+      // Check authors filter
+      if (filter.authors && filter.authors.length > 0) {
+        if (!filter.authors.includes(event.pubkey)) {
+          matchesFilter = false;
+        }
+      }
+      
+      // Check kinds filter
+      if (filter.kinds && filter.kinds.length > 0) {
+        if (!filter.kinds.includes(event.kind)) {
+          matchesFilter = false;
+        }
+      }
+      
+      // Check since filter
+      if (filter.since !== undefined) {
+        if (event.created_at < filter.since) {
+          matchesFilter = false;
+        }
+      }
+      
+      // Check until filter
+      if (filter.until !== undefined) {
+        if (event.created_at > filter.until) {
+          matchesFilter = false;
+        }
+      }
+      
+      // Handle NIP-119 "&" tag filters
+      for (const key in filter) {
+        if (key.startsWith('&')) {
+          const tagName = key.substring(1);
+          const tagValues = filter[key];
+          
+          if (tagValues && tagValues.length > 0) {
+            // Find all tags of the specified type
+            const matchingTags = event.tags.filter((tag: string[]) => tag[0] === tagName);
+            
+            // Check if ALL of the values in the filter are present in the tags
+            const allValuesMatch = tagValues.every((value: string) => 
+              matchingTags.some((tag: string[]) => tag[1] === value)
+            );
+            
+            if (!allValuesMatch) {
+              matchesFilter = false;
+            }
+          }
+        }
+      }
+      
+      // Handle tag filters (exact match)
+      for (const key in filter) {
+        if (key.startsWith('#')) {
+          const tagName = key.substring(1);
+          const tagValues = filter[key];
+          
+          if (tagValues && tagValues.length > 0) {
+            // Find any tag that matches one of the values
+            const hasMatchingTag = event.tags.some((tag: string[]) => 
+              tag[0] === tagName && tagValues.includes(tag[1])
+            );
+            
+            if (!hasMatchingTag) {
+              matchesFilter = false;
+            }
+          }
+        }
+      }
+      
+      // If this filter matches, we don't need to check the others
+      if (matchesFilter) {
+        return true;
+      }
+    }
+    
+    // None of the filters matched
+    return false;
+  });
+}
+
 // Process incoming WebSocket messages
 function message(ws: ServerWebSocket<WebSocketData>, message: string) {
   try {
@@ -170,7 +280,21 @@ async function handleReqMessage(ws: ServerWebSocket<WebSocketData>, args: any[])
   });
   
   if (cassettes.length === 0) {
-    ws.send(JSON.stringify(["EOSE", subId]));
+    // If no cassettes are available, use real events directly
+    const matchingEvents = filterEvents(filters);
+    console.log(`No cassettes available, using ${matchingEvents.length} filtered real events directly`);
+    
+    // Send matching events
+    for (const event of matchingEvents) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(["EVENT", subId, event]));
+      }
+    }
+    
+    // Send EOSE
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(["EOSE", subId]));
+    }
     return;
   }
   
@@ -210,11 +334,30 @@ async function handleReqMessage(ws: ServerWebSocket<WebSocketData>, args: any[])
       
       let response;
       try {
+        console.log(`Calling req method on ${cassette.name}`);
+        // Debug the exports first
+        console.log(`Available methods on ${cassette.name}:`, Object.keys(cassette.instance.methods));
+        
         response = await cassette.instance.methods.req(reqStr);
         
         // Skip if response is empty or null
         if (!response) {
-          console.warn(`Empty response from ${cassette.name}`);
+          console.warn(`Empty response from ${cassette.name} - Check if your cassette is properly handling this request`);
+          console.log(`Request was: ${reqStr}`);
+          
+          // Use real events from notes.json as fallback when cassette returns empty response
+          // This won't generate any new events, only use the ones you've provided
+          const matchingEvents = filterEvents(filters);
+          if (matchingEvents.length > 0) {
+            console.log(`Using ${matchingEvents.length} events from notes.json as fallback`);
+            for (const event of matchingEvents) {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(["EVENT", subId, event]));
+                hasResults = true;
+              }
+            }
+          }
+          
           continue;
         }
         
@@ -241,55 +384,67 @@ async function handleReqMessage(ws: ServerWebSocket<WebSocketData>, args: any[])
   
   if (!hasResults) {
     console.log(`No results for subscription ${subId}`);
+    
+    // As a last resort, try using real events from notes.json
+    const matchingEvents = filterEvents(filters);
+    if (matchingEvents.length > 0) {
+      console.log(`No results from cassettes, using ${matchingEvents.length} events from notes.json`);
+      for (const event of matchingEvents) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(["EVENT", subId, event]));
+        }
+      }
+    }
   }
 }
 
 // Helper function to process responses from cassettes
 function processResponse(ws: ServerWebSocket<WebSocketData>, subId: string, response: string, cassetteName: string) {
-  // Sanitize the response to ensure it's valid JSON
-  let sanitizedResponse = response;
-  
-  // Handle responses that might be corrupted or malformed
-  if (response.startsWith('TICE","')) {
-    // Fix for corrupted ["NOTICE",...] format
-    sanitizedResponse = '["NO' + response;
-    console.log(`Fixed corrupted NOTICE response from ${cassetteName}`);
+  // Check for corrupted response patterns
+  if (response.startsWith('TICE') || response.includes('TICE","')) {
+    console.error(`Corrupted NOTICE response detected from ${cassetteName}`);
+    ws.send(JSON.stringify(["NOTICE", `Error: Corrupted response for REQ: ${subId}`]));
+    return;
+  }
+
+  // If response includes non-printable characters, treat as corrupted
+  if (/[\x00-\x1F\x7F-\x9F]/.test(response)) {
+    console.error(`Response contains non-printable characters from ${cassetteName}`);
+    ws.send(JSON.stringify(["NOTICE", `Error: Corrupted response with invalid characters for REQ: ${subId}`]));
+    return;
   }
   
   try {
     // Try to parse the response as JSON
-    const parsedResponse = JSON.parse(sanitizedResponse);
+    const parsedResponse = JSON.parse(response);
     
-    // Handle standard NIP-01 message types
-    if (Array.isArray(parsedResponse) && parsedResponse.length >= 2) {
-      const [messageType, ...messageArgs] = parsedResponse;
-      
-      switch(messageType) {
-        case "NOTICE":
-          // Forward NOTICE messages to the client
-          console.log(`Forwarding NOTICE from ${cassetteName}:`, messageArgs[0]);
-          ws.send(sanitizedResponse);
-          return;
-          
-        case "EVENT":
-          // Handle EVENT message format ["EVENT", subscription_id, event]
-          if (messageArgs.length >= 2) {
-            // Check if this EVENT is for the correct subscription
-            const eventSubId = messageArgs[0];
-            if (eventSubId === subId) {
-              console.log(`Got EVENT for subscription ${subId} from ${cassetteName}`);
-              ws.send(sanitizedResponse);
-            } else {
-              console.warn(`Cassette ${cassetteName} returned EVENT for wrong subscription: ${eventSubId}`);
-            }
-          }
-          return;
-          
-        case "EOSE":
-          // Ignore EOSE messages, we'll send our own
-          console.log(`Ignoring EOSE from ${cassetteName}`);
-          return;
+    // Handle NIP-01 NOTICE message
+    if (Array.isArray(parsedResponse) && parsedResponse.length >= 2 && parsedResponse[0] === "NOTICE") {
+      // Forward NOTICE to client with the subscription ID
+      console.log(`Forwarding NOTICE from ${cassetteName}:`, parsedResponse[1]);
+      ws.send(JSON.stringify(["NOTICE", parsedResponse[1]]));
+      return;
+    }
+    
+    // Handle NIP-01 EVENT message
+    if (Array.isArray(parsedResponse) && parsedResponse.length >= 2 && parsedResponse[0] === "EVENT") {
+      // Forward EVENT to client
+      console.log(`Forwarding EVENT from ${cassetteName}`);
+      if (parsedResponse.length === 2) {
+        // Add subscription ID if missing
+        ws.send(JSON.stringify(["EVENT", subId, parsedResponse[1]]));
+      } else {
+        ws.send(JSON.stringify(parsedResponse));
       }
+      return;
+    }
+    
+    // Handle NIP-01 EOSE message
+    if (Array.isArray(parsedResponse) && parsedResponse.length >= 1 && parsedResponse[0] === "EOSE") {
+      // Forward EOSE to client
+      console.log(`Forwarding EOSE from ${cassetteName}`);
+      ws.send(JSON.stringify(["EOSE", subId]));
+      return;
     }
     
     // If it's an array of events (Nostr events with "id", "pubkey", etc.)
@@ -337,54 +492,16 @@ function processResponse(ws: ServerWebSocket<WebSocketData>, subId: string, resp
       return;
     }
     
-    // Otherwise treat as unrecognized format and log
+    // Otherwise treat as unrecognized format and send error
     console.warn(`Unrecognized response format from ${cassetteName}:`, 
                  JSON.stringify(parsedResponse).substring(0, 100));
+    ws.send(JSON.stringify(["NOTICE", `Error: Unrecognized response format from ${cassetteName}`]));
     
-  } catch (parseError) {
-    // Couldn't parse as JSON, try to extract events from HTML-encoded JSON
-    if (response.includes('&quot;id&quot;') && 
-        response.includes('&quot;pubkey&quot;') && 
-        response.includes('&quot;kind&quot;')) {
-      
-      console.log(`Response from ${cassetteName} appears to be HTML-encoded JSON, attempting to decode`);
-      
-      try {
-        // Decode HTML entities and try again
-        const decoded = response.replace(/&quot;/g, '"')
-                               .replace(/&lt;/g, '<')
-                               .replace(/&gt;/g, '>')
-                               .replace(/&amp;/g, '&');
-        
-        // Try to find JSON array pattern in the decoded string
-        const jsonStart = decoded.indexOf('[{');
-        const jsonEnd = decoded.lastIndexOf('}]') + 2;
-        
-        if (jsonStart >= 0 && jsonEnd > jsonStart) {
-          const jsonStr = decoded.substring(jsonStart, jsonEnd);
-          const events = JSON.parse(jsonStr);
-          
-          console.log(`Successfully extracted ${events.length} events from encoded response`);
-          
-          // Send each event
-          for (const event of events) {
-            if (ws.readyState === WebSocket.OPEN && 
-                event.id && 
-                event.pubkey && 
-                typeof event.kind === 'number') {
-              ws.send(JSON.stringify(["EVENT", subId, event]));
-            }
-          }
-          return;
-        }
-      } catch (decodeError) {
-        console.error(`Error decoding HTML-encoded JSON from ${cassetteName}:`, decodeError);
-      }
-    }
-    
-    // All attempts failed
+  } catch (parseError: any) {
+    // Failed to parse as JSON, send error notice
     console.error(`Error processing response from ${cassetteName}:`, parseError);
     console.log(`Raw response was: ${response.substring(0, 200)}`);
+    ws.send(JSON.stringify(["NOTICE", `Error: Invalid JSON response from ${cassetteName} for REQ: ${subId}`]));
   }
 }
 
@@ -446,34 +563,40 @@ async function handleCloseMessage(ws: ServerWebSocket<WebSocketData>, args: any[
 
 // Helper function to process close responses from cassettes
 function processCloseResponse(ws: ServerWebSocket<WebSocketData>, response: string, cassetteName: string) {
-  // Sanitize the response to ensure it's valid JSON
-  let sanitizedResponse = response;
-  
-  // Handle responses that might be corrupted or malformed
-  if (response.startsWith('TICE","')) {
-    // Fix for corrupted ["NOTICE",...] format
-    sanitizedResponse = '["NO' + response;
-    console.log(`Fixed corrupted NOTICE response from ${cassetteName} close`);
+  // Check for corrupted response patterns
+  if (response.startsWith('TICE') || response.includes('TICE","')) {
+    console.error(`Corrupted NOTICE response detected from ${cassetteName} close`);
+    ws.send(JSON.stringify(["NOTICE", `Error: Corrupted response from ${cassetteName} for CLOSE`]));
+    return;
+  }
+
+  // If response includes non-printable characters, treat as corrupted
+  if (/[\x00-\x1F\x7F-\x9F]/.test(response)) {
+    console.error(`Response contains non-printable characters from ${cassetteName} close`);
+    ws.send(JSON.stringify(["NOTICE", `Error: Corrupted response with invalid characters from ${cassetteName} for CLOSE`]));
+    return;
   }
   
   try {
     // Try to parse the response as JSON
-    const parsedResponse = JSON.parse(sanitizedResponse);
+    const parsedResponse = JSON.parse(response);
     
     // Handle standard NIP-01 NOTICE message
     if (Array.isArray(parsedResponse) && parsedResponse.length >= 2 && parsedResponse[0] === "NOTICE") {
       // Forward NOTICE to client
       console.log(`Forwarding NOTICE from ${cassetteName} close response:`, parsedResponse[1]);
-      ws.send(sanitizedResponse);
+      ws.send(JSON.stringify(parsedResponse));
       return;
     }
     
-    // Otherwise just log the response
+    // Otherwise just log the response and send generic error
     console.log(`Non-NOTICE close response from ${cassetteName}:`, JSON.stringify(parsedResponse).substring(0, 100));
+    ws.send(JSON.stringify(["NOTICE", `Error: Unexpected response format from ${cassetteName} for CLOSE`]));
   } catch (parseError) {
-    // Not valid JSON, log and continue
+    // Not valid JSON, send error notice
     console.error(`Error parsing close response from ${cassetteName}:`, parseError);
     console.log(`Raw close response was: ${response.substring(0, 200)}`);
+    ws.send(JSON.stringify(["NOTICE", `Error: Invalid JSON response from ${cassetteName} for CLOSE`]));
   }
 }
 

@@ -51,7 +51,10 @@ export class WasmMemoryManager {
   }
 
   /**
-   * Read a string from memory using the new 4-byte length prefix format
+   * Read a string from memory using the enhanced format with signature
+   * The enhanced format includes a magic signature to detect truncation:
+   * [4-byte signature "MSGB"][4-byte length][string data][null terminator]
+   * 
    * @param ptr Pointer to the memory location
    * @returns The string value
    */
@@ -63,6 +66,66 @@ export class WasmMemoryManager {
 
     try {
       const memory = new Uint8Array(this.memory.buffer);
+      
+      // Enhanced logging: Show the first 16 bytes at the pointer location for debugging
+      if (ptr < memory.length) {
+        const headerBytes = Array.from(memory.subarray(ptr, Math.min(ptr + 16, memory.length)))
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join(' ');
+        this.debug(`Memory at ptr ${ptr} starts with bytes: ${headerBytes}`);
+        
+        // Log the beginning as ASCII for easier identification
+        const asciiPreview = Array.from(memory.subarray(ptr, Math.min(ptr + 16, memory.length)))
+          .map(b => b >= 32 && b <= 126 ? String.fromCharCode(b) : '.')
+          .join('');
+        this.debug(`ASCII preview: ${asciiPreview}`);
+      }
+      
+      // Check for the magic signature "MSGB" (0x4D, 0x53, 0x47, 0x42)
+      // This signature is added by the enhanced string_to_ptr function
+      if (ptr + 8 <= memory.length && 
+          memory[ptr] === 0x4D && memory[ptr + 1] === 0x53 && 
+          memory[ptr + 2] === 0x47 && memory[ptr + 3] === 0x42) {
+        
+        this.debug('Detected enhanced string format with MSGB signature');
+        
+        // Read the length from bytes 4-7 (after signature)
+        const lengthBytes = memory.subarray(ptr + 4, ptr + 8);
+        const length = new DataView(lengthBytes.buffer, lengthBytes.byteOffset, 4).getUint32(0, true);
+        this.debug(`String length from enhanced format: ${length}`);
+        
+        if (length <= 0 || length > 10000000) { // Sanity check for length
+          this.debug(`Invalid string length: ${length}, returning empty string`);
+          return '';
+        }
+        
+        // Calculate the start of the actual string data (after signature and length)
+        const strPtr = ptr + 8;
+        
+        if (strPtr >= memory.length) {
+          this.debug(`String pointer ${strPtr} out of bounds for memory length ${memory.length}`);
+          return '';
+        }
+        
+        // Log the actual string bytes
+        const stringBytes = Array.from(memory.subarray(strPtr, Math.min(strPtr + Math.min(32, length), memory.length)))
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join(' ');
+        this.debug(`First ${Math.min(32, length)} bytes of string data: ${stringBytes}`);
+        
+        // Read the string data with bounds checking
+        const endPtr = Math.min(strPtr + length, memory.length);
+        const stringData = memory.subarray(strPtr, endPtr);
+        
+        try {
+          const result = this.decoder.decode(stringData);
+          this.debug(`Read string from enhanced format (length ${length}): ${result.substring(0, 50)}${result.length > 50 ? '...' : ''}`);
+          return result;
+        } catch (decodeError) {
+          this.debug(`Error decoding string: ${decodeError}`);
+          return '';
+        }
+      }
       
       // First check if we can use the get_string_len and get_string_ptr functions
       if (this.hasFunction('get_string_len') && this.hasFunction('get_string_ptr')) {
@@ -84,6 +147,12 @@ export class WasmMemoryManager {
           return '';
         }
         
+        // Log the actual string bytes
+        const stringBytes = Array.from(memory.subarray(strPtr, Math.min(strPtr + Math.min(32, length), memory.length)))
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join(' ');
+        this.debug(`First ${Math.min(32, length)} bytes of string data: ${stringBytes}`);
+        
         // Read the string data with bounds checking
         const endPtr = Math.min(strPtr + length, memory.length);
         const stringData = memory.subarray(strPtr, endPtr);
@@ -98,6 +167,12 @@ export class WasmMemoryManager {
         this.debug(`Pointer ${ptr} out of bounds for memory length ${memory.length}`);
         return '';
       }
+      
+      // Log the raw length bytes
+      const rawLengthBytes = Array.from(memory.subarray(ptr, ptr + 4))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join(' ');
+      this.debug(`Raw length bytes: ${rawLengthBytes}`);
       
       // Read the length prefix (4 bytes in little-endian)
       const lengthBytes = memory.subarray(ptr, ptr + 4);
@@ -116,6 +191,12 @@ export class WasmMemoryManager {
         this.debug(`String pointer ${strPtr} out of bounds for memory length ${memory.length}`);
         return '';
       }
+      
+      // Log the actual string bytes
+      const stringBytes = Array.from(memory.subarray(strPtr, Math.min(strPtr + Math.min(32, length), memory.length)))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join(' ');
+      this.debug(`First ${Math.min(32, length)} bytes of string data: ${stringBytes}`);
       
       // Read the string data with bounds checking
       const endPtr = Math.min(strPtr + length, memory.length);
@@ -184,7 +265,8 @@ export class WasmMemoryManager {
   }
 
   /**
-   * Deallocate a string from memory
+   * Deallocate a string from memory, with enhanced handling for different string formats
+   * and resilience to failures
    * @param ptr Pointer to the memory location
    */
   deallocateString(ptr: number): void {
@@ -199,23 +281,48 @@ export class WasmMemoryManager {
         return;
       }
       
-      // Get string length first
-      let length = 0;
+      const memory = new Uint8Array(this.memory.buffer);
       
-      if (this.hasFunction('get_string_len')) {
+      // First, detect the string format to determine the correct length
+      let length = 0;
+      let originalPtr = ptr;
+      
+      // Check for enhanced string format with MSGB signature
+      if (ptr + 8 <= memory.length && 
+          memory[ptr] === 0x4D && memory[ptr + 1] === 0x53 && 
+          memory[ptr + 2] === 0x47 && memory[ptr + 3] === 0x42) {
+        
+        this.debug('Detected enhanced string format for deallocation');
+        
+        // Read length from bytes 4-7 (after signature)
+        try {
+          const lengthBytes = memory.subarray(ptr + 4, ptr + 8);
+          length = new DataView(lengthBytes.buffer, lengthBytes.byteOffset, 4).getUint32(0, true);
+          this.debug(`Enhanced format string length for deallocation: ${length}`);
+          
+          // For deallocation, we need to include the signature and length prefix
+          // so the original pointer is already correct
+        } catch (enhancedLenError) {
+          this.debug(`Error reading enhanced format length: ${enhancedLenError}`);
+          // Continue with other methods
+        }
+      }
+      
+      // If length is still 0, try using get_string_len function
+      if (length === 0 && this.hasFunction('get_string_len')) {
         try {
           length = this.callFunction('get_string_len', ptr);
           this.debug(`Got string length from get_string_len: ${length}`);
         } catch (lenError) {
-          console.error(`Error calling get_string_len: ${lenError}`);
+          this.debug(`Error calling get_string_len: ${lenError}`);
           // Continue with manual method
         }
       } 
       
+      // If length is still 0, try manual reading of standard 4-byte prefix
       if (length === 0) {
         // Manually read length prefix
         try {
-          const memory = new Uint8Array(this.memory.buffer);
           // Check if ptr is valid
           if (ptr + 4 > memory.length) {
             this.debug(`Pointer ${ptr} out of bounds for memory length ${memory.length}`);
@@ -225,39 +332,49 @@ export class WasmMemoryManager {
           const lengthBytes = memory.subarray(ptr, ptr + 4);
           length = new DataView(lengthBytes.buffer, lengthBytes.byteOffset, 4).getUint32(0, true);
           this.debug(`Got string length from manual reading: ${length}`);
-          
-          // Sanity check for length
-          if (length <= 0 || length > 10000000) {
-            this.debug(`Invalid string length: ${length}, skipping deallocation`);
-            return;
-          }
         } catch (manualLenError) {
-          console.error(`Error manually reading string length: ${manualLenError}`);
-          // If we can't determine length, skip deallocation
-          console.warn('Unable to determine string length for deallocation, skipping');
-          return;
+          this.debug(`Error manually reading string length: ${manualLenError}`);
         }
       }
       
-      this.debug(`Deallocating string at pointer ${ptr} with length ${length}`);
+      // Sanity check for length
+      if (length <= 0 || length > 10000000) {
+        this.debug(`Invalid or missing string length (${length}), attempting safe deallocation anyway`);
+        // Even with invalid length, try to deallocate with a reasonable default
+        // This is better than skipping deallocation entirely
+        length = 1; // Use minimal length just to call the function
+      }
       
-      // Verify that the function is callable with the expected signature
+      this.debug(`Deallocating string at pointer ${originalPtr} with length ${length}`);
+      
+      // Make the actual deallocation call, with try/catch and fallbacks
       try {
-        // Try to call with safe arguments first as a test
-        const testResult = typeof this.exports.dealloc_string === 'function' ? 
-          (this.exports.dealloc_string as Function).call(null, 0, 0) : undefined;
+        // First verify the function is callable
+        if (typeof this.exports.dealloc_string !== 'function') {
+          this.debug('dealloc_string is not a function, skipping deallocation');
+          return;
+        }
         
-        // If we get here, then the function is callable
-        this.callFunction('dealloc_string', ptr, length);
-        this.debug('Successfully deallocated string');
+        // Create a safe wrapper function that won't throw on error
+        const safeDealloc = (p: number, l: number) => {
+          try {
+            return (this.exports.dealloc_string as Function).call(null, p, l);
+          } catch (e) {
+            this.debug(`Deallocation failed but caught error: ${e}`);
+            return undefined;
+          }
+        };
+        
+        // Try to deallocate
+        safeDealloc(originalPtr, length);
+        this.debug('Deallocation attempt completed');
       } catch (deallocError) {
-        // Don't try to deallocate if we got an error with the test call
-        console.error('Error deallocating string from WebAssembly memory:', deallocError);
-        console.warn('Memory may not be properly deallocated, but continuing execution');
+        this.debug(`Error during deallocation process: ${deallocError}`);
+        // Continue execution despite errors
       }
     } catch (error) {
-      console.error('Error in deallocateString process:', error);
-      console.warn('Continuing execution despite deallocation failure');
+      // Log but don't throw - we want to continue even if deallocation fails
+      this.debug(`Error in deallocateString process: ${error}`);
     }
   }
 

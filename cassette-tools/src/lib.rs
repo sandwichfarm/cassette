@@ -15,18 +15,37 @@ pub fn one_plus_one() -> u64 {
 /// 
 /// The function also prepends the string length as a 4-byte prefix so that JavaScript
 /// can efficiently determine the string length without scanning for null terminators.
-/// Format: [4 bytes length][string bytes][null terminator]
+/// Additionally, it adds a 4-byte signature to help detect truncation.
+/// Format: [4-byte signature][4 bytes length][string bytes][null terminator]
 #[no_mangle]
 pub fn string_to_ptr(s: String) -> *mut u8 {
     // Get the bytes from the string
     let string_bytes = s.into_bytes();
     let string_len = string_bytes.len();
     
-    // Create a new buffer with space for:
-    // - 4 bytes to store length
-    // - The string bytes
-    // - 1 byte for null terminator
-    let mut buffer = Vec::with_capacity(4 + string_len + 1);
+    // Define a magic signature to detect truncation ("MSGB" in ASCII)
+    let signature: [u8; 4] = [0x4D, 0x53, 0x47, 0x42]; // "MSGB" in ASCII
+    
+    // Ensure alignment - memory in WebAssembly is often aligned to 8 bytes
+    // We'll allocate a bit extra to ensure proper alignment
+    const ALIGNMENT: usize = 8;
+    
+    // Calculate size with padding for alignment
+    let base_size = 4 + 4 + string_len + 1; // signature + length + string + null terminator
+    let padding = (ALIGNMENT - (base_size % ALIGNMENT)) % ALIGNMENT;
+    let total_size = base_size + padding;
+    
+    // Create a new buffer with additional alignment padding
+    let mut buffer = Vec::with_capacity(total_size);
+    
+    // Start with some padding for alignment if needed
+    // This helps ensure the signature and actual data are properly aligned
+    for _ in 0..padding {
+        buffer.push(0);
+    }
+    
+    // Add the signature to detect truncation
+    buffer.extend_from_slice(&signature);
     
     // Add the length as 4 bytes in little-endian order
     buffer.extend_from_slice(&(string_len as u32).to_le_bytes());
@@ -37,8 +56,22 @@ pub fn string_to_ptr(s: String) -> *mut u8 {
     // Add null terminator
     buffer.push(0);
     
-    // Get pointer to the buffer
+    // Get pointer to the buffer, accounting for alignment padding
     let ptr = buffer.as_ptr() as *mut u8;
+    
+    // Log the pointer value and size for debugging (in debug builds)
+    #[cfg(debug_assertions)]
+    {
+        let ptr_value = ptr as usize;
+        let alignment_check = ptr_value % ALIGNMENT;
+        eprintln!("string_to_ptr: allocated at {:p}, alignment: {}, size: {}", 
+                 ptr, alignment_check, total_size);
+        
+        // Check if the pointer is aligned
+        if alignment_check != 0 {
+            eprintln!("WARNING: Pointer not aligned to {} bytes", ALIGNMENT);
+        }
+    }
     
     // Prevent Rust from freeing the memory
     std::mem::forget(buffer);
@@ -72,23 +105,81 @@ pub fn ptr_to_string(ptr: *const u8, len: usize) -> String {
 
 /// Deallocate a string that was allocated with string_to_ptr
 /// This function properly deallocates the memory for a string that was 
-/// allocated with string_to_ptr. It adjusts for the length prefix and null terminator.
+/// allocated with string_to_ptr, handling both the enhanced format with signature
+/// and the older format with just a length prefix.
+/// It's designed to be resilient to errors and prevent crashes.
 #[no_mangle]
 pub fn dealloc_string(ptr: *mut u8, len: usize) {
     unsafe {
-        if ptr.is_null() || len == 0 {
+        // Safety checks to prevent crashes
+        if ptr.is_null() {
             return;
         }
         
-        // The actual total length includes:
-        // - 4 bytes for the length prefix
-        // - string length
-        // - 1 byte for null terminator
-        let total_len = 4 + len + 1;
+        // First, check for the signature to detect the enhanced format
+        // The signature is "MSGB" (0x4D, 0x53, 0x47, 0x42)
+        let has_signature = if let Some(first_bytes) = try_read_bytes(ptr, 4) {
+            first_bytes == [0x4D, 0x53, 0x47, 0x42]
+        } else {
+            false
+        };
         
-        // Recreate the Vec with the correct capacity, which will be dropped
-        let _ = Vec::from_raw_parts(ptr, total_len, total_len);
+        // Based on the format, determine the real memory layout
+        if has_signature {
+            // Enhanced format: [padding][signature(4)][length(4)][data(len)][null(1)]
+            // Find out the alignment padding by checking if signature is at the actual ptr
+            let alignment = 8;  // Same alignment as in string_to_ptr
+            
+            // Calculate probable allocation size using the alignment from string_to_ptr
+            let base_size = 4 + 4 + len + 1; // signature + length + data + null
+            let padding = (alignment - (base_size % alignment)) % alignment;
+            let total_size = base_size + padding;
+            
+            // Recreate the Vec with capacity and padding to match what was allocated
+            // We're dropping the entire memory block including padding, signature, etc.
+            let _ = Vec::from_raw_parts(ptr, total_size, total_size);
+            
+            #[cfg(debug_assertions)]
+            {
+                eprintln!("dealloc_string: deallocated enhanced format string at {:p} with length {} (total size: {})",
+                         ptr, len, total_size);
+            }
+        } else {
+            // Legacy format: [length(4)][data(len)][null(1)]
+            let total_len = 4 + len + 1;
+            let _ = Vec::from_raw_parts(ptr, total_len, total_len);
+            
+            #[cfg(debug_assertions)]
+            {
+                eprintln!("dealloc_string: deallocated legacy format string at {:p} with length {} (total size: {})",
+                         ptr, len, total_len);
+            }
+        }
     }
+}
+
+/// Safely try to read a slice of bytes without causing undefined behavior
+/// Returns None if the memory can't be safely read
+unsafe fn try_read_bytes(ptr: *const u8, len: usize) -> Option<Vec<u8>> {
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+    
+    // Create a buffer to hold the bytes
+    let mut buffer = vec![0u8; len];
+    
+    // Try to copy the bytes, but safely
+    for i in 0..len {
+        // Check if we can safely read this address
+        // This is a simplified check and not 100% safe in all cases
+        // but it's better than nothing
+        if ptr.add(i).is_null() || ptr.add(i) as usize > usize::MAX - 100 {
+            return None;
+        }
+        buffer[i] = *ptr.add(i);
+    }
+    
+    Some(buffer)
 }
 
 /// Get length of a string at a pointer
