@@ -59,6 +59,11 @@ export interface Cassette {
      * @param closeStr Close string in JSON format
      */
     close?: (closeStr: string) => string;
+    
+    /**
+     * Get JSON schema for the cassette
+     */
+    getSchema?: () => string;
   };
   
   /**
@@ -135,4 +140,21 @@ export class CassetteLoadError extends Error {
     super(message);
     this.name = 'CassetteLoadError';
   }
+}
+
+/**
+ * Object containing available methods for interacting with a cassette
+ */
+export interface CassetteMethods {
+  /** Get metadata about the cassette */
+  describe: () => string;
+  
+  /** Process a request and return a response */
+  req: (requestStr: string) => string;
+  
+  /** Close a subscription (optional) */
+  close?: (closeStr: string) => string;
+  
+  /** Get JSON schema for the cassette (optional) */
+  getSchema?: () => string;
 } 

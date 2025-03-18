@@ -2,21 +2,25 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 use std::fs;
-use std::io::{self, Read};
-use std::path::PathBuf;
+use std::io::{self, Read, Write, BufReader};
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
-use chrono::Local;
+use chrono::{Local, Utc};
+use std::process::Command;
+use std::fs::File;
+use tempfile::tempdir;
+use std::collections::HashMap;
 
 // Module for cassette generation
 mod generator {
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::{Path, PathBuf};
+    use std::collections::HashMap;
     use anyhow::{Context, Result, anyhow};
     use handlebars::Handlebars;
     use serde_json::{json, Value};
     use std::process::Command;
-    use tempfile::tempdir;
     use uuid::Uuid;
     use chrono::Local;
 
@@ -25,93 +29,78 @@ mod generator {
     const TEMPLATE_CARGO: &str = include_str!("templates/Cargo.toml");
 
     pub struct CassetteGenerator {
-        events: Value,
-        name: String,
-        description: String,
-        author: String,
         output_dir: PathBuf,
+        name: String,
+        project_dir: PathBuf,
+        template_vars: HashMap<String, String>,
     }
 
     impl CassetteGenerator {
         pub fn new(
-            events: Value,
-            name: Option<String>,
-            description: Option<String>,
-            author: Option<String>,
-            output_dir: Option<PathBuf>,
+            output_dir: PathBuf,
+            name: &str,
+            project_dir: &Path,
         ) -> Self {
-            // Generate default values if not provided
-            let name = name.unwrap_or_else(|| format!("cassette-{}", Uuid::new_v4().to_string().split('-').next().unwrap()));
-            let description = description.unwrap_or_else(|| "Generated Nostr events cassette".to_string());
-            let author = author.unwrap_or_else(|| "Cassette CLI".to_string());
-            let output_dir = output_dir.unwrap_or_else(|| PathBuf::from("cassettes"));
-
             Self {
-                events,
-                name,
-                description,
-                author,
                 output_dir,
+                name: name.to_string(),
+                project_dir: project_dir.to_path_buf(),
+                template_vars: HashMap::new(),
             }
         }
 
-        pub fn generate(&self) -> Result<PathBuf> {
-            // Create a temporary directory for building
-            let temp_dir = tempdir().context("Failed to create temporary directory")?;
-            let temp_path = temp_dir.path();
-
-            // Create a project structure
-            self.create_project_structure(temp_path)?;
-
-            // Build the WASM module
-            let output_path = self.build_wasm(temp_path)?;
-
-            // Copy the output to the destination
-            self.copy_output(output_path)?;
-
-            // Return the path to the generated WASM file
-            let wasm_path = self.output_dir.join(format!("{}.wasm", self.name));
-            
-            Ok(wasm_path)
+        pub fn set_var(&mut self, key: &str, value: &str) {
+            self.template_vars.insert(key.to_string(), value.to_string());
         }
 
-        fn create_project_structure(&self, base_dir: &Path) -> Result<()> {
-            // Create src directory
-            let src_dir = base_dir.join("src");
+        pub fn generate(&self) -> Result<PathBuf> {
+            // Create src directory if it doesn't exist
+            let src_dir = self.project_dir.join("src");
             fs::create_dir_all(&src_dir).context("Failed to create src directory")?;
 
             // Create the lib.rs file from template
-            let struct_name = self.name.replace("-", "_").replace(" ", "_");
-            let struct_name = struct_name.split('_')
-                .map(|s| s.chars().next().unwrap().to_uppercase().to_string() + &s[1..])
-                .collect::<String>();
+            self.create_project_files(&src_dir)?;
 
+            // Build the WASM module
+            let output_path = self.build_wasm(&self.project_dir)?;
+
+            // Copy the output to the destination
+            let dest_path = self.copy_output(output_path)?;
+            
+            Ok(dest_path)
+        }
+
+        fn create_project_files(&self, src_dir: &Path) -> Result<()> {
             // Create Handlebars instance for template rendering
             let mut handlebars = Handlebars::new();
             handlebars.set_strict_mode(true);
 
-            // Get the JSON string and event count
-            let events_json = serde_json::to_string(&self.events).unwrap_or_else(|_| "[]".to_string());
-            let event_count = match &self.events {
-                Value::Array(events) => events.len(),
-                _ => 0
-            };
+            // Convert template vars to JSON
+            let mut template_data = json!({});
+            let obj = template_data.as_object_mut().unwrap();
+            
+            for (key, value) in &self.template_vars {
+                obj.insert(key.clone(), json!(value));
+            }
 
-            // Prepare the template data
-            let template_data = json!({
-                "events_json": events_json,
-                "cassette_name": self.name,
-                "cassette_description": self.description,
-                "cassette_version": "0.1.0",
-                "cassette_author": self.author,
-                "cassette_created": Local::now().to_rfc3339(),
-                "cassette_struct": struct_name,
-                "event_count": event_count
-            });
-
+            // Sanitize the cassette name for use as a Rust struct name
+            // Replace hyphens with underscores and ensure it's a valid Rust identifier
+            let sanitized_name = self.name.replace("-", "_").replace(" ", "_");
+            obj.insert("sanitized_name".to_string(), json!(sanitized_name));
+            
+            // Debug: Print template data
+            println!("Debug: Template data: {}", serde_json::to_string_pretty(&template_data).unwrap_or_default());
+            
             // Render the lib.rs template
             let lib_rs_content = handlebars.render_template(TEMPLATE_RS, &template_data)
                 .context("Failed to render lib.rs template")?;
+
+            // Debug: Write the rendered template to a log file
+            let log_dir = PathBuf::from("../logs");
+            fs::create_dir_all(&log_dir).ok(); // Ignore errors
+            let log_path = log_dir.join("template_debug.rs");
+            let _ = fs::write(&log_path, &lib_rs_content); // Ignore errors
+            println!("Debug: Rendered template saved to {:?}", log_path);
 
             // Write the lib.rs file
             let lib_rs_path = src_dir.join("lib.rs");
@@ -127,7 +116,7 @@ mod generator {
             let cargo_data = json!({
                 "crate_name": self.name,
                 "version": "0.1.0",
-                "description": self.description,
+                "description": self.template_vars.get("cassette_description").unwrap_or(&"Generated Cassette".to_string()),
                 "cassette_tools_path": cassette_tools_path
             });
 
@@ -136,7 +125,7 @@ mod generator {
                 .context("Failed to render Cargo.toml template")?;
 
             // Write the Cargo.toml file
-            let cargo_path = base_dir.join("Cargo.toml");
+            let cargo_path = self.project_dir.join("Cargo.toml");
             let mut cargo_file = File::create(&cargo_path)
                 .context("Failed to create Cargo.toml file")?;
             cargo_file.write_all(cargo_content.as_bytes())
@@ -213,60 +202,17 @@ mod generator {
             Ok(wasm_path)
         }
 
-        fn copy_output(&self, wasm_path: PathBuf) -> Result<()> {
+        fn copy_output(&self, wasm_path: PathBuf) -> Result<PathBuf> {
             // Create the output directory if it doesn't exist
             fs::create_dir_all(&self.output_dir)
                 .context("Failed to create output directory")?;
 
             // Copy the WASM file to the output directory
-            let dest_path = self.output_dir.join(format!("{}.wasm", self.name));
+            let dest_path = self.output_dir.join(format!("{}@{}.wasm", self.name, "notes.json"));
             fs::copy(&wasm_path, &dest_path)
                 .context("Failed to copy WASM file to output directory")?;
 
-            // Generate JavaScript bindings using wasm-bindgen
-            self.generate_js_bindings(&dest_path)?;
-
-            Ok(())
-        }
-
-        fn generate_js_bindings(&self, wasm_path: &Path) -> Result<()> {
-            // Check if wasm-bindgen-cli is installed
-            let wasm_bindgen_version = Command::new("wasm-bindgen")
-                .arg("--version")
-                .output();
-
-            if wasm_bindgen_version.is_err() {
-                println!("Note: wasm-bindgen-cli is not installed. JavaScript bindings will not be generated.");
-                println!("To install wasm-bindgen-cli, run: cargo install wasm-bindgen-cli");
-                return Ok(());
-            }
-
-            // Run wasm-bindgen to generate JavaScript bindings with the web target
-            // This ensures clean naming and export names as specified with js_name attributes
-            let status = Command::new("wasm-bindgen")
-                .args(&[
-                    wasm_path.to_str().unwrap(),
-                    "--out-dir", self.output_dir.to_str().unwrap(),
-                    "--target", "web",
-                    "--no-typescript", // Optional: If you want to skip TypeScript generation
-                ])
-                .status();
-
-            match status {
-                Ok(status) if status.success() => {
-                    println!("JavaScript bindings generated successfully using standardized interface");
-                    Ok(())
-                },
-                Ok(_) => {
-                    println!("Warning: wasm-bindgen returned an error. JavaScript bindings may not have been generated correctly.");
-                    println!("Ensure your cassette implements the standardized WebAssembly interface.");
-                    Ok(())
-                },
-                Err(e) => {
-                    println!("Warning: Failed to run wasm-bindgen: {}", e);
-                    Ok(())
-                }
-            }
+            Ok(dest_path)
         }
     }
 }
@@ -325,235 +271,150 @@ fn main() -> Result<()> {
             description, 
             author, 
             output,
-            generate,
+            generate: _,
             no_bindings
         } => {
-            // Either read the file or stdin
-            let input = match input_file {
-                Some(path) => {
-                    fs::read_to_string(path)
-                        .with_context(|| format!("Failed to read input file: {}", path.display()))?
+            // Set default values if not provided
+            let name_value = name.clone().unwrap_or_else(|| "cassette".to_string());
+            let desc_value = description.clone().unwrap_or_else(|| "Generated cassette".to_string());
+            let author_value = author.clone().unwrap_or_else(|| "Cassette CLI".to_string());
+            let output_value = output.clone().unwrap_or_else(|| PathBuf::from("./cassettes"));
+            
+            // Check if input file exists
+            if let Some(path) = input_file {
+                if !path.exists() {
+                    return Err(anyhow!("Input file doesn't exist: {}", path.display()));
                 }
-                None => {
-                    // Read from stdin
-                    let mut buffer = String::new();
-                    io::stdin()
-                        .read_to_string(&mut buffer)
-                        .context("Failed to read from stdin")?;
-                    buffer
-                }
-            };
-
-            // Process the input events
-            process_events(&input, name.clone(), description.clone(), author.clone(), output.clone(), *generate, *no_bindings)?;
+                
+                process_events(
+                    path.to_str().unwrap(),
+                    &name_value,
+                    &desc_value,
+                    &author_value,
+                    &output_value,
+                    *no_bindings
+                )?;
+            } else {
+                return Err(anyhow!("No input file provided. Please specify a file."));
+            }
             
             Ok(())
         }
     }
 }
 
-fn process_events(
-    input: &str, 
-    name: Option<String>, 
-    description: Option<String>, 
-    author: Option<String>,
-    output_dir: Option<PathBuf>,
-    should_generate: bool,
-    no_bindings: bool
-) -> Result<()> {
-    // Parse the input as JSON
-    let events: Value = serde_json::from_str(input)
-        .context("Failed to parse input as JSON")?;
-    
-    // For now, just display information about what we would process
-    println!("=== Cassette CLI - Dub Command ===");
-    println!("Processing events for cassette creation...");
-    
-    if let Value::Array(events_array) = &events {
-        println!("\n📊 Event Summary:");
-        println!("  Total events: {}", events_array.len());
-        
-        // Count the number of events by kind
-        let mut kind_counts = std::collections::HashMap::new();
-        for event in events_array {
-            if let Some(kind) = event.get("kind").and_then(|k| k.as_i64()) {
-                *kind_counts.entry(kind).or_insert(0) += 1;
-            }
-        }
-        
-        // Display kind statistics
-        if !kind_counts.is_empty() {
-            println!("\n📋 Event Kinds:");
-            for (kind, count) in kind_counts.iter() {
-                println!("  Kind {}: {} events", kind, count);
-            }
-        }
-        
-        // Sample of events
-        println!("\n📝 Sample Events:");
-        for (i, event) in events_array.iter().take(2).enumerate() {
-            if let (Some(id), Some(kind), Some(pubkey)) = (
-                event.get("id").and_then(|id| id.as_str()),
-                event.get("kind").and_then(|k| k.as_i64()),
-                event.get("pubkey").and_then(|p| p.as_str()),
-            ) {
-                println!("  Event {}: ID={}, Kind={}, Pubkey={}", 
-                    i + 1, 
-                    id.chars().take(8).collect::<String>() + "...",
-                    kind,
-                    pubkey.chars().take(8).collect::<String>() + "..."
-                );
-            }
-        }
-        
-        if events_array.len() > 2 {
-            println!("  ... and {} more events", events_array.len() - 2);
-        }
-    } else {
-        println!("⚠️ Warning: Input is not an array of events");
-        println!("  Please provide a valid array of Nostr events");
-        return Err(anyhow!("Input is not an array of events"));
-    }
-    
-    // Show cassette metadata
-    let cassette_name = name.clone().unwrap_or_else(
-        || format!("cassette-{}", Uuid::new_v4().to_string().split('-').next().unwrap())
-    );
-    let cassette_description = description.clone().unwrap_or_else(
-        || "Generated Nostr events cassette".to_string()
-    );
-    let cassette_author = author.clone().unwrap_or_else(
-        || "Cassette CLI".to_string()
-    );
-    
-    println!("\n📦 Cassette Information:");
-    println!("  Name: {}", cassette_name);
-    println!("  Description: {}", cassette_description);
-    println!("  Author: {}", cassette_author);
-    println!("  Created: {}", Local::now().format("%Y-%m-%d %H:%M:%S"));
-    
-    // Generate the WASM module if requested
-    if should_generate {
-        println!("\n🔨 Generating WASM Module:");
-        println!("  Creating Rust project from template...");
-        
-        // Create a new cassette generator
-        let generator = generator::CassetteGenerator::new(
-            events,
-            name,
-            description,
-            author,
-            output_dir,
-        );
-        
-        // Generate the WASM module
-        match generator.generate() {
-            Ok(wasm_path) => {
-                println!("  WASM module generated successfully!");
-                println!("  Output: {}", wasm_path.display());
-                println!("\n✅ Cassette creation complete!");
-                println!("  You can load this WebAssembly module into the Boombox server.");
-            },
-            Err(e) => {
-                println!("  ❌ Failed to generate WASM module: {}", e);
-                return Err(anyhow!("Failed to generate WASM module: {}", e));
-            }
-        }
-    } else {
-        println!("\n📝 Generation Skipped:");
-        println!("  WASM module generation was disabled.");
-        println!("  Run with --generate=true to create the actual WebAssembly module.");
-    }
-    
-    // Call the generate_wasm_module function first to get the WASM file
-    let wasm_path = generate_wasm_module(&cassette_name, &cassette_description, &cassette_author, &output_dir.unwrap().join("Cargo.toml"), &output_dir.unwrap())?;
-
-    // Then optionally generate JS bindings
-    generate_js_bindings(&wasm_path, &output_dir.unwrap().join("dist"), no_bindings)?;
-    
-    Ok(())
-}
-
-// Function to generate a WASM module
-fn generate_wasm_module(
+pub fn process_events(
+    input_file: &str,
     name: &str,
     description: &str,
     author: &str,
-    cargo_path: &Path,
-    output_dir: &Path,
-) -> Result<PathBuf> {
-    // Build the WASM file
-    println!("  Building WebAssembly module...");
-    let status = Command::new(cargo_path)
-        .args(["build", "--target", "wasm32-unknown-unknown", "--release"])
-        .current_dir(output_dir)
-        .status()?;
-    
-    if !status.success() {
-        return Err(anyhow!("Failed to build WASM module. Cargo build returned error code."));
-    }
-    
-    // Get the package name sanitized for Cargo
-    let package_name_sanitized = name.replace(' ', "_").to_lowercase();
-    
-    // Create the target directory for the WASM file
-    let wasm_dir = output_dir.join("dist");
-    fs::create_dir_all(&wasm_dir)?;
-    
-    // Paths to the WASM files
-    let source_wasm = output_dir
-        .join("target")
-        .join("wasm32-unknown-unknown")
-        .join("release")
-        .join(format!("{}.wasm", package_name_sanitized));
-    
-    // Copy the WASM file to the dist directory
-    let dest_wasm = wasm_dir.join(format!("{}.wasm", package_name_sanitized));
-    fs::copy(&source_wasm, &dest_wasm)?;
-    
-    // Return the path to the WASM file
-    Ok(dest_wasm)
-}
+    output_dir: &PathBuf,
+    no_bindings: bool
+) -> Result<()> {
+    // Parse input file
+    let file = File::open(input_file)?;
+    let reader = BufReader::new(file);
+    let events: Vec<Value> = serde_json::from_reader(reader)?;
 
-// Function to generate JavaScript bindings (optional)
-fn generate_js_bindings(wasm_file: &Path, output_dir: &Path, no_bindings: bool) -> Result<()> {
-    if no_bindings {
-        println!("  Skipping JavaScript bindings generation");
-        println!("  The WASM file can be loaded directly using the standardized interface");
-        return Ok(());
+    // Count the number of events by kind
+    let mut kind_counts = std::collections::HashMap::new();
+    for event in &events {
+        if let Some(kind) = event.get("kind").and_then(|k| k.as_i64()) {
+            *kind_counts.entry(kind).or_insert(0) += 1;
+        }
     }
     
-    // Check if wasm-bindgen is installed
-    let wasm_bindgen_version = Command::new("wasm-bindgen")
-        .arg("--version")
-        .output();
+    // Display statistics
+    println!("=== Cassette CLI - Dub Command ===");
+    println!("Processing events for cassette creation...");
     
-    if wasm_bindgen_version.is_err() {
-        println!("  Note: wasm-bindgen-cli not installed. JavaScript bindings will not be generated.");
-        println!("  The WASM file can still be loaded directly using the standardized interface.");
-        return Ok(());
+    println!("\n📊 Event Summary:");
+    println!("  Total events: {}", events.len());
+    
+    // Display kind statistics
+    if !kind_counts.is_empty() {
+        println!("\n📋 Event Kinds:");
+        for (kind, count) in kind_counts.iter() {
+            println!("  Kind {}: {} events", kind, count);
+        }
     }
     
-    // Generate JavaScript bindings using wasm-bindgen
-    println!("  Generating JavaScript bindings with wasm-bindgen...");
-    
-    let status = Command::new("wasm-bindgen")
-        .args([
-            wasm_file.to_str().unwrap(),
-            "--out-dir", output_dir.to_str().unwrap(),
-            "--target", "web",
-            "--no-typescript",   // Skip TypeScript generation
-        ])
-        .status()?;
-    
-    if !status.success() {
-        println!("  ⚠️ Warning: Failed to generate JavaScript bindings");
-        println!("  The WASM file can still be loaded directly using the standardized interface.");
-        return Ok(());
+    // Sample of events
+    println!("\n📝 Sample Events:");
+    for (i, event) in events.iter().take(2).enumerate() {
+        if let (Some(id), Some(kind), Some(pubkey)) = (
+            event.get("id").and_then(|id| id.as_str()),
+            event.get("kind").and_then(|k| k.as_i64()),
+            event.get("pubkey").and_then(|p| p.as_str()),
+        ) {
+            println!("  Event {}: ID={}, Kind={}, Pubkey={}", 
+                i + 1, 
+                id.chars().take(8).collect::<String>() + "...",
+                kind,
+                pubkey.chars().take(8).collect::<String>() + "..."
+            );
+        }
     }
     
-    println!("  JavaScript bindings generated successfully using standardized interface");
-    println!("  Note: Make sure your cassette implements the standardized interface");
+    if events.len() > 2 {
+        println!("  ... and {} more events", events.len() - 2);
+    }
+
+    // Generate metadata
+    let cassette_created = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let event_count = events.len();
     
-    Ok(())
+    println!("\n📦 Cassette Information:");
+    println!("  Name: {}", name);
+    println!("  Description: {}", description);
+    println!("  Author: {}", author);
+    println!("  Created: {}", cassette_created);
+
+    // Create a temporary directory for building
+    let temp_dir = tempdir()?;
+    let project_dir = temp_dir.path().to_path_buf();
+    println!("Using project directory: {}", project_dir.display());
+
+    println!("\n🔨 Generating WASM Module:");
+    println!("  Creating Rust project from template...");
+    println!("  Using project directory: {}", project_dir.display());
+
+    // Write events to the src directory
+    let src_dir = project_dir.join("src");
+    fs::create_dir_all(&src_dir)?;
+    let events_json_path = src_dir.join("events.json");
+    let mut events_file = File::create(&events_json_path)?;
+    let events_json_string = serde_json::to_string(&events).unwrap();
+    events_file.write_all(events_json_string.as_bytes())?;
+
+    // Initialize generator with output path and name
+    let mut generator = generator::CassetteGenerator::new(
+        output_dir.clone(),
+        name,
+        &project_dir
+    );
+    
+    // Set template variables
+    generator.set_var("events_json", &events_json_string);
+    generator.set_var("cassette_name", name);
+    generator.set_var("cassette_description", description);
+    generator.set_var("cassette_author", author);
+    generator.set_var("cassette_created", &cassette_created);
+    generator.set_var("event_count", &event_count.to_string());
+    generator.set_var("cassette_version", "0.1.0");
+
+    // Generate the cassette
+    match generator.generate() {
+        Ok(wasm_path) => {
+            println!("  ✅ WASM module generated successfully!");
+            println!("  Output: {}", wasm_path.display());
+            println!("\n✅ Cassette creation complete!");
+            println!("  You can now load this WebAssembly module into the Boombox server.");
+            Ok(())
+        },
+        Err(e) => {
+            println!("  ❌ Failed to generate WASM module: {}", e);
+            Err(anyhow!("Failed to generate WASM module: {}", e))
+        }
+    }
 }

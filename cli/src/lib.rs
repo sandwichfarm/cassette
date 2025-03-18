@@ -94,6 +94,59 @@ impl TestCassette {
         <Self as Cassette>::get_schema_json()
     }
     
+    // Add new functions for memory-safe string handling
+    #[wasm_bindgen(js_name = "get_description_size")]
+    pub fn get_description_size() -> usize {
+        let description = Self::describe_impl();
+        description.len()
+    }
+    
+    #[wasm_bindgen(js_name = "get_schema_size")]
+    pub fn get_schema_size() -> usize {
+        let schema = Self::get_schema_impl();
+        schema.len()
+    }
+    
+    #[wasm_bindgen(js_name = "get_description_chunk")]
+    pub fn get_description_chunk(start: usize, length: usize) -> String {
+        let description = Self::describe_impl();
+        let end = (start + length).min(description.len());
+        if start >= description.len() {
+            return "".to_string();
+        }
+        description[start..end].to_string()
+    }
+    
+    #[wasm_bindgen(js_name = "get_schema_chunk")]
+    pub fn get_schema_chunk(start: usize, length: usize) -> String {
+        let schema = Self::get_schema_impl();
+        let end = (start + length).min(schema.len());
+        if start >= schema.len() {
+            return "".to_string();
+        }
+        schema[start..end].to_string()
+    }
+    
+    // Add memory management functions
+    #[wasm_bindgen(js_name = "allocString")]
+    pub fn alloc_string(len: usize) -> *mut u8 {
+        // Allocate memory with additional padding to prevent TypedArray errors
+        let mut buf = Vec::with_capacity(len + 16);
+        buf.resize(len + 16, 0);
+        let ptr = buf.as_mut_ptr();
+        std::mem::forget(buf);
+        ptr
+    }
+    
+    #[wasm_bindgen(js_name = "deallocString")]
+    pub fn dealloc_string(ptr: *mut u8, len: usize) {
+        unsafe {
+            let len_with_padding = len + 16;
+            let _ = Vec::from_raw_parts(ptr, len, len_with_padding);
+            // Memory will be deallocated when Vec is dropped
+        }
+    }
+    
     // Export a standardized req function
     #[wasm_bindgen(js_name = req)]
     pub fn req_impl(request_json: &str) -> String {

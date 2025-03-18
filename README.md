@@ -296,4 +296,72 @@ Successfully loaded cassette: custom_cassette
 Successfully loaded cassette: test_standardized_interface
 Loaded 2 cassettes
 Boombox server running on port 3001
-``` 
+```
+
+## Pure WebAssembly Interface
+
+The project now supports a pure WebAssembly interface for cassettes that doesn't depend on wasm-bindgen. This provides better cross-platform compatibility and simplifies the development process.
+
+### Building a Cassette with the Pure Interface
+
+1. Add the `cassette-core` dependency to your `Cargo.toml`:
+   ```toml
+   [dependencies]
+   cassette-core = { path = "../cassette-core" }
+   serde_json = "1.0"
+   ```
+
+2. Implement the `Cassette` trait in your library:
+   ```rust
+   use cassette_core::{Cassette, CassetteSchema, implement_cassette_exports};
+   use serde_json::json;
+
+   pub struct MyCassette;
+
+   impl Cassette for MyCassette {
+       fn describe() -> String {
+           json!({
+               "metadata": {
+                   "name": "My Cassette",
+                   "description": "A cool cassette",
+                   "version": "1.0.0"
+               }
+           }).to_string()
+       }
+       
+       fn get_schema() -> CassetteSchema {
+           CassetteSchema {
+               title: "My Schema".to_string(),
+               description: "Schema for my cassette".to_string(),
+               schema_type: "object".to_string(),
+               properties: json!({}),
+               required: vec![],
+               items: None,
+           }
+       }
+   }
+
+   // Implement the standard WebAssembly exports
+   implement_cassette_exports!(MyCassette);
+
+   // Implement the request handler function
+   #[no_mangle]
+   pub extern "C" fn req(ptr: *const u8, length: usize) -> *mut u8 {
+       // Implement your request handling logic here
+       // Use cassette_core::ptr_to_string and cassette_core::string_to_ptr for memory management
+   }
+   ```
+
+3. Build your cassette targeting WebAssembly:
+   ```bash
+   cargo build --target wasm32-unknown-unknown --release
+   ```
+
+4. That's it! No wasm-bindgen required. The resulting WebAssembly module will be compatible with all cassette consumers.
+
+### Benefits of the Pure Interface
+
+- **Simpler Build Process**: No need for wasm-bindgen or additional post-processing steps
+- **Cross-Platform Compatibility**: Works in both Node.js and browser environments without issues
+- **Memory-Safe**: Built-in memory management functions handle large data safely
+- **Backward Compatibility**: The loader still supports wasm-bindgen modules for backward compatibility 

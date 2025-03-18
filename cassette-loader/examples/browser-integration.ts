@@ -177,6 +177,52 @@ export class CassetteManager {
   }
   
   /**
+   * Load a cassette from an ArrayBuffer
+   * @param arrayBuffer The array buffer containing the WebAssembly binary
+   * @param fileName Optional file name for the cassette
+   * @param options Optional loader options
+   * @returns The loaded cassette or null if loading failed
+   */
+  public async loadCassetteFromArrayBuffer(arrayBuffer: ArrayBuffer, fileName: string, options: any = {}): Promise<Cassette | null> {
+    try {
+      console.log(`Loading cassette from ArrayBuffer, size: ${arrayBuffer.byteLength} bytes, name: ${fileName}`);
+      
+      // Merge options with defaults
+      const mergedOptions = {
+        debug: true,
+        ...options
+      };
+      
+      // Load the cassette using the core loadCassette function
+      const result = await loadCassette(arrayBuffer, fileName, mergedOptions);
+      
+      if (result.success && result.cassette) {
+        this.cassettes.set(result.cassette.id, result.cassette);
+        console.log(`Successfully loaded cassette from ArrayBuffer: ${result.cassette.name} (${result.cassette.id})`);
+        
+        // Emit event
+        this.emit('cassette-loaded', result.cassette);
+        
+        return result.cassette;
+      } else {
+        console.error(`Failed to load cassette from ArrayBuffer ${fileName}: ${result.error}`);
+        
+        // Emit error event
+        this.emit('cassette-error', { file: fileName, error: result.error });
+        
+        return null;
+      }
+    } catch (error: any) {
+      console.error(`Error loading cassette from ArrayBuffer ${fileName}:`, error.message || error);
+      
+      // Emit error event
+      this.emit('cassette-error', { file: fileName, error: error.message || error });
+      
+      return null;
+    }
+  }
+  
+  /**
    * Process a request through a specific cassette
    * @param cassetteId Cassette ID
    * @param request Request string
@@ -190,7 +236,63 @@ export class CassetteManager {
     
     try {
       console.log(`Processing request with cassette ${cassetteId}: ${request}`);
-      const response = cassette.methods.req(request);
+      
+      // Verify the cassette has a req method
+      if (!cassette.methods.req) {
+        console.error(`Cassette ${cassetteId} does not have a req method`);
+        return JSON.stringify(["NOTICE", "Cassette does not have a req method"]);
+      }
+      
+      // Get the function and log exports for debugging
+      console.log(`Available methods:`, Object.keys(cassette.methods));
+      if (cassette.exports) {
+        console.log(`Available exports:`, Object.keys(cassette.exports));
+      }
+      
+      // Try to call the req function
+      let response = cassette.methods.req(request);
+      console.log(`Raw response from cassette:`, response);
+      
+      // Handle undefined/null response
+      if (response === undefined || response === null) {
+        console.warn(`Cassette ${cassetteId} returned undefined/null for request: ${request}`);
+        
+        // Try to call the function directly from exports if available
+        if (cassette.exports && typeof cassette.exports.req === 'function') {
+          console.log(`Trying direct export call as fallback`);
+          response = cassette.exports.req(request);
+          console.log(`Direct export response:`, response);
+        }
+        
+        // If still undefined, create a proper NIP-01 notice
+        if (response === undefined || response === null) {
+          response = JSON.stringify(["NOTICE", "Function returned undefined or null"]);
+        }
+      }
+      
+      // Ensure response is a string
+      if (typeof response !== 'string') {
+        console.log(`Converting non-string response to string:`, response);
+        try {
+          response = JSON.stringify(response);
+        } catch (err) {
+          console.error(`Failed to stringify response:`, err);
+          response = JSON.stringify(["NOTICE", "Failed to stringify response"]);
+        }
+      }
+      
+      // Ensure response is valid NIP-01 format
+      try {
+        const parsed = JSON.parse(response);
+        if (!Array.isArray(parsed) || parsed.length < 2 || !["EVENT", "NOTICE", "EOSE", "OK"].includes(parsed[0])) {
+          console.warn(`Response is not in NIP-01 format, wrapping: ${response}`);
+          response = JSON.stringify(["NOTICE", response]);
+        }
+      } catch (e) {
+        // If it's not valid JSON, wrap in a NOTICE
+        console.warn(`Response is not valid JSON, wrapping: ${response}`);
+        response = JSON.stringify(["NOTICE", response]);
+      }
       
       // Emit event
       this.emit('cassette-response', { 
@@ -203,6 +305,9 @@ export class CassetteManager {
     } catch (error: any) {
       console.error(`Error processing request with cassette ${cassetteId}:`, error.message || error);
       
+      // Create a proper NIP-01 error notice
+      const errorResponse = JSON.stringify(["NOTICE", `Error: ${error.message || "Unknown error"}`]);
+      
       // Emit error event
       this.emit('cassette-error', { 
         cassetteId, 
@@ -210,7 +315,7 @@ export class CassetteManager {
         error: error.message || error 
       });
       
-      return null;
+      return errorResponse;
     }
   }
   

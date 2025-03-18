@@ -311,6 +311,78 @@ Here's an example of how to use the library in a Svelte application:
 </style>
 ```
 
+## Browser Usage
+
+The cassette-loader library is now bundled for browser use with esbuild. You can use it in your web applications in three ways:
+
+### 1. ES Module Import (Recommended)
+
+```html
+<script type="module">
+  import { CassetteManager, loadCassette } from './path/to/cassette-loader.js';
+  
+  // Initialize the CassetteManager
+  const manager = new CassetteManager();
+  
+  // Load a cassette from a URL
+  const cassette = await manager.loadCassetteFromUrl('path/to/your-cassette.wasm');
+  
+  // Process a request
+  const request = JSON.stringify(['REQ', 'subscription-id', { kinds: [1], limit: 5 }]);
+  const response = manager.processRequest(cassette.id, request);
+  console.log('Response:', response);
+</script>
+```
+
+### 2. UMD Bundle (For traditional script tags)
+
+```html
+<script src="./path/to/cassette-loader.umd.js"></script>
+<script>
+  // The library is available as the global variable CassetteLoader
+  const { CassetteManager, loadCassette } = CassetteLoader;
+  
+  // Initialize the CassetteManager
+  const manager = new CassetteManager();
+  
+  // Use the library as needed
+  // ...
+</script>
+```
+
+### 3. With a Module Bundler (webpack, rollup, etc.)
+
+```javascript
+// Install from npm
+// npm install --save cassette-loader
+
+// In your application code
+import { CassetteManager, loadCassette } from 'cassette-loader/browser';
+
+// Use the library as needed
+// ...
+```
+
+### Example: Loading a cassette from a File Input
+
+```javascript
+// Setup a file input for selecting WASM cassettes
+const fileInput = document.getElementById('cassette-file');
+fileInput.addEventListener('change', async (event) => {
+  if (event.target.files.length > 0) {
+    const file = event.target.files[0];
+    try {
+      const cassette = await manager.loadCassetteFromFile(file);
+      console.log('Loaded cassette:', cassette);
+    } catch (error) {
+      console.error('Error loading cassette:', error);
+    }
+  }
+});
+```
+
+For a complete example, see the [browser-demo.html](./examples/browser-demo.html) file.
+
 ## License
 
 ISC 

@@ -5,26 +5,29 @@
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
+  "browser": "dist/browser/cassette-loader.min.js",
   "types": "dist/index.d.ts",
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsc",
+    "build:browser": "node build.js",
+    "build:all": "npm run clean && npm run build && npm run build:browser",
     "clean": "rm -rf dist",
-    "prepublishOnly": "npm run clean && npm run build",
+    "prepublishOnly": "npm run build:all",
     "test": "node test.js"
   },
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/index.js"
     },
     "./browser": {
-      "import": "./dist/browser.js",
-      "require": "./dist/browser.js",
-      "types": "./dist/browser.d.ts"
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser/cassette-loader.js",
+      "require": "./dist/browser/cassette-loader.umd.js"
     }
   },
   "keywords": [
@@ -42,6 +45,7 @@
     "@types/node": "^20.12.1",
     "@types/webassembly-js-api": "^0.0.3",
     "@types/ws": "^8.5.10",
+    "esbuild": "^0.19.12",
     "typescript": "^5.3.3"
   }
 }

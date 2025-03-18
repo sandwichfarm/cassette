@@ -1,41 +1,30 @@
-use cassette_tools::{Cassette, CassetteSchema, RelayHandler, RelayResult, EventBasedHandler};
-use wasm_bindgen::prelude::*;
-use serde_json::{json, Value, from_str, to_string};
+use cassette_tools::{Cassette, CassetteSchema, RelayHandler, EventBasedHandler, string_to_ptr, ptr_to_string, dealloc_string};
+use serde_json::{json, to_string};
 
-// Include the events JSON at build time
-// The actual JSON content will be substituted during generation
-const EVENTS_JSON: &str = r#"{{events_json}}"#;
+// Import embedded events
+const EMBEDDED_EVENTS: &str = r#"{{events_json}}"#;
 
-// Metadata for this cassette
+// Define cassette constants
 const CASSETTE_NAME: &str = "{{cassette_name}}";
 const CASSETTE_DESC: &str = "{{cassette_description}}";
 const CASSETTE_VERSION: &str = "{{cassette_version}}";
 const CASSETTE_AUTHOR: &str = "{{cassette_author}}";
 const CASSETTE_CREATED: &str = "{{cassette_created}}";
 
-// Define our cassette struct
-#[wasm_bindgen]
-pub struct {{cassette_name}} {
+// Define cassette struct
+pub struct {{sanitized_name}} {
     handler: EventBasedHandler,
 }
 
-// Implement constructor and core methods
-#[wasm_bindgen]
-impl {{cassette_name}} {
-    // Constructor
-    #[wasm_bindgen(constructor)]
+impl {{sanitized_name}} {
     pub fn new() -> Self {
-        // Initialize with the embedded events
-        Self {
-            handler: EventBasedHandler::new(include_str!("events.json")),
-        }
+        let handler = EventBasedHandler::new(EMBEDDED_EVENTS);
+        Self { handler }
     }
+}
 
-    // Implementation of standardized interface:
-
-    /// Describe this cassette - returns metadata and schema information
-    #[wasm_bindgen(js_name = "describe")]
-    pub fn describe_wasm() -> String {
+impl Cassette for {{sanitized_name}} {
+    fn describe() -> String {
         // Create a comprehensive API description with metadata
         let description = json!({
             "metadata": {
@@ -43,7 +32,7 @@ impl {{cassette_name}} {
                 "description": "{{cassette_description}}",
                 "version": "0.1.0",
                 "author": "{{cassette_author}}",
-                "created": "{{created_at}}",
+                "created": "{{cassette_created}}",
                 "eventCount": {{event_count}} // Number of events in this cassette
             },
             "req": {
@@ -75,62 +64,6 @@ impl {{cassette_name}} {
         to_string(&description).unwrap_or_else(|_| "{}".to_string())
     }
     
-    /// Get JSON schema for this cassette
-    #[wasm_bindgen(js_name = "getSchema")]
-    pub fn get_schema_wasm() -> String {
-        <Self as Cassette>::get_schema_json()
-    }
-    
-    /// Process a REQ request
-    #[wasm_bindgen(js_name = "req")]
-    pub fn req_wasm(request_json: &str) -> String {
-        // Create an instance and handle the request
-        let instance = Self::new();
-        match instance.handler.handle_req(request_json) {
-            Ok(response) => response,
-            Err(err) => json!({
-                "notice": ["NOTICE", err]
-            }).to_string()
-        }
-    }
-    
-    /// Handle a CLOSE request
-    #[wasm_bindgen(js_name = "close")]
-    pub fn close_wasm(close_json: &str) -> String {
-        // Create an instance and handle the close
-        let instance = Self::new();
-        match instance.handler.handle_close(close_json) {
-            Ok(response) => response,
-            Err(err) => json!({
-                "notice": ["NOTICE", err]
-            }).to_string()
-        }
-    }
-    
-    /// Memory management: Allocate a string
-    #[wasm_bindgen(js_name = "allocString")]
-    pub fn alloc_string(len: usize) -> *mut u8 {
-        let mut buf = Vec::with_capacity(len);
-        let ptr = buf.as_mut_ptr();
-        std::mem::forget(buf);
-        ptr
-    }
-    
-    /// Memory management: Deallocate a string
-    #[wasm_bindgen(js_name = "deallocString")]
-    pub fn dealloc_string(ptr: *mut u8, len: usize) {
-        unsafe {
-            let _ = Vec::from_raw_parts(ptr, 0, len);
-        }
-    }
-}
-
-// Implement Cassette trait
-impl Cassette for {{cassette_name}} {
-    fn describe() -> String {
-        "{{cassette_description}}".to_string()
-    }
-    
     fn get_schema() -> CassetteSchema {
         CassetteSchema {
             title: "{{cassette_name}}".to_string(),
@@ -158,4 +91,198 @@ impl Cassette for {{cassette_name}} {
             items: None,
         }
     }
+}
+
+// Export WebAssembly functions
+#[no_mangle]
+pub extern "C" fn describe() -> *mut u8 {
+    let description = {{sanitized_name}}::describe();
+    string_to_ptr(description)
+}
+
+#[no_mangle]
+pub extern "C" fn get_schema() -> *mut u8 {
+    let schema = {{sanitized_name}}::get_schema_json();
+    string_to_ptr(schema)
+}
+
+#[no_mangle]
+pub extern "C" fn req(ptr: *const u8, length: usize) -> *mut u8 {
+    // Handle null pointer or invalid length case
+    if ptr.is_null() || length == 0 {
+        return string_to_ptr(json!(["NOTICE", "Error: Empty request received"]).to_string());
+    }
+
+    // Convert request from WebAssembly memory to a Rust string
+    let request_str = ptr_to_string(ptr, length);
+    
+    // Add simple validation to ensure we got a request string
+    if request_str.is_empty() {
+        return string_to_ptr(json!(["NOTICE", "Error: Failed to read request from memory"]).to_string());
+    }
+    
+    // Validate JSON structure before processing
+    match serde_json::from_str::<serde_json::Value>(&request_str) {
+        Ok(json_value) => {
+            // Validate it's an array with at least 2 elements (REQ + subscription ID)
+            if !json_value.is_array() {
+                return string_to_ptr(json!(["NOTICE", "Error: Invalid request format: expected JSON array"]).to_string());
+            }
+            
+            let json_array = json_value.as_array().unwrap();
+            if json_array.len() < 2 {
+                return string_to_ptr(json!(["NOTICE", "Error: Invalid REQ message: expected at least command and subscription ID"]).to_string());
+            }
+            
+            // Check if it's a REQ command
+            if let Some(cmd) = json_array[0].as_str() {
+                if cmd != "REQ" {
+                    return string_to_ptr(json!(["NOTICE", format!("Error: Unsupported command: {}", cmd)]).to_string());
+                }
+            } else {
+                return string_to_ptr(json!(["NOTICE", "Error: Invalid command format: expected string"]).to_string());
+            }
+            
+            // Check subscription ID
+            if let Some(sub_id) = json_array[1].as_str() {
+                if sub_id.trim().is_empty() {
+                    return string_to_ptr(json!(["NOTICE", "Error: Invalid subscription ID: cannot be empty"]).to_string());
+                }
+            } else {
+                return string_to_ptr(json!(["NOTICE", "Error: Invalid subscription ID: expected string"]).to_string());
+            }
+            
+            // Check filters (if provided)
+            if json_array.len() > 2 {
+                for (i, filter) in json_array.iter().skip(2).enumerate() {
+                    if !filter.is_object() {
+                        return string_to_ptr(json!(["NOTICE", format!("Error: Invalid filter at position {}: expected object", i+2)]).to_string());
+                    }
+                    
+                    // Check common filter fields
+                    if let Some(obj) = filter.as_object() {
+                        // Validate kinds is an array if present
+                        if let Some(kinds) = obj.get("kinds") {
+                            if !kinds.is_array() {
+                                return string_to_ptr(json!(["NOTICE", "Error: Invalid filter: 'kinds' must be an array"]).to_string());
+                            }
+                        }
+                        
+                        // Validate authors is an array if present
+                        if let Some(authors) = obj.get("authors") {
+                            if !authors.is_array() {
+                                return string_to_ptr(json!(["NOTICE", "Error: Invalid filter: 'authors' must be an array"]).to_string());
+                            }
+                        }
+                        
+                        // Validate other common filter fields as needed
+                        if let Some(limit) = obj.get("limit") {
+                            if !limit.is_number() {
+                                return string_to_ptr(json!(["NOTICE", "Error: Invalid filter: 'limit' must be a number"]).to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        Err(e) => {
+            return string_to_ptr(json!(["NOTICE", format!("Error: Invalid JSON: {}", e)]).to_string());
+        }
+    }
+    
+    // Process the request with improved error handling
+    let instance = {{sanitized_name}}::new();
+    let response = match instance.handler.handle_req(&request_str) {
+        Ok(response) => response,
+        Err(err) => {
+            // Format error as a proper NOTICE message
+            json!(["NOTICE", format!("Error: Request processing failed: {}", err)]).to_string()
+        }
+    };
+    
+    // Ensure we have a valid response
+    if response.is_empty() {
+        return string_to_ptr(json!(["NOTICE", "Error: Empty response from handler"]).to_string());
+    }
+    
+    // Convert response to a pointer to be returned to WebAssembly
+    string_to_ptr(response)
+}
+
+#[no_mangle]
+pub extern "C" fn close(ptr: *const u8, length: usize) -> *mut u8 {
+    // Handle null pointer or invalid length case
+    if ptr.is_null() || length == 0 {
+        return string_to_ptr(json!(["NOTICE", "Error: Empty close request received"]).to_string());
+    }
+    
+    // Convert close command from WebAssembly memory to a Rust string
+    let close_str = ptr_to_string(ptr, length);
+    
+    // Add simple validation to ensure we got a close string
+    if close_str.is_empty() {
+        return string_to_ptr(json!(["NOTICE", "Error: Failed to read close request from memory"]).to_string());
+    }
+    
+    // Validate JSON structure before processing
+    match serde_json::from_str::<serde_json::Value>(&close_str) {
+        Ok(json_value) => {
+            // Validate it's an array with at least 2 elements (CLOSE + subscription ID)
+            if !json_value.is_array() {
+                return string_to_ptr(json!(["NOTICE", "Error: Invalid close request format: expected JSON array"]).to_string());
+            }
+            
+            let json_array = json_value.as_array().unwrap();
+            if json_array.len() < 2 {
+                return string_to_ptr(json!(["NOTICE", "Error: Invalid CLOSE message: expected command and subscription ID"]).to_string());
+            }
+            
+            // Check if it's a CLOSE command
+            if let Some(cmd) = json_array[0].as_str() {
+                if cmd != "CLOSE" {
+                    return string_to_ptr(json!(["NOTICE", format!("Error: Unsupported command: {}", cmd)]).to_string());
+                }
+            } else {
+                return string_to_ptr(json!(["NOTICE", "Error: Invalid command format: expected string"]).to_string());
+            }
+            
+            // Check subscription ID
+            if let Some(sub_id) = json_array[1].as_str() {
+                if sub_id.trim().is_empty() {
+                    return string_to_ptr(json!(["NOTICE", "Error: Invalid subscription ID: cannot be empty"]).to_string());
+                }
+            } else {
+                return string_to_ptr(json!(["NOTICE", "Error: Invalid subscription ID: expected string"]).to_string());
+            }
+            
+            // Process the close command with proper error handling
+            let instance = {{sanitized_name}}::new();
+            let response = match instance.handler.handle_close(&close_str) {
+                Ok(response) => response,
+                Err(err) => {
+                    // Format error as a proper NOTICE message
+                    json!(["NOTICE", format!("Error: Close processing failed: {}", err)]).to_string()
+                }
+            };
+            
+            // Ensure we have a valid response
+            if response.is_empty() {
+                return string_to_ptr(json!(["NOTICE", "Error: Empty response from close handler"]).to_string());
+            }
+            
+            // Convert response to a pointer to be returned to WebAssembly
+            string_to_ptr(response)
+        },
+        Err(e) => {
+            return string_to_ptr(json!(["NOTICE", format!("Error: Invalid JSON in close request: {}", e)]).to_string());
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn alloc_string(len: usize) -> *mut u8 {
+    let mut buffer = Vec::with_capacity(len);
+    let ptr = buffer.as_mut_ptr();
+    std::mem::forget(buffer);
+    ptr
 } 
