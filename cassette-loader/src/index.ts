@@ -12,7 +12,8 @@ import {
   CassetteLoadError,
   CassetteLoadResult,
   CassetteMetadata,
-  CassetteSource
+  CassetteSource,
+  EventTracker
 } from './types.js';
 
 // Export error classes
@@ -26,7 +27,8 @@ export {
   isBrowser,
   isNode,
   generateCassetteId,
-  createLogger
+  createLogger,
+  createEventTracker
 } from './utils.js';
 
 // Re-export types for consumers
@@ -35,7 +37,8 @@ export type {
   CassetteLoaderOptions,
   CassetteLoadResult,
   CassetteMetadata,
-  CassetteSource
+  CassetteSource,
+  EventTracker
 };
 
 /**

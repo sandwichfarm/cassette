@@ -10,7 +10,8 @@ import {
   generateCassetteId,
   createLogger,
   isBrowser,
-  isNode
+  isNode,
+  createEventTracker
 } from './utils.js';
 import { WasmMemoryManager, createMemoryManager } from './memory.js';
 
@@ -20,7 +21,8 @@ import { WasmMemoryManager, createMemoryManager } from './memory.js';
 const DEFAULT_OPTIONS: CassetteLoaderOptions = {
   memoryInitialSize: 16,
   exposeExports: false,
-  debug: false
+  debug: false,
+  deduplicateEvents: true
 };
 
 /**
@@ -67,6 +69,7 @@ class CoreCassetteInterface {
   private memory: WebAssembly.Memory;
   private memoryManager: WasmMemoryManager;
   private logger: ReturnType<typeof createLogger>;
+  private eventTracker = createEventTracker();
   
   constructor(instance: WebAssembly.Instance, debug = false) {
     this.exports = instance.exports;
@@ -143,6 +146,23 @@ class CoreCassetteInterface {
       throw new Error('req function not implemented by cassette');
     }
     
+    // Parse the request to determine if it's a new REQ
+    let isNewReq = false;
+    try {
+      const parsedReq = JSON.parse(requestStr);
+      if (Array.isArray(parsedReq) && parsedReq.length >= 2 && parsedReq[0] === "REQ") {
+        isNewReq = true;
+        this.logger.log('New REQ message detected, resetting event tracker');
+        
+        // Reset the event tracker for new REQ messages
+        if (this.eventTracker) {
+          this.eventTracker.reset();
+        }
+      }
+    } catch (parseError) {
+      this.logger.warn(`Failed to parse request string: ${parseError}`);
+    }
+    
     // Write request string to memory
     let requestPtr = 0;
     let resultPtr = 0;
@@ -197,25 +217,50 @@ class CoreCassetteInterface {
             // Handle standard NIP-01 message types
             if (parsed[0] === "NOTICE" || parsed[0] === "EVENT" || parsed[0] === "EOSE") {
               this.logger.log(`Received ${parsed[0]}: ${parsed[1]?.substring?.(0, 50) || ''}`);
+              
+              // For EVENT messages, check if the event is a duplicate
+              if (parsed[0] === "EVENT" && parsed.length >= 3 && this.eventTracker && 
+                  typeof parsed[2] === 'object' && parsed[2].id) {
+                const eventId = parsed[2].id;
+                if (!this.eventTracker.addAndCheck(eventId)) {
+                  this.logger.log(`Skipping duplicate event with ID: ${eventId}`);
+                  return JSON.stringify(["NOTICE", `Skipping duplicate event: ${eventId}`]);
+                }
+              }
+              
               return result; // Return NIP-01 formatted message as is
             }
           }
           
-          // If it's an array of events, return it directly
+          // If it's an array of events, deduplicate and return it
           if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].id && parsed[0].kind !== undefined) {
-            this.logger.log('Result is an array of events, returning directly');
+            this.logger.log('Result is an array of events, deduplicating');
+            if (this.eventTracker) {
+              const deduplicatedEvents = this.eventTracker.filterDuplicates(parsed);
+              this.logger.log(`Filtered out ${parsed.length - deduplicatedEvents.length} duplicate events`);
+              return JSON.stringify(deduplicatedEvents);
+            }
             return result;
           }
           
           // If it's NOT a proper NIP-01 message, handle accordingly
           if (parsed.events && Array.isArray(parsed.events)) {
-            this.logger.log('Result contains events array, returning that');
+            this.logger.log('Result contains events array, deduplicating');
+            if (this.eventTracker) {
+              const deduplicatedEvents = this.eventTracker.filterDuplicates(parsed.events);
+              this.logger.log(`Filtered out ${parsed.events.length - deduplicatedEvents.length} duplicate events`);
+              return JSON.stringify(deduplicatedEvents);
+            }
             return JSON.stringify(parsed.events);
           }
           
-          // If it has a single event object, wrap it in an array
+          // If it has a single event object, wrap it in an array and check for duplicates
           if (parsed.id && parsed.pubkey && parsed.kind !== undefined) {
-            this.logger.log('Result is a single event, wrapping in array');
+            this.logger.log('Result is a single event, checking for duplicates');
+            if (this.eventTracker && !this.eventTracker.addAndCheck(parsed.id)) {
+              this.logger.log(`Skipping duplicate event with ID: ${parsed.id}`);
+              return JSON.stringify(["NOTICE", `Skipping duplicate event: ${parsed.id}`]);
+            }
             return JSON.stringify([parsed]);
           }
           
@@ -234,8 +279,17 @@ class CoreCassetteInterface {
         
         // Handle object response formats
         if (parsed.events && Array.isArray(parsed.events)) {
+          if (this.eventTracker) {
+            const deduplicatedEvents = this.eventTracker.filterDuplicates(parsed.events);
+            this.logger.log(`Filtered out ${parsed.events.length - deduplicatedEvents.length} duplicate events`);
+            return JSON.stringify(deduplicatedEvents);
+          }
           return JSON.stringify(parsed.events);
         } else if (parsed.id && parsed.pubkey && parsed.kind !== undefined) {
+          if (this.eventTracker && !this.eventTracker.addAndCheck(parsed.id)) {
+            this.logger.log(`Skipping duplicate event with ID: ${parsed.id}`);
+            return JSON.stringify(["NOTICE", `Skipping duplicate event: ${parsed.id}`]);
+          }
           return JSON.stringify([parsed]);
         }
         
@@ -519,7 +573,8 @@ export async function loadCassette(
         req: (requestStr: string) => coreInterface.req(requestStr),
         close: (closeStr: string) => coreInterface.close(closeStr),
         getSchema: () => coreInterface.getSchema()
-      }
+      },
+      eventTracker: opts.deduplicateEvents !== false ? createEventTracker() : undefined
     };
     
     // Optionally expose exports and instance for advanced usage

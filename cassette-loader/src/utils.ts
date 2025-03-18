@@ -32,9 +32,8 @@ export async function readFileNode(path: string): Promise<ArrayBuffer> {
     // Dynamic import to avoid issues in browser environment
     const { readFile } = await import('fs/promises');
     const buffer = await readFile(path);
-    // Create a new ArrayBuffer to ensure we don't return a SharedArrayBuffer
-    const arrayBuffer = new Uint8Array(buffer).buffer;
-    return arrayBuffer;
+    // Create a fresh ArrayBuffer to comply with type requirements
+    return new Uint8Array(buffer).buffer as ArrayBuffer;
   } catch (error: any) {
     throw new Error(`Failed to read file: ${error.message || error}`);
   }
@@ -53,7 +52,9 @@ export async function fetchFile(url: string): Promise<ArrayBuffer> {
       if (!response.ok) {
         throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
       }
-      return await response.arrayBuffer();
+      const buffer = await response.arrayBuffer();
+      // Type assertion to ensure ArrayBuffer type
+      return buffer as ArrayBuffer;
     }
     
     // In Node.js, try to use fetch or fallback to fs
@@ -65,8 +66,8 @@ export async function fetchFile(url: string): Promise<ArrayBuffer> {
           throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
         }
         const buffer = await response.arrayBuffer();
-        // Create a new ArrayBuffer to ensure we don't return a SharedArrayBuffer
-        return new Uint8Array(buffer).buffer;
+        // Type assertion to ensure ArrayBuffer type
+        return buffer as ArrayBuffer;
       } catch (error) {
         // Fallback to fs if it's a local file
         if (url.startsWith('file://') || !url.includes('://')) {
@@ -137,8 +138,8 @@ export async function toArrayBuffer(data: File | string | ArrayBuffer | Uint8Arr
   // If it's a typed array, get its buffer
   if (ArrayBuffer.isView(data)) {
     const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-    // Create a new ArrayBuffer to ensure we don't return a SharedArrayBuffer
-    return new Uint8Array(buffer).buffer;
+    // Type assertion to ensure ArrayBuffer type
+    return buffer as ArrayBuffer;
   }
   
   // If it's a File, read it
@@ -163,4 +164,45 @@ export async function toArrayBuffer(data: File | string | ArrayBuffer | Uint8Arr
   }
   
   throw new Error('Unsupported data type');
+}
+
+import { EventTracker } from './types.js';
+
+/**
+ * Creates an event tracker for deduplicating events
+ * @returns An EventTracker instance
+ */
+export function createEventTracker(): EventTracker {
+  const eventIds = new Set<string>();
+  
+  return {
+    eventIds,
+    
+    reset() {
+      eventIds.clear();
+    },
+    
+    addAndCheck(id: string): boolean {
+      if (eventIds.has(id)) {
+        return false; // Already seen this event
+      }
+      
+      eventIds.add(id);
+      return true; // New event
+    },
+    
+    filterDuplicates(events: any[]): any[] {
+      if (!events || !Array.isArray(events)) {
+        return events;
+      }
+      
+      return events.filter(event => {
+        if (!event || typeof event !== 'object' || !event.id) {
+          return true; // Not a valid event object, keep it
+        }
+        
+        return this.addAndCheck(event.id);
+      });
+    }
+  };
 } 

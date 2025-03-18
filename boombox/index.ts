@@ -4,8 +4,9 @@ import { join, dirname } from "path";
 import { readFileSync, readdirSync } from "fs";
 import { fileURLToPath } from "url";
 import { validate } from "./schema-validator.js";
-import type { Cassette as LoaderCassette } from "../cassette-loader/src/types";
+import type { Cassette as LoaderCassette, EventTracker } from "../cassette-loader/src/types";
 import { loadCassette } from "../cassette-loader/dist/src/index.js";
+import { createEventTracker } from "../cassette-loader/src/utils.js";
 
 // Get the current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -32,6 +33,7 @@ interface SubscriptionData {
   id: string;
   filters: any[];
   active: boolean;
+  eventTracker: EventTracker;
 }
 
 interface WebSocketData {
@@ -276,7 +278,8 @@ async function handleReqMessage(ws: ServerWebSocket<WebSocketData>, args: any[])
   ws.data.subscriptions.set(subId, {
     id: subId,
     filters,
-    active: true
+    active: true,
+    eventTracker: createEventTracker()
   });
   
   if (cassettes.length === 0) {
@@ -284,10 +287,14 @@ async function handleReqMessage(ws: ServerWebSocket<WebSocketData>, args: any[])
     const matchingEvents = filterEvents(filters);
     console.log(`No cassettes available, using ${matchingEvents.length} filtered real events directly`);
     
-    // Send matching events
+    // Send matching events (deduplicated)
     for (const event of matchingEvents) {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(["EVENT", subId, event]));
+        // Check if we've already seen this event
+        const subscriptionData = ws.data.subscriptions.get(subId);
+        if (subscriptionData && subscriptionData.eventTracker.addAndCheck(event.id)) {
+          ws.send(JSON.stringify(["EVENT", subId, event]));
+        }
       }
     }
     
@@ -352,8 +359,12 @@ async function handleReqMessage(ws: ServerWebSocket<WebSocketData>, args: any[])
             console.log(`Using ${matchingEvents.length} events from notes.json as fallback`);
             for (const event of matchingEvents) {
               if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify(["EVENT", subId, event]));
-                hasResults = true;
+                // Check if we've already seen this event
+                const subscriptionData = ws.data.subscriptions.get(subId);
+                if (subscriptionData && subscriptionData.eventTracker.addAndCheck(event.id)) {
+                  ws.send(JSON.stringify(["EVENT", subId, event]));
+                  hasResults = true;
+                }
               }
             }
           }
@@ -391,15 +402,28 @@ async function handleReqMessage(ws: ServerWebSocket<WebSocketData>, args: any[])
       console.log(`No results from cassettes, using ${matchingEvents.length} events from notes.json`);
       for (const event of matchingEvents) {
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify(["EVENT", subId, event]));
+          // Check if we've already seen this event
+          const subscriptionData = ws.data.subscriptions.get(subId);
+          if (subscriptionData && subscriptionData.eventTracker.addAndCheck(event.id)) {
+            ws.send(JSON.stringify(["EVENT", subId, event]));
+          }
         }
       }
     }
   }
 }
 
-// Helper function to process responses from cassettes
+// Update the processResponse function to use the event tracker
 function processResponse(ws: ServerWebSocket<WebSocketData>, subId: string, response: string, cassetteName: string) {
+  // Get the subscription data and event tracker
+  const subscriptionData = ws.data.subscriptions.get(subId);
+  if (!subscriptionData) {
+    console.warn(`Subscription ${subId} not found, cannot process response`);
+    return;
+  }
+  
+  const eventTracker = subscriptionData.eventTracker;
+  
   // Check for corrupted response patterns
   if (response.startsWith('TICE') || response.includes('TICE","')) {
     console.error(`Corrupted NOTICE response detected from ${cassetteName}`);
@@ -428,13 +452,19 @@ function processResponse(ws: ServerWebSocket<WebSocketData>, subId: string, resp
     
     // Handle NIP-01 EVENT message
     if (Array.isArray(parsedResponse) && parsedResponse.length >= 2 && parsedResponse[0] === "EVENT") {
-      // Forward EVENT to client
-      console.log(`Forwarding EVENT from ${cassetteName}`);
-      if (parsedResponse.length === 2) {
-        // Add subscription ID if missing
-        ws.send(JSON.stringify(["EVENT", subId, parsedResponse[1]]));
+      // Forward EVENT to client if not a duplicate
+      console.log(`Checking EVENT from ${cassetteName} for duplicates`);
+      const event = parsedResponse.length === 2 ? parsedResponse[1] : parsedResponse[2];
+      
+      if (event && event.id && eventTracker.addAndCheck(event.id)) {
+        if (parsedResponse.length === 2) {
+          // Add subscription ID if missing
+          ws.send(JSON.stringify(["EVENT", subId, event]));
+        } else {
+          ws.send(JSON.stringify(parsedResponse));
+        }
       } else {
-        ws.send(JSON.stringify(parsedResponse));
+        console.log(`Skipping duplicate event ${event?.id || 'unknown'}`);
       }
       return;
     }
@@ -458,12 +488,14 @@ function processResponse(ws: ServerWebSocket<WebSocketData>, subId: string, resp
           firstItem.pubkey &&
           typeof firstItem.kind === 'number') {
         
-        console.log(`Got ${parsedResponse.length} events from ${cassetteName}`);
+        console.log(`Got ${parsedResponse.length} events from ${cassetteName}, deduplicating`);
         
-        // Send each event as a proper NIP-01 EVENT message
+        // Send each event as a proper NIP-01 EVENT message (if not duplicate)
         for (const event of parsedResponse) {
-          if (ws.readyState === WebSocket.OPEN) {
+          if (ws.readyState === WebSocket.OPEN && event.id && eventTracker.addAndCheck(event.id)) {
             ws.send(JSON.stringify(["EVENT", subId, event]));
+          } else {
+            console.log(`Skipping duplicate event ${event?.id || 'unknown'}`);
           }
         }
         return;
@@ -478,15 +510,18 @@ function processResponse(ws: ServerWebSocket<WebSocketData>, subId: string, resp
         Array.isArray(parsedResponse.events) && 
         parsedResponse.events.length > 0) {
       
-      console.log(`Got ${parsedResponse.events.length} events in events array from ${cassetteName}`);
+      console.log(`Got ${parsedResponse.events.length} events in events array from ${cassetteName}, deduplicating`);
       
-      // Send each event as a proper NIP-01 EVENT message
+      // Send each event as a proper NIP-01 EVENT message (if not duplicate)
       for (const event of parsedResponse.events) {
         if (ws.readyState === WebSocket.OPEN && 
             event.id && 
             event.pubkey && 
-            typeof event.kind === 'number') {
+            typeof event.kind === 'number' &&
+            eventTracker.addAndCheck(event.id)) {
           ws.send(JSON.stringify(["EVENT", subId, event]));
+        } else {
+          console.log(`Skipping duplicate event ${event?.id || 'unknown'}`);
         }
       }
       return;

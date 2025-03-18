@@ -11,6 +11,35 @@ export interface CassetteMetadata {
 }
 
 /**
+ * Interface for tracking unique events to avoid duplicates
+ */
+export interface EventTracker {
+  /**
+   * Set of event IDs to track unique events
+   */
+  eventIds: Set<string>;
+  
+  /**
+   * Reset the tracker
+   */
+  reset(): void;
+  
+  /**
+   * Add an event ID and check if it was already seen
+   * @param id Event ID to check
+   * @returns true if event is new, false if duplicate
+   */
+  addAndCheck(id: string): boolean;
+  
+  /**
+   * Filter an array of events to remove duplicates
+   * @param events Array of events to filter
+   * @returns Array with duplicates removed
+   */
+  filterDuplicates(events: any[]): any[];
+}
+
+/**
  * Interface for a loaded Cassette with its methods
  */
 export interface Cassette {
@@ -80,6 +109,11 @@ export interface Cassette {
    * WebAssembly memory
    */
   memory?: WebAssembly.Memory;
+  
+  /**
+   * Event tracker for deduplication
+   */
+  eventTracker?: EventTracker;
 }
 
 /**
@@ -105,6 +139,11 @@ export interface CassetteLoaderOptions {
    * Debug mode (enables extra logging)
    */
   debug?: boolean;
+  
+  /**
+   * Whether to enable event deduplication
+   */
+  deduplicateEvents?: boolean;
 }
 
 /**
