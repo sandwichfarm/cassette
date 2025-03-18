@@ -303,6 +303,111 @@ fn main() -> Result<()> {
     }
 }
 
+/// Preprocess events to handle replaceable and addressable replaceable events according to NIP-01
+/// Returns a filtered list of events with only the latest version of each replaceable event
+fn preprocess_events(events: Vec<Value>) -> Vec<Value> {
+    // Maps to track the latest versions of replaceable events
+    // For replaceable events (10000-19999): Key format: "{pubkey}:{kind}"
+    // For addressable replaceable events (30000-39999): Key format: "{pubkey}:{kind}:{d_tag_value}"
+    let mut replaceable_events: HashMap<String, (usize, i64)> = HashMap::new();
+    let mut duplicates_removed = 0;
+    let mut total_replaceable = 0;
+    let mut total_addressable = 0;
+    
+    // First pass: identify all replaceable events and track their indices
+    for (i, event) in events.iter().enumerate() {
+        if let (Some(kind), Some(pubkey), Some(created_at)) = (
+            event.get("kind").and_then(|k| k.as_i64()),
+            event.get("pubkey").and_then(|p| p.as_str()),
+            event.get("created_at").and_then(|t| t.as_i64())
+        ) {
+            // Handle replaceable events (kinds 10000-19999)
+            if kind >= 10000 && kind <= 19999 {
+                total_replaceable += 1;
+                let key = format!("{}:{}", pubkey, kind);
+                
+                // Check if we already have this event type
+                if let Some((_, existing_ts)) = replaceable_events.get(&key) {
+                    if created_at > *existing_ts {
+                        // This is newer, replace the existing one
+                        replaceable_events.insert(key, (i, created_at));
+                    }
+                    duplicates_removed += 1;
+                } else {
+                    // First time seeing this event type
+                    replaceable_events.insert(key, (i, created_at));
+                }
+            }
+            // Handle addressable replaceable events (kinds 30000-39999)
+            else if kind >= 30000 && kind <= 39999 {
+                total_addressable += 1;
+                // Find the 'd' tag value
+                let d_tag_value = event.get("tags")
+                    .and_then(|tags| tags.as_array())
+                    .and_then(|tags_array| {
+                        tags_array.iter()
+                            .find(|tag| tag.as_array()
+                                .and_then(|t| t.get(0).and_then(|t0| t0.as_str()))
+                                .unwrap_or("") == "d"
+                            )
+                            .and_then(|tag| tag.as_array())
+                            .and_then(|tag_array| tag_array.get(1).and_then(|t1| t1.as_str()))
+                    })
+                    .unwrap_or("");
+                
+                let key = format!("{}:{}:{}", pubkey, kind, d_tag_value);
+                
+                // Check if we already have this event type
+                if let Some((_, existing_ts)) = replaceable_events.get(&key) {
+                    if created_at > *existing_ts {
+                        // This is newer, replace the existing one
+                        replaceable_events.insert(key, (i, created_at));
+                    }
+                    duplicates_removed += 1;
+                } else {
+                    // First time seeing this event type
+                    replaceable_events.insert(key, (i, created_at));
+                }
+            }
+        }
+    }
+    
+    // If no replaceable events were found, return the original list
+    if replaceable_events.is_empty() {
+        return events;
+    }
+    
+    // Second pass: build a new list with only the latest events
+    let mut filtered_events = Vec::with_capacity(events.len() - duplicates_removed);
+    let indices_to_keep: Vec<usize> = replaceable_events.values()
+        .map(|(index, _)| *index)
+        .collect();
+    
+    for (i, event) in events.into_iter().enumerate() {
+        // For regular events or the latest version of replaceable events
+        if let Some(kind) = event.get("kind").and_then(|k| k.as_i64()) {
+            if (kind >= 10000 && kind <= 19999) || (kind >= 30000 && kind <= 39999) {
+                // Only keep this replaceable event if it's in our indices_to_keep list
+                if indices_to_keep.contains(&i) {
+                    filtered_events.push(event);
+                }
+            } else {
+                // Non-replaceable event, keep it
+                filtered_events.push(event);
+            }
+        } else {
+            // If kind is missing, keep the event
+            filtered_events.push(event);
+        }
+    }
+    
+    println!("  Found {} replaceable events (kinds 10000-19999)", total_replaceable);
+    println!("  Found {} addressable replaceable events (kinds 30000-39999)", total_addressable);
+    println!("  Removed {} older versions of replaceable events", duplicates_removed);
+    
+    filtered_events
+}
+
 pub fn process_events(
     input_file: &str,
     name: &str,
@@ -314,22 +419,22 @@ pub fn process_events(
     // Parse input file
     let file = File::open(input_file)?;
     let reader = BufReader::new(file);
-    let events: Vec<Value> = serde_json::from_reader(reader)?;
-
-    // Count the number of events by kind
-    let mut kind_counts = std::collections::HashMap::new();
-    for event in &events {
-        if let Some(kind) = event.get("kind").and_then(|k| k.as_i64()) {
-            *kind_counts.entry(kind).or_insert(0) += 1;
-        }
-    }
+    let original_events: Vec<Value> = serde_json::from_reader(reader)?;
     
     // Display statistics
     println!("=== Cassette CLI - Dub Command ===");
     println!("Processing events for cassette creation...");
     
-    println!("\n📊 Event Summary:");
-    println!("  Total events: {}", events.len());
+    println!("\n📊 Initial Event Summary:");
+    println!("  Total events: {}", original_events.len());
+    
+    // Count the number of events by kind
+    let mut kind_counts = std::collections::HashMap::new();
+    for event in &original_events {
+        if let Some(kind) = event.get("kind").and_then(|k| k.as_i64()) {
+            *kind_counts.entry(kind).or_insert(0) += 1;
+        }
+    }
     
     // Display kind statistics
     if !kind_counts.is_empty() {
@@ -339,9 +444,16 @@ pub fn process_events(
         }
     }
     
+    // Preprocess events to handle replaceable and addressable events
+    println!("\n🔍 Preprocessing events according to NIP-01...");
+    let processed_events = preprocess_events(original_events);
+    
+    println!("\n📊 Final Event Summary:");
+    println!("  Total events after preprocessing: {}", processed_events.len());
+    
     // Sample of events
     println!("\n📝 Sample Events:");
-    for (i, event) in events.iter().take(2).enumerate() {
+    for (i, event) in processed_events.iter().take(2).enumerate() {
         if let (Some(id), Some(kind), Some(pubkey)) = (
             event.get("id").and_then(|id| id.as_str()),
             event.get("kind").and_then(|k| k.as_i64()),
@@ -356,13 +468,13 @@ pub fn process_events(
         }
     }
     
-    if events.len() > 2 {
-        println!("  ... and {} more events", events.len() - 2);
+    if processed_events.len() > 2 {
+        println!("  ... and {} more events", processed_events.len() - 2);
     }
 
     // Generate metadata
     let cassette_created = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let event_count = events.len();
+    let event_count = processed_events.len();
     
     println!("\n📦 Cassette Information:");
     println!("  Name: {}", name);
@@ -384,7 +496,7 @@ pub fn process_events(
     fs::create_dir_all(&src_dir)?;
     let events_json_path = src_dir.join("events.json");
     let mut events_file = File::create(&events_json_path)?;
-    let events_json_string = serde_json::to_string(&events).unwrap();
+    let events_json_string = serde_json::to_string(&processed_events).unwrap();
     events_file.write_all(events_json_string.as_bytes())?;
 
     // Initialize generator with output path and name

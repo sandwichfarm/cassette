@@ -269,6 +269,20 @@ validate_nip119_tags() {
   fi
 }
 
+# Validate that event deduplication is working correctly
+# Usage: validate_deduplication <output_file>
+validate_deduplication() {
+  local output_file="$1"
+  
+  # Check if the test reported success
+  if grep -q "No duplicates detected within subscriptions - Deduplication is working" "$output_file"; then
+    return 0
+  else
+    echo "❌ Deduplication test reported failures"
+    return 1
+  fi
+}
+
 # Test 1: Basic limit and kind filter
 run_test "Limit and Kind Filter" "nak req -l 2 -k 1 localhost:3001" "validate_event_count" 2
 
@@ -286,6 +300,9 @@ run_test "Author Filter" "nak req --author e771af0b05c8e95fcdf6feb3500544d2fb1cc
 
 # Test 6: NIP-119 AND tag filter
 run_test "NIP-119 AND Tag Filter" "node $(dirname "$0")/test-nip119.js" "validate_nip119_tags" "t" "value1" "value2"
+
+# Test 7: Event deduplication
+run_test "Event Deduplication" "node $(dirname "$0")/test-deduplication.js" "validate_deduplication"
 
 echo ""
 echo "🧮 Test Results: $TESTS_PASSED passed, $TESTS_FAILED failed"
