@@ -268,104 +268,114 @@ export class WasmMemoryManager {
     
     this.debug(`Writing string to memory (length ${str.length}): ${str.substring(0, 50)}${str.length > 50 ? '...' : ''}`);
     
-    // First try to use the module's custom allocation function
-    let ptr = 0;
-    
     // Create the UTF-8 encoded string
     const bytes = this.encoder.encode(str);
     
-    // Use allocString if available (most common name)
-    if (this.hasFunction('allocString')) {
-      this.debug('Using allocString function');
+    // Try alloc_buffer first (exported by cassette-tools)
+    if (this.hasFunction('alloc_buffer')) {
+      this.debug('Using alloc_buffer function');
       try {
-        ptr = this.callFunction('allocString', bytes.length);
+        const ptr = this.callFunction('alloc_buffer', bytes.length);
+        if (ptr === 0) {
+          this.debug('alloc_buffer returned null pointer');
+          return 0;
+        }
+        
         this.registerAllocation(ptr);
+        
+        // Copy the string data to WASM memory
+        const memory = new Uint8Array(this.memory.buffer);
+        
+        // Check buffer bounds
+        if (ptr + bytes.length > memory.length) {
+          this.debug(`Memory allocation error: ptr (${ptr}) + length (${bytes.length}) exceeds memory size (${memory.length})`);
+          this.deallocateString(ptr);
+          return 0;
+        }
+        
+        // Copy the bytes
+        for (let i = 0; i < bytes.length; i++) {
+          memory[ptr + i] = bytes[i];
+        }
+        
+        this.debug(`String written to memory at pointer ${ptr} (${bytes.length} bytes)`);
+        return ptr;
       } catch (error) {
-        this.debug('Error allocating memory with allocString:', error);
+        this.debug('Error allocating memory with alloc_buffer:', error);
         return 0;
       }
-    } 
-    // Try alloc_string (Rust-style naming)
+    }
+    // Use alloc_string if available (standard naming)
     else if (this.hasFunction('alloc_string')) {
       this.debug('Using alloc_string function');
       try {
-        ptr = this.callFunction('alloc_string', bytes.length);
+        const ptr = this.callFunction('alloc_string', bytes.length);
+        if (ptr === 0) {
+          this.debug('alloc_string returned null pointer');
+          return 0;
+        }
+        
         this.registerAllocation(ptr);
+        
+        // Copy the string data to WASM memory
+        const memory = new Uint8Array(this.memory.buffer);
+        
+        // Check buffer bounds
+        if (ptr + bytes.length > memory.length) {
+          this.debug(`Memory allocation error: ptr (${ptr}) + length (${bytes.length}) exceeds memory size (${memory.length})`);
+          this.deallocateString(ptr);
+          return 0;
+        }
+        
+        // Copy the bytes
+        for (let i = 0; i < bytes.length; i++) {
+          memory[ptr + i] = bytes[i];
+        }
+        
+        this.debug(`String written to memory at pointer ${ptr} (${bytes.length} bytes)`);
+        return ptr;
       } catch (error) {
         this.debug('Error allocating memory with alloc_string:', error);
         return 0;
       }
     }
-    // Try using standard malloc if available
-    else if (this.hasFunction('malloc')) {
-      this.debug('Using malloc function');
+    // Fallback to allocString (alternate naming)
+    else if (this.hasFunction('allocString')) {
+      this.debug('Using allocString function');
       try {
-        // We need an extra byte for the null terminator with malloc
-        ptr = this.callFunction('malloc', bytes.length + 1);
-        this.registerAllocation(ptr);
-      } catch (error) {
-        this.debug('Error allocating memory with malloc:', error);
-        return 0;
-      }
-    } 
-    // As a fallback, try any other allocation function we can find
-    else {
-      this.debug('No standard allocation function found, searching for alternatives');
-      
-      const allocationFunctions = [
-        'alloc_buffer', 'allocBuffer', 'alloc', 'create_string',
-        'createString', 'string_alloc', 'stringAlloc'
-      ];
-      
-      for (const funcName of allocationFunctions) {
-        if (this.hasFunction(funcName)) {
-          this.debug(`Found alternative allocation function: ${funcName}`);
-          try {
-            ptr = this.callFunction(funcName, bytes.length);
-            if (ptr !== 0) {
-              this.registerAllocation(ptr);
-              break;
-            }
-          } catch (error) {
-            this.debug(`Error allocating memory with ${funcName}:`, error);
-          }
+        const ptr = this.callFunction('allocString', bytes.length);
+        if (ptr === 0) {
+          this.debug('allocString returned null pointer');
+          return 0;
         }
-      }
-    }
-    
-    if (ptr === 0) {
-      this.debug('Failed to allocate memory for string');
-      return 0;
-    }
-    
-    // Copy the string data to WASM memory
-    try {
-      const memory = new Uint8Array(this.memory.buffer);
-      
-      // Check buffer bounds
-      if (ptr + bytes.length > memory.length) {
-        this.debug(`Memory allocation error: ptr (${ptr}) + length (${bytes.length}) exceeds memory size (${memory.length})`);
-        this.deallocateString(ptr);
+        
+        this.registerAllocation(ptr);
+        
+        // Copy the string data to WASM memory
+        const memory = new Uint8Array(this.memory.buffer);
+        
+        // Check buffer bounds
+        if (ptr + bytes.length > memory.length) {
+          this.debug(`Memory allocation error: ptr (${ptr}) + length (${bytes.length}) exceeds memory size (${memory.length})`);
+          this.deallocateString(ptr);
+          return 0;
+        }
+        
+        // Copy the bytes
+        for (let i = 0; i < bytes.length; i++) {
+          memory[ptr + i] = bytes[i];
+        }
+        
+        this.debug(`String written to memory at pointer ${ptr} (${bytes.length} bytes)`);
+        return ptr;
+      } catch (error) {
+        this.debug('Error allocating memory with allocString:', error);
         return 0;
       }
-      
-      // Copy the bytes
-      for (let i = 0; i < bytes.length; i++) {
-        memory[ptr + i] = bytes[i];
-      }
-      
-      // Add a null terminator if we're using malloc-style allocation
-      if (this.hasFunction('malloc')) {
-        memory[ptr + bytes.length] = 0;
-      }
-      
-      this.debug(`String written to memory at pointer ${ptr}`);
-      return ptr;
-    } catch (error) {
-      this.debug('Error writing string to memory:', error);
-      this.deallocateString(ptr);
-      return 0;
     }
+    
+    this.debug('No allocation function available');
+    return 0;
   }
 
   /**
@@ -387,77 +397,66 @@ export class WasmMemoryManager {
       this.debug(`Warning: Attempting to deallocate untracked pointer ${ptr}`);
     }
     
-    // Perform memory analysis before deallocation
-    try {
-      // Analyze memory at that pointer to see what we're about to deallocate
-      const memory = new Uint8Array(this.memory.buffer);
-      if (ptr < memory.length) {
-        const headerBytes = Array.from(memory.subarray(ptr, Math.min(ptr + 16, memory.length)))
-          .map(b => b.toString(16).padStart(2, '0'))
-          .join(' ');
-        this.debug(`Memory to deallocate at ptr ${ptr} starts with bytes: ${headerBytes}`);
-        
-        // Check if it's a MSGB string
-        if (this.hasMsgbSignature(ptr)) {
-          this.debug('MSGB signature found at deallocation pointer');
-          const dataView = new DataView(this.memory.buffer);
-          const length = dataView.getUint32(ptr + 4, true); // true = little endian
-          this.debug(`String length from MSGB format: ${length}`);
-        } else {
-          this.debug('Not a MSGB string, trying to estimate length');
-          const length = this.estimateStringLength(ptr);
-          this.debug(`Estimated string length: ${length}`);
-        }
-      } else {
-        this.debug(`Pointer ${ptr} is outside memory bounds (${memory.length})`);
+    // First, try to get the allocation size using the new function
+    let allocationSize = 0;
+    if (this.hasFunction('get_allocation_size')) {
+      try {
+        allocationSize = this.callFunction('get_allocation_size', ptr) as number;
+        this.debug(`Got allocation size from get_allocation_size: ${allocationSize}`);
+      } catch (error) {
+        this.debug(`Error calling get_allocation_size: ${error}`);
       }
-    } catch (analyzeError) {
-      this.debug(`Error analyzing memory before deallocation: ${analyzeError}`);
     }
     
-    // First try to use the module's custom deallocation function
+    // If we didn't get a valid size, try to determine it ourselves
+    if (allocationSize === 0) {
+      // Perform memory analysis before deallocation
+      try {
+        const memory = new Uint8Array(this.memory.buffer);
+        if (ptr < memory.length) {
+          // Check if it's a MSGB string
+          if (this.hasMsgbSignature(ptr)) {
+            this.debug('MSGB signature found at deallocation pointer');
+            const dataView = new DataView(this.memory.buffer);
+            const length = dataView.getUint32(ptr + 4, true); // true = little endian
+            allocationSize = 8 + length; // MSGB header (8 bytes) + data
+            this.debug(`String length from MSGB format: ${length}, total allocation: ${allocationSize}`);
+          }
+        }
+      } catch (analyzeError) {
+        this.debug(`Error analyzing memory: ${analyzeError}`);
+      }
+    }
+    
+    // Try to deallocate
     try {
-      // Try deallocString (most common name)
-      if (this.hasFunction('deallocString')) {
+      // Try dealloc_string (Rust-style naming) - this is our primary method
+      if (this.hasFunction('dealloc_string')) {
+        this.debug('Using dealloc_string function');
+        
+        try {
+          // Use the allocation size if we have it, otherwise pass 0 and let Rust figure it out
+          this.callFunction('dealloc_string', ptr, allocationSize);
+          this.debug(`dealloc_string call completed successfully with size ${allocationSize}`);
+          this.unregisterAllocation(ptr);
+          return;
+        } catch (error) {
+          this.debug(`Error calling dealloc_string: ${error}`);
+          // Don't give up yet, the allocation might still be tracked
+        }
+      }
+      // Try deallocString (alternate naming)
+      else if (this.hasFunction('deallocString')) {
         this.debug('Using deallocString function');
         try {
-          this.callFunction('deallocString', ptr);
+          this.callFunction('deallocString', ptr, allocationSize);
           this.debug('deallocString call completed successfully');
           this.unregisterAllocation(ptr);
           return;
         } catch (error) {
           this.debug(`Error calling deallocString: ${error}`);
-          throw error; // Re-throw to be caught by outer try-catch
         }
       } 
-      // Try dealloc_string (Rust-style naming)
-      else if (this.hasFunction('dealloc_string')) {
-        this.debug('Using dealloc_string function');
-        
-        // First try with length 0 since this works in cases where string length isn't needed
-        try {
-          this.debug('Trying dealloc_string with length 0');
-          this.callFunction('dealloc_string', ptr, 0);
-          this.debug('dealloc_string call with length 0 completed successfully');
-          this.unregisterAllocation(ptr);
-          return;
-        } catch (error) {
-          this.debug(`dealloc_string with length 0 failed: ${error}`);
-          
-          // If that failed, fall back to using estimated length
-          try {
-            const len = this.estimateStringLength(ptr);
-            this.debug(`Retrying with estimated length: ${len}`);
-            this.callFunction('dealloc_string', ptr, len);
-            this.debug('dealloc_string call with estimated length completed successfully');
-            this.unregisterAllocation(ptr);
-            return;
-          } catch (retryError) {
-            this.debug(`Retry with estimated length also failed: ${retryError}`);
-            throw error; // Re-throw original error
-          }
-        }
-      }
       // Try standard free if available
       else if (this.hasFunction('free')) {
         this.debug('Using free function');
@@ -468,43 +467,12 @@ export class WasmMemoryManager {
           return;
         } catch (error) {
           this.debug(`Error calling free: ${error}`);
-          throw error; // Re-throw the error
         }
       }
-      // As a fallback, try any other deallocation function we can find
-      else {
-        this.debug('No standard deallocation function found, searching for alternatives');
-        
-        const deallocationFunctions = [
-          'dealloc_buffer', 'deallocBuffer', 'dealloc', 'destroy_string',
-          'destroyString', 'string_dealloc', 'stringDealloc', 'free_string', 'freeString'
-        ];
-        
-        for (const funcName of deallocationFunctions) {
-          if (this.hasFunction(funcName)) {
-            this.debug(`Found alternative deallocation function: ${funcName}`);
-            try {
-              // Try with and without length parameter
-              let len = this.estimateStringLength(ptr);
-              if (funcName.includes('buffer') || funcName.includes('Buffer')) {
-                this.callFunction(funcName, ptr, len);
-              } else {
-                this.callFunction(funcName, ptr);
-              }
-              this.debug(`${funcName} call completed successfully`);
-              this.unregisterAllocation(ptr);
-              return;
-            } catch (error) {
-              this.debug(`Error deallocating memory with ${funcName}: ${error}`);
-              // Continue to try other functions
-            }
-          }
-        }
-        
-        this.debug('No deallocation function found or all attempts failed, memory may leak');
-        // Still unregister it from our tracking even if we couldn't deallocate
-        this.unregisterAllocation(ptr);
-      }
+      
+      this.debug('No successful deallocation, memory may leak');
+      // Still unregister it from our tracking even if we couldn't deallocate
+      this.unregisterAllocation(ptr);
     } catch (error) {
       this.debug(`Error deallocating memory: ${error}`);
       // Still unregister it from our tracking even on error

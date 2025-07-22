@@ -1,4 +1,6 @@
-use cassette_tools::{string_to_ptr, ptr_to_string, alloc_buffer, get_string_len};
+// Import consistent memory management functions from cassette_tools
+extern crate cassette_tools;
+use cassette_tools::{string_to_ptr, ptr_to_string};
 use serde::{Serialize, Deserialize};
 use serde_json::{json, Value};
 use std::cell::RefCell;
@@ -466,38 +468,6 @@ fn matches_filter(event: &Note, filter: &Filter) -> bool {
     true
 }
 
-// Memory management functions required by cassette-loader
-#[no_mangle]
-pub extern "C" fn alloc_string(len: usize) -> *mut u8 {
-    // Allocate memory with additional padding to prevent TypedArray errors
-    let mut buf = Vec::with_capacity(len + 16);
-    buf.resize(len + 16, 0);
-    let ptr = buf.as_mut_ptr();
-    std::mem::forget(buf);
-    ptr
-}
-
-#[no_mangle]
-pub extern "C" fn dealloc_string(ptr: *mut u8) {
-    // First get the length from the MSGB format (4 bytes header + 4 bytes length)
-    let len = unsafe {
-        if ptr.is_null() {
-            return;
-        }
-        let header = std::slice::from_raw_parts(ptr, 8);
-        if header[0] == b'M' && header[1] == b'S' && header[2] == b'G' && header[3] == b'B' {
-            // MSGB format has length at bytes 4-7
-            u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize
-        } else {
-            // Fallback: use a fixed size if we can't determine length
-            1024
-        }
-    };
-    
-    unsafe {
-        let len_with_padding = len + 16;
-        let _ = Vec::from_raw_parts(ptr, len, len_with_padding);
-        // Memory will be deallocated when Vec is dropped
-    }
-}
+// Note: Memory management functions are already exported by cassette_tools
+// We don't need to re-export them here to avoid duplicate symbols
 

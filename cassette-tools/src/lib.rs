@@ -133,18 +133,31 @@ pub fn dealloc_buffer(ptr: *mut u8, len: usize) {
 
 /// Deallocate a string that was allocated with string_to_ptr
 /// This function is called from JavaScript to free memory allocated by string_to_ptr
+/// 
+/// Args:
+///   ptr: Pointer to the memory location
+///   len: Length hint (can be 0, in which case we try to determine it)
 #[no_mangle]
 pub extern "C" fn dealloc_string(ptr: *mut u8, len: usize) {
-    if !ptr.is_null() && len >= 8 {
-        unsafe {
-            // Check for MSGB signature
-            let slice = std::slice::from_raw_parts(ptr, 4);
-            let _is_msgb = slice == &MSGB_SIGNATURE;
-
-            // If it's MSGB format, deallocate the entire buffer
-            // We don't need to adjust the pointer because the entire buffer was allocated as one piece
-            let _ = Vec::from_raw_parts(ptr, len, len);
-        }
+    if ptr.is_null() {
+        return;
+    }
+    
+    // If len is 0, try to determine the actual allocation size
+    let actual_len = if len == 0 {
+        get_allocation_size(ptr)
+    } else {
+        len
+    };
+    
+    // If we still don't have a valid length, we can't safely deallocate
+    if actual_len == 0 {
+        return;
+    }
+    
+    unsafe {
+        // Deallocate the entire buffer
+        let _ = Vec::from_raw_parts(ptr, actual_len, actual_len);
     }
 }
 
@@ -219,6 +232,54 @@ pub fn get_string_ptr(ptr: *const u8) -> *const u8 {
     } else {
         // Return the pointer as is
         ptr
+    }
+}
+
+/// Get the total allocation size for a string pointer
+/// This includes the MSGB header (8 bytes) plus the string data length
+/// 
+/// Args:
+///   ptr: Pointer to the memory location
+///
+/// Returns: Total allocation size, or 0 if unknown
+#[no_mangle]
+pub extern "C" fn get_allocation_size(ptr: *const u8) -> usize {
+    if ptr.is_null() {
+        return 0;
+    }
+    
+    // Check if this has our MSGB signature
+    let has_signature = unsafe {
+        if ptr as usize + 4 > usize::MAX {
+            return 0;
+        }
+        let bytes = std::slice::from_raw_parts(ptr, 4);
+        bytes.len() == 4 && 
+        bytes[0] == MSGB_SIGNATURE[0] && 
+        bytes[1] == MSGB_SIGNATURE[1] && 
+        bytes[2] == MSGB_SIGNATURE[2] && 
+        bytes[3] == MSGB_SIGNATURE[3]
+    };
+    
+    if has_signature {
+        // Read the embedded length from MSGB header
+        unsafe {
+            let mut length_bytes = [0u8; 4];
+            let bytes = std::slice::from_raw_parts(ptr.add(4), 4);
+            length_bytes.copy_from_slice(bytes);
+            let string_length = u32::from_le_bytes(length_bytes) as usize;
+            
+            // Validate the length
+            if string_length > MAX_STRING_LENGTH {
+                return 0;
+            }
+            
+            // Return total size: signature (4) + length (4) + data
+            8 + string_length
+        }
+    } else {
+        // Without MSGB signature, we can't determine the allocation size
+        0
     }
 }
 
