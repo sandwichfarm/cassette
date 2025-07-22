@@ -405,4 +405,27 @@ The test script will:
 3. Attempt to get metadata and process a sample request
 4. Report the results
 
-You can also customize the test by editing the `test.js` file. 
+You can also customize the test by editing the `test.js` file.
+
+## WebAssembly Interface Requirements
+
+Cassette WebAssembly modules must implement the following interface:
+
+### Core Functions
+
+- `describe() -> *mut u8`: Returns a pointer to a JSON string with cassette metadata.
+- `get_schema() -> *mut u8`: Returns a pointer to a JSON string with the schema details.
+- `req(request_ptr: *const u8, request_len: usize) -> *mut u8`: Processes a request and returns a pointer to the response.
+- `close(close_ptr: *const u8, close_len: usize) -> *mut u8`: Closes a subscription and returns a pointer to the response.
+
+It's important to note that the `req` and `close` functions expect **both** a pointer to the request string and its length. This is critical for proper memory management and string handling in WebAssembly.
+
+### Memory Management Functions
+
+The following utility functions should be provided:
+
+- `string_to_ptr(s: String) -> *mut u8`: Converts a Rust string to a pointer for WebAssembly.
+- `ptr_to_string(ptr: *const u8, len: usize) -> String`: Converts a pointer to a Rust string.
+- `dealloc_string(ptr: *mut u8, len: usize)`: Deallocates a string created with string_to_ptr.
+
+These functions are provided by the `cassette-tools` crate, which should be used when developing cassettes. 

@@ -70,12 +70,57 @@ class CoreCassetteInterface {
   private memoryManager: WasmMemoryManager;
   private logger: ReturnType<typeof createLogger>;
   private eventTracker = createEventTracker();
+  private currentSubscriptionId: string = '';
   
   constructor(instance: WebAssembly.Instance, debug = false) {
     this.exports = instance.exports;
     this.memory = this.exports.memory as WebAssembly.Memory;
     this.memoryManager = createMemoryManager(instance, debug);
     this.logger = createLogger(debug, 'CoreCassetteInterface');
+  }
+  
+  /**
+   * Helper to validate JSON structure before sending to WASM
+   * Returns either the original string if valid or a fixed version if possible
+   */
+  private validateJsonFormat(jsonStr: string): string {
+    try {
+      // Try to parse as JSON to check validity
+      const parsed = JSON.parse(jsonStr);
+      
+      // Handle the specific edge case for REQ format with invalid filter
+      if (Array.isArray(parsed) && parsed[0] === "REQ" && parsed.length >= 3) {
+        const filter = parsed[2];
+        
+        // Check if filter is misformatted (e.g., using numeric keys)
+        if (typeof filter === 'object' && filter !== null) {
+          // Create a new filter object with all keys properly stringified
+          const fixedFilter: Record<string, any> = {};
+          
+          // Copy all entries with string keys
+          for (const key in filter) {
+            fixedFilter[String(key)] = filter[key];
+          }
+          
+          // Replace the filter in the array and re-stringify
+          parsed[2] = fixedFilter;
+          
+          const fixed = JSON.stringify(parsed);
+          if (fixed !== jsonStr) {
+            this.logger.log(`Fixed JSON format issues: ${jsonStr} -> ${fixed}`);
+            return fixed;
+          }
+        }
+      }
+      
+      // No issues or fixes needed
+      return jsonStr;
+    } catch (error) {
+      // If parsing fails, return the original string
+      // The error will be properly reported elsewhere
+      this.logger.warn(`JSON validation failed: ${error}`);
+      return jsonStr;
+    }
   }
   
   // Core cassette methods
@@ -146,22 +191,28 @@ class CoreCassetteInterface {
       throw new Error('req function not implemented by cassette');
     }
     
-    // Parse the request to determine if it's a new REQ
-    let isNewReq = false;
+    // Parse the request to determine subscription ID
     try {
+      this.logger.log(`Validating request JSON: ${requestStr}`);
       const parsedReq = JSON.parse(requestStr);
+      
       if (Array.isArray(parsedReq) && parsedReq.length >= 2 && parsedReq[0] === "REQ") {
-        isNewReq = true;
-        this.logger.log('New REQ message detected, resetting event tracker');
+        const subscriptionId = parsedReq[1];
         
-        // Reset the event tracker for new REQ messages
+        // CRITICAL FIX: Always reset event tracker for EACH new REQ call
+        // This ensures events from previous REQ calls don't affect deduplication
         if (this.eventTracker) {
+          this.logger.log(`New REQ call received, resetting event tracker`);
           this.eventTracker.reset();
+          this.currentSubscriptionId = subscriptionId;
         }
       }
     } catch (parseError) {
       this.logger.warn(`Failed to parse request string: ${parseError}`);
     }
+    
+    // Validate and potentially fix JSON format issues before sending to WASM
+    const validatedRequestStr = this.validateJsonFormat(requestStr);
     
     // Write request string to memory
     let requestPtr = 0;
@@ -171,7 +222,7 @@ class CoreCassetteInterface {
     try {
       // First allocate and write the request string to memory
       try {
-        requestPtr = this.memoryManager.writeString(requestStr);
+        requestPtr = this.memoryManager.writeString(validatedRequestStr);
         if (requestPtr === 0) {
           this.logger.error("Failed to allocate memory for request string");
           return JSON.stringify(["NOTICE", "Error: Failed to allocate memory for request"]);
@@ -184,7 +235,7 @@ class CoreCassetteInterface {
       // Call req function (which should return a pointer to the result)
       try {
         this.logger.log('Calling req function');
-        resultPtr = (this.exports.req as Function)(requestPtr);
+        resultPtr = (this.exports.req as Function)(requestPtr, requestStr.length);
         
         if (resultPtr === 0) {
           this.logger.warn('req function returned null pointer');
@@ -204,101 +255,71 @@ class CoreCassetteInterface {
         }
         
         this.logger.log(`Raw result from req: ${result.substring(0, 100)}${result.length > 100 ? '...' : ''}`);
-      } catch (readError: any) {
-        this.logger.error(`Error reading result from memory: ${readError}`);
-        return JSON.stringify(["NOTICE", `Error: ${readError.message}`]);
-      }
-      
-      // Validate the result before returning
-      if (result.startsWith('[')) {
-        try {
-          const parsed = JSON.parse(result);
-          if (Array.isArray(parsed) && parsed.length >= 2) {
-            // Handle standard NIP-01 message types
-            if (parsed[0] === "NOTICE" || parsed[0] === "EVENT" || parsed[0] === "EOSE") {
-              this.logger.log(`Received ${parsed[0]}: ${parsed[1]?.substring?.(0, 50) || ''}`);
+        
+        // Split result into individual messages if it contains newlines
+        if (result.includes('\n')) {
+          const messages = result.trim().split('\n');
+          this.logger.log(`Processing ${messages.length} newline-separated messages`);
+          
+          // Validate and filter messages
+          const filteredMessages = messages.filter(message => {
+            try {
+              const parsed = JSON.parse(message);
+              if (!Array.isArray(parsed) || parsed.length < 2) {
+                this.logger.warn(`Invalid message format: ${message.substring(0, 100)}`);
+                return false;
+              }
+              if (!["NOTICE", "EVENT", "EOSE"].includes(parsed[0])) {
+                this.logger.warn(`Unknown message type: ${parsed[0]}`);
+                return false;
+              }
               
-              // For EVENT messages, check if the event is a duplicate
+              // For EVENT messages, check for duplicates
               if (parsed[0] === "EVENT" && parsed.length >= 3 && this.eventTracker && 
                   typeof parsed[2] === 'object' && parsed[2].id) {
                 const eventId = parsed[2].id;
                 if (!this.eventTracker.addAndCheck(eventId)) {
-                  this.logger.log(`Skipping duplicate event with ID: ${eventId}`);
-                  return JSON.stringify(["NOTICE", `Skipping duplicate event: ${eventId}`]);
+                  this.logger.log(`Filtered duplicate event: ${eventId}`);
+                  return false;
                 }
               }
-              
-              return result; // Return NIP-01 formatted message as is
+              return true;
+            } catch (parseError) {
+              this.logger.warn(`Failed to parse message: ${parseError}`);
+              return false;
+            }
+          });
+          
+          // Return filtered messages
+          return filteredMessages.join('\n');
+        }
+        
+        // If we get here, the result doesn't contain newlines
+        try {
+          const parsed = JSON.parse(result);
+          if (Array.isArray(parsed)) {
+            if (parsed[0] === "EVENT" && parsed.length >= 3 && 
+                this.eventTracker && typeof parsed[2] === 'object' && parsed[2].id) {
+              const eventId = parsed[2].id;
+              if (!this.eventTracker.addAndCheck(eventId)) {
+                this.logger.log(`Filtered duplicate event: ${eventId}`);
+                return ''; // Return empty string instead of NOTICE message
+              }
+            }
+            // Always return EOSE messages
+            if (parsed[0] === "EOSE") {
+              this.logger.log(`Received EOSE message for subscription ${parsed[1]}`);
+              return result;
             }
           }
-          
-          // If it's an array of events, deduplicate and return it
-          if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].id && parsed[0].kind !== undefined) {
-            this.logger.log('Result is an array of events, deduplicating');
-            if (this.eventTracker) {
-              const deduplicatedEvents = this.eventTracker.filterDuplicates(parsed);
-              this.logger.log(`Filtered out ${parsed.length - deduplicatedEvents.length} duplicate events`);
-              return JSON.stringify(deduplicatedEvents);
-            }
-            return result;
-          }
-          
-          // If it's NOT a proper NIP-01 message, handle accordingly
-          if (parsed.events && Array.isArray(parsed.events)) {
-            this.logger.log('Result contains events array, deduplicating');
-            if (this.eventTracker) {
-              const deduplicatedEvents = this.eventTracker.filterDuplicates(parsed.events);
-              this.logger.log(`Filtered out ${parsed.events.length - deduplicatedEvents.length} duplicate events`);
-              return JSON.stringify(deduplicatedEvents);
-            }
-            return JSON.stringify(parsed.events);
-          }
-          
-          // If it has a single event object, wrap it in an array and check for duplicates
-          if (parsed.id && parsed.pubkey && parsed.kind !== undefined) {
-            this.logger.log('Result is a single event, checking for duplicates');
-            if (this.eventTracker && !this.eventTracker.addAndCheck(parsed.id)) {
-              this.logger.log(`Skipping duplicate event with ID: ${parsed.id}`);
-              return JSON.stringify(["NOTICE", `Skipping duplicate event: ${parsed.id}`]);
-            }
-            return JSON.stringify([parsed]);
-          }
-          
-          // Return as is for any other valid JSON
           return result;
         } catch (parseError: any) {
-          // Not valid JSON, but starts with '[', might be malformed
-          this.logger.warn(`Result starts with '[' but is not valid JSON: ${parseError.message}`);
-          return JSON.stringify(["NOTICE", `Error: Invalid response format: ${parseError.message}`]);
+          this.logger.warn(`Failed to parse result: ${parseError.message}`);
+          return JSON.stringify(["NOTICE", `Error: ${parseError.message}`]);
         }
-      }
-      
-      // Not a well-formatted NIP-01 response, try to parse as JSON anyway
-      try {
-        const parsed = JSON.parse(result);
-        
-        // Handle object response formats
-        if (parsed.events && Array.isArray(parsed.events)) {
-          if (this.eventTracker) {
-            const deduplicatedEvents = this.eventTracker.filterDuplicates(parsed.events);
-            this.logger.log(`Filtered out ${parsed.events.length - deduplicatedEvents.length} duplicate events`);
-            return JSON.stringify(deduplicatedEvents);
-          }
-          return JSON.stringify(parsed.events);
-        } else if (parsed.id && parsed.pubkey && parsed.kind !== undefined) {
-          if (this.eventTracker && !this.eventTracker.addAndCheck(parsed.id)) {
-            this.logger.log(`Skipping duplicate event with ID: ${parsed.id}`);
-            return JSON.stringify(["NOTICE", `Skipping duplicate event: ${parsed.id}`]);
-          }
-          return JSON.stringify([parsed]);
-        }
-        
-        // Otherwise return as is
-        return result;
-      } catch (parseError: any) {
-        // Not valid JSON at all
-        this.logger.warn(`Result is not valid JSON: ${parseError.message}`);
-        return JSON.stringify(["NOTICE", `Error: Invalid response: ${result.substring(0, 50)}`]);
+      } catch (readError: any) {
+        this.logger.error(`Error reading result from memory: ${readError}`);
+        return JSON.stringify(["NOTICE", `Error: ${readError.message}`]);
       }
     } catch (error: any) {
       this.logger.error(`Error in req method: ${error}`);
@@ -331,6 +352,24 @@ class CoreCassetteInterface {
       return JSON.stringify(["NOTICE", "Close not implemented"]);
     }
     
+    try {
+      const parsedClose = JSON.parse(closeStr);
+      if (Array.isArray(parsedClose) && parsedClose.length >= 2 && parsedClose[0] === "CLOSE") {
+        const subscriptionId = parsedClose[1];
+        
+        // Reset event tracker and subscription ID on CLOSE
+        if (subscriptionId === this.currentSubscriptionId) {
+          this.logger.log(`Closing subscription ${subscriptionId}, resetting event tracker`);
+          if (this.eventTracker) {
+            this.eventTracker.reset();
+          }
+          this.currentSubscriptionId = '';
+        }
+      }
+    } catch (parseError) {
+      this.logger.warn(`Failed to parse close string: ${parseError}`);
+    }
+    
     // Write close string to memory
     let closePtr = 0;
     let resultPtr = 0;
@@ -352,7 +391,7 @@ class CoreCassetteInterface {
       // Call close function (which should return a pointer to the result)
       try {
         this.logger.log('Calling close function');
-        resultPtr = (this.exports.close as Function)(closePtr);
+        resultPtr = (this.exports.close as Function)(closePtr, closeStr.length);
         
         if (resultPtr === 0) {
           this.logger.warn('close function returned null pointer');
@@ -574,21 +613,84 @@ export async function loadCassette(
         close: (closeStr: string) => coreInterface.close(closeStr),
         getSchema: () => coreInterface.getSchema()
       },
-      eventTracker: opts.deduplicateEvents !== false ? createEventTracker() : undefined
+      eventTracker: opts.deduplicateEvents !== false ? createEventTracker() : undefined,
+      // Add memory stats method
+      getMemoryStats: () => {
+        return {
+          allocatedPointers: memoryManager.getAllocatedPointers(),
+          allocationCount: memoryManager.getAllocationCount(),
+          memory: {
+            totalPages: memory.buffer.byteLength / (64 * 1024),
+            totalBytes: memory.buffer.byteLength,
+            usageEstimate: memoryManager.getAllocationCount() > 0 ? 'Potential memory leak detected' : 'No leaks detected'
+          }
+        };
+      },
+      // Add dispose method to clean up resources
+      dispose: () => {
+        logger.log(`Disposing cassette ${cassetteId}`);
+        
+        // Get all allocated pointers that haven't been freed
+        const allocatedPointers = memoryManager.getAllocatedPointers();
+        
+        if (allocatedPointers.length > 0) {
+          logger.warn(`Found ${allocatedPointers.length} leaked memory allocations, attempting cleanup`);
+          
+          // Attempt to free each pointer
+          for (const ptr of allocatedPointers) {
+            try {
+              memoryManager.deallocateString(ptr);
+            } catch (error) {
+              logger.error(`Failed to clean up memory at pointer ${ptr}:`, error);
+            }
+          }
+          
+          // Check if we've successfully cleaned up
+          const remainingAllocations = memoryManager.getAllocationCount();
+          if (remainingAllocations > 0) {
+            logger.error(`Failed to clean up ${remainingAllocations} memory allocations`);
+          } else {
+            logger.log('Successfully cleaned up all memory allocations');
+          }
+        } else {
+          logger.log('No memory leaks detected');
+        }
+        
+        // Additional cleanup could be added here (e.g., closing WebAssembly instance)
+        return { success: true, allocationsCleanedUp: allocatedPointers.length };
+      }
     };
     
-    // Optionally expose exports and instance for advanced usage
+    // If debug mode is enabled, periodically check for memory leaks
+    if (opts.debug) {
+      logger.log('Setting up memory leak detection');
+      
+      // Check memory status after a delay
+      setTimeout(() => {
+        const memoryStats = cassette.getMemoryStats();
+        if (memoryStats.allocationCount > 0) {
+          logger.warn(`⚠️ Potential memory leak detected: ${memoryStats.allocationCount} allocations have not been freed`);
+          logger.warn('To inspect memory stats, call cassette.getMemoryStats()');
+          logger.warn('To clean up resources, call cassette.dispose()');
+        }
+      }, 10000); // Check after 10 seconds
+    }
+
+    // Expose exports if requested
     if (opts.exposeExports) {
-      cassette.exports = exports;
-      cassette.instance = instance;
-      cassette.memory = memory;
+      (cassette as any).exports = exports;
+      (cassette as any).instance = instance;
+      (cassette as any).memory = memory;
     }
     
     logger.log(`Cassette loaded successfully: ${name} (v${version})`);
     
     return {
       success: true,
-      cassette
+      cassette,
+      fileName,
+      memory,
+      instance
     };
   } catch (error: any) {
     logger.error('Failed to load cassette:', error);

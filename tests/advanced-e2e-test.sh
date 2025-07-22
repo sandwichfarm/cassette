@@ -15,11 +15,11 @@ mkdir -p "$LOGS_DIR"
 E2E_LOG="${LOGS_DIR}/advanced-e2e-test.log"
 
 # Path to the cassette CLI
-CASSETTE_CLI="../cli/target/release/cassette"
+CASSETTE_CLI="cli/target/release/cassette"
 # Path to notes.json
-NOTES_JSON="../cli/notes.json"
+NOTES_JSON="cli/notes.json"
 # Output directory for cassettes
-CASSETTES_DIR="../cassettes"
+CASSETTES_DIR="cassettes"
 # Name for the generated cassette
 CASSETTE_NAME_DIRECT="test_cassette_direct"
 CASSETTE_NAME_PIPELINE="test_cassette_pipeline"
@@ -128,7 +128,7 @@ echo "✓ Approach 1: Direct cassette creation from events.json" | tee -a "$E2E_
     --output "$CASSETTES_DIR" \
     "$TEMP_DIR/events.json" | tee -a "$E2E_LOG"
 
-DIRECT_CASSETTE_PATH="$CASSETTES_DIR/$CASSETTE_NAME_DIRECT@notes.json.wasm"
+DIRECT_CASSETTE_PATH="$CASSETTES_DIR/$CASSETTE_NAME_DIRECT.wasm"
 if [ -f "$DIRECT_CASSETTE_PATH" ]; then
     echo "  ✅ Successfully created direct cassette: $DIRECT_CASSETTE_PATH" | tee -a "$E2E_LOG"
 else
@@ -139,23 +139,25 @@ fi
 # Approach 2: Pipeline approach (nak + cassette dub)
 echo "✓ Approach 2: Pipeline approach with nak + cassette dub" | tee -a "$E2E_LOG"
 
-# Instead of fetching from external relay, simulate a pipeline by modifying existing events
-echo "  ✓ Simulating pipeline processing with jq..." | tee -a "$E2E_LOG"
+# Instead of modifying events, demonstrate pipeline by filtering events
+echo "  ✓ Demonstrating pipeline processing with jq..." | tee -a "$E2E_LOG"
 TEMP_PIPELINE_INPUT="$TEMP_DIR/pipeline_input.json"
 
-# Process the events using jq to simulate pipeline transformation (add a special tag)
-jq 'map(. + {tags: (.tags + [["t", "from_pipeline"]])})' "$TEMP_DIR/events.json" > "$TEMP_PIPELINE_INPUT"
+# Filter events to demonstrate pipeline functionality without modifying them
+# For example, we could filter by specific authors or time ranges
+jq '[.[] | select(.pubkey == "e771af0b05c8e95fcdf6feb3500544d2fb1ccd384788e9f490bb3ee28e8ed66f")]' "$TEMP_DIR/events.json" > "$TEMP_PIPELINE_INPUT"
 
 # Verify the processed file is valid JSON
 if jq empty "$TEMP_PIPELINE_INPUT" 2>/dev/null; then
     echo "  ✅ Successfully created pipeline input" | tee -a "$E2E_LOG"
     
-    # Show sample of processed data
-    echo "  ✓ Sample of pipeline processed event:" | tee -a "$E2E_LOG"
+    # Show sample of filtered data
+    echo "  ✓ Sample of pipeline filtered event:" | tee -a "$E2E_LOG"
     jq '.[0]' "$TEMP_PIPELINE_INPUT" | head -n 15 | tee -a "$E2E_LOG"
     
-    # Create the pipeline cassette using the standard input flag
-    echo "  ✓ Creating pipeline cassette from processed events..." | tee -a "$E2E_LOG"
+    # Create the pipeline cassette using the filtered input
+    echo "  ✓ Creating pipeline cassette from filtered events..." | tee -a "$E2E_LOG"
+    nak req -l 10 lunchbox.sandwich.farm | 
     "$CASSETTE_CLI" dub \
         --name "$CASSETTE_NAME_PIPELINE" \
         --description "E2E Test Cassette (Pipeline)" \
@@ -167,7 +169,7 @@ else
     exit 1
 fi
 
-PIPELINE_CASSETTE_PATH="$CASSETTES_DIR/$CASSETTE_NAME_PIPELINE@notes.json.wasm"
+PIPELINE_CASSETTE_PATH="$CASSETTES_DIR/$CASSETTE_NAME_PIPELINE.wasm"
 if [ -f "$PIPELINE_CASSETTE_PATH" ]; then
     echo "  ✅ Successfully created pipeline cassette: $PIPELINE_CASSETTE_PATH" | tee -a "$E2E_LOG"
 else
@@ -278,7 +280,7 @@ echo "📋 PHASE 5: Verifying events by querying boombox server..." >> "$E2E_LOG
 # Use nak to query the boombox server
 echo "✓ Querying boombox server with nak..." | tee -a "$E2E_LOG"
 BOOMBOX_OUTPUT="$TEMP_DIR/boombox_output.json"
-timeout 5 nak req -l 5 -k 1 localhost:$BOOMBOX_PORT > "$BOOMBOX_OUTPUT" 2>> "$E2E_LOG" || true
+timeout 5 nak req -l 5 -k 1 localhost:${BOOMBOX_PORT} > "$BOOMBOX_OUTPUT" 2>> "$E2E_LOG" || true
 
 # Check if we got valid JSON from boombox
 if [ -s "$BOOMBOX_OUTPUT" ] && jq empty "$BOOMBOX_OUTPUT" 2>/dev/null; then

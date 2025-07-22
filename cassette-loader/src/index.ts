@@ -44,7 +44,7 @@ export type {
 /**
  * Version of the cassette-loader package
  */
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 
 /**
  * Check if WebAssembly is supported in the current environment

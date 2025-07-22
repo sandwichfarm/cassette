@@ -1,288 +1,503 @@
-use cassette_tools::{Cassette, CassetteSchema, RelayHandler, EventBasedHandler, string_to_ptr, ptr_to_string, dealloc_string};
-use serde_json::{json, to_string};
+use cassette_tools::{string_to_ptr, ptr_to_string, alloc_buffer, get_string_len};
+use serde::{Serialize, Deserialize};
+use serde_json::{json, Value};
+use std::cell::RefCell;
 
-// Import embedded events
-const EMBEDDED_EVENTS: &str = r#"{{events_json}}"#;
+// Import the req and close functions from the lib crate
+// extern crate cassette_cli;
+// use cassette_cli::{req as req_impl, close as close_impl};
 
-// Define cassette constants
-const CASSETTE_NAME: &str = "{{cassette_name}}";
-const CASSETTE_DESC: &str = "{{cassette_description}}";
-const CASSETTE_VERSION: &str = "{{cassette_version}}";
-const CASSETTE_AUTHOR: &str = "{{cassette_author}}";
-const CASSETTE_CREATED: &str = "{{cassette_created}}";
-
-// Define cassette struct
-pub struct {{sanitized_name}} {
-    handler: EventBasedHandler,
+// Core types that match NIP-01 exactly
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct Filter {
+    ids: Option<Vec<String>>,
+    authors: Option<Vec<String>>,
+    kinds: Option<Vec<i64>>,
+    #[serde(flatten)]
+    tag_filters: std::collections::HashMap<String, Vec<String>>,
+    since: Option<i64>,
+    until: Option<i64>,
+    limit: Option<usize>,
 }
 
-impl {{sanitized_name}} {
-    pub fn new() -> Self {
-        let handler = EventBasedHandler::new(EMBEDDED_EVENTS);
-        Self { handler }
+// Custom deserialization helpers to ensure NIP-119 tag filters are correctly parsed
+impl Filter {
+    // Helper method to check if a key is a NIP-119 AND filter
+    fn is_nip119_and_filter(key: &str) -> bool {
+        key.starts_with('&') && key.len() > 1
+    }
+
+    // Helper method to check if a key is a regular tag filter
+    fn is_regular_tag_filter(key: &str) -> bool {
+        key.starts_with('#') && key.len() == 2
     }
 }
 
-impl Cassette for {{sanitized_name}} {
-    fn describe() -> String {
-        // Create a comprehensive API description with metadata
-        let description = json!({
-            "metadata": {
-                "name": "{{cassette_name}}",
-                "description": "{{cassette_description}}",
-                "version": "0.1.0",
-                "author": "{{cassette_author}}",
-                "created": "{{cassette_created}}",
-                "eventCount": {{event_count}} // Number of events in this cassette
-            },
-            "req": {
-                // Request format schema
-                "input": json!({
-                    "type": "array",
-                    "description": "NIP-01 REQ request"
-                }),
-                // Response format schema
-                "output": json!({
-                    "type": "object", 
-                    "description": "Response containing events and EOSE message"
-                })
-            },
-            "close": {
-                // Close format schema
-                "input": json!({
-                    "type": "array",
-                    "description": "NIP-01 CLOSE command"
-                }),
-                // Close response format schema
-                "output": json!({
-                    "type": "object",
-                    "description": "Response confirming subscription closure"
-                })
-            }
-        });
-        
-        to_string(&description).unwrap_or_else(|_| "{}".to_string())
-    }
-    
-    fn get_schema() -> CassetteSchema {
-        CassetteSchema {
-            title: "{{cassette_name}}".to_string(),
-            description: "{{cassette_description}}".to_string(),
-            schema_type: "object".to_string(),
-            properties: json!({
-                "name": {
-                    "type": "string",
-                    "description": "The name of the cassette"
-                },
-                "version": {
-                    "type": "string",
-                    "description": "Version information"
-                },
-                "author": {
-                    "type": "string",
-                    "description": "Author of the cassette"
-                },
-                "created": {
-                    "type": "string",
-                    "description": "Creation timestamp"
-                }
-            }),
-            required: vec!["name".to_string(), "version".to_string()],
-            items: None,
-        }
-    }
+#[derive(Serialize, Deserialize, Clone)]
+struct Note {
+    id: String,
+    pubkey: String,
+    created_at: i64,
+    #[serde(default)]
+    kind: i64,
+    tags: Vec<Vec<String>>,
+    content: String,
+    sig: String,
 }
 
-// Export WebAssembly functions
+// Events embedded by CLI during build
+#[cfg(not(test))]
+const EVENTS: &str = r###"{{ events_json }}"###;
+
+#[cfg(test)]
+const EVENTS: &str = r#"[{
+    "id": "test_id",
+    "pubkey": "test_pubkey",
+    "created_at": 1234567890,
+    "kind": 1,
+    "tags": [
+        ["t", "tag1"],
+        ["t", "tag2"],
+        ["p", "pubkey1"]
+    ],
+    "content": "test content",
+    "sig": "test_sig"
+}]"#;
+
+// Streaming state management
+thread_local! {
+    static SUBSCRIPTION_EVENTS: RefCell<Vec<Note>> = RefCell::new(Vec::new());
+    static CURRENT_INDEX: RefCell<usize> = RefCell::new(0);
+    static CURRENT_SUBSCRIPTION: RefCell<String> = RefCell::new(String::new());
+    static EOSE_SENT: RefCell<bool> = RefCell::new(false);
+    static DEBUG_MSGS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+}
+
+// Core interface functions
 #[no_mangle]
 pub extern "C" fn describe() -> *mut u8 {
-    let description = {{sanitized_name}}::describe();
-    string_to_ptr(description)
+    // Collect any debug messages
+    let debug_messages = DEBUG_MSGS.with(|msgs| {
+        let msgs = msgs.borrow();
+        msgs.join("\n")
+    });
+
+    let metadata = json!({
+        "name": "{{ cassette_name }}",
+        "description": "{{ cassette_description }}",
+        "version": "{{ cassette_version }}",
+        "author": "{{ cassette_author }}",
+        "created": "{{ cassette_created }}",
+        "event_count": {{ event_count }},
+        "debug_log": debug_messages
+    });
+
+    string_to_ptr(metadata.to_string())
 }
 
 #[no_mangle]
-pub extern "C" fn get_schema() -> *mut u8 {
-    let schema = {{sanitized_name}}::get_schema_json();
-    string_to_ptr(schema)
-}
-
-#[no_mangle]
-pub extern "C" fn req(ptr: *const u8, length: usize) -> *mut u8 {
-    // Handle null pointer or invalid length case
-    if ptr.is_null() || length == 0 {
-        return string_to_ptr(json!(["NOTICE", "Error: Empty request received"]).to_string());
+pub extern "C" fn req(ptr: *const u8, len: usize) -> *mut u8 {
+    if ptr.is_null() {
+        return string_to_ptr(json!(["NOTICE", "Error: Null request pointer"]).to_string());
     }
 
-    // Convert request from WebAssembly memory to a Rust string
-    let request_str = ptr_to_string(ptr, length);
+    // Get the request string from the pointer
+    let request_str = ptr_to_string(ptr, len);
     
-    // Add simple validation to ensure we got a request string
-    if request_str.is_empty() {
-        return string_to_ptr(json!(["NOTICE", "Error: Failed to read request from memory"]).to_string());
-    }
+    // Add debug log
+    DEBUG_MSGS.with(|msgs| {
+        let mut msgs = msgs.borrow_mut();
+        msgs.push(format!("REQ received: {}", request_str));
+    });
     
-    // Validate JSON structure before processing
-    match serde_json::from_str::<serde_json::Value>(&request_str) {
-        Ok(json_value) => {
-            // Validate it's an array with at least 2 elements (REQ + subscription ID)
-            if !json_value.is_array() {
-                return string_to_ptr(json!(["NOTICE", "Error: Invalid request format: expected JSON array"]).to_string());
-            }
-            
-            let json_array = json_value.as_array().unwrap();
-            if json_array.len() < 2 {
-                return string_to_ptr(json!(["NOTICE", "Error: Invalid REQ message: expected at least command and subscription ID"]).to_string());
-            }
-            
-            // Check if it's a REQ command
-            if let Some(cmd) = json_array[0].as_str() {
-                if cmd != "REQ" {
-                    return string_to_ptr(json!(["NOTICE", format!("Error: Unsupported command: {}", cmd)]).to_string());
-                }
-            } else {
-                return string_to_ptr(json!(["NOTICE", "Error: Invalid command format: expected string"]).to_string());
-            }
-            
-            // Check subscription ID
-            if let Some(sub_id) = json_array[1].as_str() {
-                if sub_id.trim().is_empty() {
-                    return string_to_ptr(json!(["NOTICE", "Error: Invalid subscription ID: cannot be empty"]).to_string());
-                }
-            } else {
-                return string_to_ptr(json!(["NOTICE", "Error: Invalid subscription ID: expected string"]).to_string());
-            }
-            
-            // Check filters (if provided)
-            if json_array.len() > 2 {
-                for (i, filter) in json_array.iter().skip(2).enumerate() {
-                    if !filter.is_object() {
-                        return string_to_ptr(json!(["NOTICE", format!("Error: Invalid filter at position {}: expected object", i+2)]).to_string());
-                    }
-                    
-                    // Check common filter fields
-                    if let Some(obj) = filter.as_object() {
-                        // Validate kinds is an array if present
-                        if let Some(kinds) = obj.get("kinds") {
-                            if !kinds.is_array() {
-                                return string_to_ptr(json!(["NOTICE", "Error: Invalid filter: 'kinds' must be an array"]).to_string());
-                            }
-                        }
-                        
-                        // Validate authors is an array if present
-                        if let Some(authors) = obj.get("authors") {
-                            if !authors.is_array() {
-                                return string_to_ptr(json!(["NOTICE", "Error: Invalid filter: 'authors' must be an array"]).to_string());
-                            }
-                        }
-                        
-                        // Validate other common filter fields as needed
-                        if let Some(limit) = obj.get("limit") {
-                            if !limit.is_number() {
-                                return string_to_ptr(json!(["NOTICE", "Error: Invalid filter: 'limit' must be a number"]).to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        },
+    // Parse REQ message
+    let req = match serde_json::from_str::<Value>(&request_str) {
+        Ok(v) => v,
         Err(e) => {
-            return string_to_ptr(json!(["NOTICE", format!("Error: Invalid JSON: {}", e)]).to_string());
+            // Log parsing error
+            DEBUG_MSGS.with(|msgs| {
+                let mut msgs = msgs.borrow_mut();
+                msgs.push(format!("JSON parse error: {} in: {}", e, request_str));
+            });
+            return string_to_ptr(json!(["NOTICE", format!("Invalid JSON: {}", e)]).to_string());
+        }
+    };
+
+    // Validate REQ format
+    if !req.is_array() {
+        DEBUG_MSGS.with(|msgs| {
+            let mut msgs = msgs.borrow_mut();
+            msgs.push(format!("REQ is not an array: {}", req));
+        });
+        return string_to_ptr(json!(["NOTICE", "REQ message must be an array"]).to_string());
+    }
+    
+    let arr = req.as_array().unwrap();
+    if arr.len() < 3 {
+        DEBUG_MSGS.with(|msgs| {
+            let mut msgs = msgs.borrow_mut();
+            msgs.push(format!("REQ array too short: {}", req));
+        });
+        return string_to_ptr(json!(["NOTICE", "REQ must contain at least command, id, and filter"]).to_string());
+    }
+    
+    if arr[0].as_str().unwrap_or("") != "REQ" {
+        DEBUG_MSGS.with(|msgs| {
+            let mut msgs = msgs.borrow_mut();
+            msgs.push(format!("First element is not 'REQ': {}", arr[0]));
+        });
+        return string_to_ptr(json!(["NOTICE", "First element must be REQ"]).to_string());
+    }
+    
+    let subscription_id = arr[1].as_str().unwrap_or("").to_string();
+    if subscription_id.is_empty() {
+        DEBUG_MSGS.with(|msgs| {
+            let mut msgs = msgs.borrow_mut();
+            msgs.push("Empty subscription ID".to_string());
+        });
+        return string_to_ptr(json!(["NOTICE", "Invalid subscription ID"]).to_string());
+    }
+    
+    // Parse filters
+    let mut filters = Vec::new();
+    for f in &arr[2..] {
+        match serde_json::from_value::<Filter>(f.clone()) {
+            Ok(filter) => filters.push(filter),
+            Err(e) => {
+                DEBUG_MSGS.with(|msgs| {
+                    let mut msgs = msgs.borrow_mut();
+                    msgs.push(format!("Filter parse error: {} in: {}", e, f));
+                });
+                // Continue with any valid filters
+            }
         }
     }
+
+    // Check if this is a new subscription
+    CURRENT_SUBSCRIPTION.with(|current| {
+        let mut current = current.borrow_mut();
+        if *current != subscription_id {
+            *current = subscription_id.clone();
+            CURRENT_INDEX.with(|idx| *idx.borrow_mut() = 0);
+            EOSE_SENT.with(|sent| *sent.borrow_mut() = false);
+        }
+    });
+
+    // Load and parse events if needed
+    let mut should_load_events = false;
+    SUBSCRIPTION_EVENTS.with(|events| {
+        should_load_events = events.borrow().is_empty();
+    });
+
+    if should_load_events {
+        // Load and parse events
+        let events: Vec<Note> = match serde_json::from_str(EVENTS) {
+            Ok(notes) => notes,
+            Err(e) => {
+                DEBUG_MSGS.with(|msgs| {
+                    let mut msgs = msgs.borrow_mut();
+                    msgs.push(format!("Failed to parse embedded events: {}", e));
+                });
+                
+                // Print the problematic JSON for debugging
+                DEBUG_MSGS.with(|msgs| {
+                    let mut msgs = msgs.borrow_mut();
+                    // Only print the first 200 chars to avoid overflowing logs
+                    let preview = if EVENTS.len() > 200 {
+                        format!("{}...(truncated)", &EVENTS[0..200])
+                    } else {
+                        EVENTS.to_string()
+                    };
+                    msgs.push(format!("Events JSON: {}", preview));
+                    
+                    // Attempt to analyze the first few characters
+                    let first_few = EVENTS.chars().take(20).collect::<String>();
+                    msgs.push(format!("First 20 chars: {:?}", first_few));
+                    
+                    // Check if it appears to be a JSON array
+                    if !EVENTS.trim().starts_with('[') {
+                        msgs.push("Error: Events JSON doesn't start with '[' character".to_string());
+                    }
+                });
+                
+                // Return a notice with more detailed error information
+                return string_to_ptr(json!(["NOTICE", format!("Failed to load events: {}", e)]).to_string())
+            }
+        };
+
+        // Apply filters (NIP-01: filters are OR'd together, conditions within a filter are AND'd)
+        let mut matching_events = Vec::new();
+        
+        'event_loop: for event in events {
+            for filter in &filters {
+                if matches_filter(&event, filter) {
+                    matching_events.push(event.clone());
+                    continue 'event_loop;
+                }
+            }
+        }
+
+        // Sort by created_at in reverse order (newest first)
+        matching_events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        
+        // Apply limit if specified - find the highest limit across all filters
+        let max_limit = filters.iter()
+            .filter_map(|f| f.limit)
+            .max();
+            
+        if let Some(limit) = max_limit {
+            matching_events.truncate(limit);
+        }
+
+        // Store events for this subscription
+        SUBSCRIPTION_EVENTS.with(|subs| {
+            subs.borrow_mut().clear();
+            subs.borrow_mut().extend_from_slice(&matching_events);
+        });
+    }
+
+    // Return next event or EOSE
+    SUBSCRIPTION_EVENTS.with(|events| {
+        CURRENT_INDEX.with(|idx| {
+            let events = events.borrow();
+            let mut idx = idx.borrow_mut();
+            
+            if *idx < events.len() {
+                // Stream one event at a time
+                let response = json!(["EVENT", subscription_id.clone(), &events[*idx]]);
+                *idx += 1;
+                string_to_ptr(response.to_string())
+            } else if !EOSE_SENT.with(|sent| *sent.borrow()) {
+                // All events have been sent, now send EOSE
+                EOSE_SENT.with(|sent| *sent.borrow_mut() = true);
+                string_to_ptr(json!(["EOSE", subscription_id.clone()]).to_string())
+            } else {
+                // No more events and EOSE already sent
+                string_to_ptr(json!(["NOTICE", "No more events"]).to_string())
+            }
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn close(close_ptr: *const u8, close_len: usize) -> *mut u8 {
+    // Safety check for null pointer
+    if close_ptr.is_null() {
+        return string_to_ptr(json!(["NOTICE", "Error: Null close pointer"]).to_string());
+    }
     
-    // Process the request with improved error handling
-    let instance = {{sanitized_name}}::new();
-    let response = match instance.handler.handle_req(&request_str) {
-        Ok(response) => response,
-        Err(err) => {
-            // Format error as a proper NOTICE message
-            json!(["NOTICE", format!("Error: Request processing failed: {}", err)]).to_string()
+    // Get the close request string from the pointer and validate it
+    let close_str = ptr_to_string(close_ptr, close_len);
+    
+    // Add debug log
+    DEBUG_MSGS.with(|msgs| {
+        let mut msgs = msgs.borrow_mut();
+        msgs.push(format!("CLOSE received: {}", close_str));
+    });
+    
+    // Parse the close request
+    let close_value = match serde_json::from_str::<Value>(&close_str) {
+        Ok(val) => val,
+        Err(e) => {
+            DEBUG_MSGS.with(|msgs| {
+                let mut msgs = msgs.borrow_mut();
+                msgs.push(format!("CLOSE JSON parse error: {} in: {}", e, close_str));
+            });
+            return string_to_ptr(json!(["NOTICE", format!("Invalid JSON in close request: {}", e)]).to_string());
         }
     };
     
-    // Ensure we have a valid response
-    if response.is_empty() {
-        return string_to_ptr(json!(["NOTICE", "Error: Empty response from handler"]).to_string());
+    // Validate the close request format
+    if !close_value.is_array() {
+        DEBUG_MSGS.with(|msgs| {
+            let mut msgs = msgs.borrow_mut();
+            msgs.push(format!("CLOSE is not an array: {}", close_value));
+        });
+        return string_to_ptr(json!(["NOTICE", "CLOSE message must be an array"]).to_string());
     }
     
-    // Convert response to a pointer to be returned to WebAssembly
-    string_to_ptr(response)
+    let arr = close_value.as_array().unwrap();
+    if arr.len() < 2 {
+        DEBUG_MSGS.with(|msgs| {
+            let mut msgs = msgs.borrow_mut();
+            msgs.push("CLOSE array too short".to_string());
+        });
+        return string_to_ptr(json!(["NOTICE", "CLOSE must contain command and subscription ID"]).to_string());
+    }
+    
+    if arr[0].as_str().unwrap_or("") != "CLOSE" {
+        DEBUG_MSGS.with(|msgs| {
+            let mut msgs = msgs.borrow_mut();
+            msgs.push(format!("First element is not 'CLOSE': {}", arr[0]));
+        });
+        return string_to_ptr(json!(["NOTICE", "First element must be CLOSE"]).to_string());
+    }
+    
+    let subscription_id = arr[1].as_str().unwrap_or("").to_string();
+    if subscription_id.is_empty() {
+        DEBUG_MSGS.with(|msgs| {
+            let mut msgs = msgs.borrow_mut();
+            msgs.push("Empty subscription ID in CLOSE".to_string());
+        });
+        return string_to_ptr(json!(["NOTICE", "Invalid subscription ID"]).to_string());
+    }
+    
+    // Reset the subscription state
+    CURRENT_SUBSCRIPTION.with(|sub| *sub.borrow_mut() = String::new());
+    CURRENT_INDEX.with(|idx| *idx.borrow_mut() = 0);
+    SUBSCRIPTION_EVENTS.with(|events| events.borrow_mut().clear());
+    EOSE_SENT.with(|sent| *sent.borrow_mut() = false);
+    
+    // Respond with a simple notice
+    string_to_ptr(json!(["NOTICE", "Subscription closed"]).to_string())
 }
 
-#[no_mangle]
-pub extern "C" fn close(ptr: *const u8, length: usize) -> *mut u8 {
-    // Handle null pointer or invalid length case
-    if ptr.is_null() || length == 0 {
-        return string_to_ptr(json!(["NOTICE", "Error: Empty close request received"]).to_string());
-    }
-    
-    // Convert close command from WebAssembly memory to a Rust string
-    let close_str = ptr_to_string(ptr, length);
-    
-    // Add simple validation to ensure we got a close string
-    if close_str.is_empty() {
-        return string_to_ptr(json!(["NOTICE", "Error: Failed to read close request from memory"]).to_string());
-    }
-    
-    // Validate JSON structure before processing
-    match serde_json::from_str::<serde_json::Value>(&close_str) {
-        Ok(json_value) => {
-            // Validate it's an array with at least 2 elements (CLOSE + subscription ID)
-            if !json_value.is_array() {
-                return string_to_ptr(json!(["NOTICE", "Error: Invalid close request format: expected JSON array"]).to_string());
-            }
-            
-            let json_array = json_value.as_array().unwrap();
-            if json_array.len() < 2 {
-                return string_to_ptr(json!(["NOTICE", "Error: Invalid CLOSE message: expected command and subscription ID"]).to_string());
-            }
-            
-            // Check if it's a CLOSE command
-            if let Some(cmd) = json_array[0].as_str() {
-                if cmd != "CLOSE" {
-                    return string_to_ptr(json!(["NOTICE", format!("Error: Unsupported command: {}", cmd)]).to_string());
-                }
-            } else {
-                return string_to_ptr(json!(["NOTICE", "Error: Invalid command format: expected string"]).to_string());
-            }
-            
-            // Check subscription ID
-            if let Some(sub_id) = json_array[1].as_str() {
-                if sub_id.trim().is_empty() {
-                    return string_to_ptr(json!(["NOTICE", "Error: Invalid subscription ID: cannot be empty"]).to_string());
-                }
-            } else {
-                return string_to_ptr(json!(["NOTICE", "Error: Invalid subscription ID: expected string"]).to_string());
-            }
-            
-            // Process the close command with proper error handling
-            let instance = {{sanitized_name}}::new();
-            let response = match instance.handler.handle_close(&close_str) {
-                Ok(response) => response,
-                Err(err) => {
-                    // Format error as a proper NOTICE message
-                    json!(["NOTICE", format!("Error: Close processing failed: {}", err)]).to_string()
-                }
-            };
-            
-            // Ensure we have a valid response
-            if response.is_empty() {
-                return string_to_ptr(json!(["NOTICE", "Error: Empty response from close handler"]).to_string());
-            }
-            
-            // Convert response to a pointer to be returned to WebAssembly
-            string_to_ptr(response)
-        },
-        Err(e) => {
-            return string_to_ptr(json!(["NOTICE", format!("Error: Invalid JSON in close request: {}", e)]).to_string());
+// Helper function to check if an event matches a filter according to NIP-01
+fn matches_filter(event: &Note, filter: &Filter) -> bool {
+    // Check IDs
+    if let Some(ids) = &filter.ids {
+        if !ids.contains(&event.id) {
+            return false;
         }
     }
+
+    // Check authors
+    if let Some(authors) = &filter.authors {
+        if !authors.contains(&event.pubkey) {
+            return false;
+        }
+    }
+
+    // Check kinds
+    if let Some(kinds) = &filter.kinds {
+        if !kinds.contains(&event.kind) {
+            return false;
+        }
+    }
+
+    // Check timestamps
+    if let Some(since) = filter.since {
+        if event.created_at < since {
+            return false;
+        }
+    }
+    if let Some(until) = filter.until {
+        if event.created_at > until {
+            return false;
+        }
+    }
+
+    // Check tag filters
+    for (key, values) in &filter.tag_filters {
+        // Log the tag filter for debugging
+        DEBUG_MSGS.with(|msgs| {
+            let mut msgs = msgs.borrow_mut();
+            msgs.push(format!("Checking tag filter: {} with values: {:?}", key, values));
+        });
+        
+        if key.starts_with('&') {
+            // NIP-119: All tag values must be present
+            let tag_name = &key[1..];
+            
+            DEBUG_MSGS.with(|msgs| {
+                let mut msgs = msgs.borrow_mut();
+                msgs.push(format!("NIP-119 AND filter for tag '{}' with values: {:?}", tag_name, values));
+            });
+            
+            let tag_values: Vec<String> = event.tags.iter()
+                .filter(|t| t.get(0).map_or(false, |n| n == tag_name))
+                .filter_map(|t| t.get(1).cloned())
+                .collect();
+                
+            DEBUG_MSGS.with(|msgs| {
+                let mut msgs = msgs.borrow_mut();
+                msgs.push(format!("Event has tag values: {:?}", tag_values));
+            });
+
+            // For NIP-119 AND semantics, all requested values must be present
+            if !values.iter().all(|v| tag_values.contains(v)) {
+                DEBUG_MSGS.with(|msgs| {
+                    let mut msgs = msgs.borrow_mut();
+                    msgs.push(format!("NIP-119 filter failed - not all values present"));
+                });
+                return false;
+            }
+            
+            DEBUG_MSGS.with(|msgs| {
+                let mut msgs = msgs.borrow_mut();
+                msgs.push(format!("NIP-119 filter matched"));
+            });
+        } else if key.starts_with('#') {
+            // Regular tag filter: Any value must match
+            let tag_name = &key[1..];
+            
+            DEBUG_MSGS.with(|msgs| {
+                let mut msgs = msgs.borrow_mut();
+                msgs.push(format!("Regular tag filter for tag '{}' with values: {:?}", tag_name, values));
+            });
+            
+            let tag_values: Vec<String> = event.tags.iter()
+                .filter(|t| t.get(0).map_or(false, |n| n == tag_name))
+                .filter_map(|t| t.get(1).cloned())
+                .collect();
+                
+            DEBUG_MSGS.with(|msgs| {
+                let mut msgs = msgs.borrow_mut();
+                msgs.push(format!("Event has tag values: {:?}", tag_values));
+            });
+
+            // For regular OR semantics, at least one value must be present
+            if !values.iter().any(|v| tag_values.contains(v)) {
+                DEBUG_MSGS.with(|msgs| {
+                    let mut msgs = msgs.borrow_mut();
+                    msgs.push(format!("Regular tag filter failed - no matching values"));
+                });
+                return false;
+            }
+            
+            DEBUG_MSGS.with(|msgs| {
+                let mut msgs = msgs.borrow_mut();
+                msgs.push(format!("Regular tag filter matched"));
+            });
+        }
+    }
+
+    // If we've passed all conditions, the event matches the filter
+    true
+}
+
+// Memory management functions required by cassette-loader
+#[no_mangle]
+pub extern "C" fn alloc_string(len: usize) -> *mut u8 {
+    // Allocate memory with additional padding to prevent TypedArray errors
+    let mut buf = Vec::with_capacity(len + 16);
+    buf.resize(len + 16, 0);
+    let ptr = buf.as_mut_ptr();
+    std::mem::forget(buf);
+    ptr
 }
 
 #[no_mangle]
-pub extern "C" fn alloc_string(len: usize) -> *mut u8 {
-    let mut buffer = Vec::with_capacity(len);
-    let ptr = buffer.as_mut_ptr();
-    std::mem::forget(buffer);
-    ptr
-} 
+pub extern "C" fn dealloc_string(ptr: *mut u8) {
+    // First get the length from the MSGB format (4 bytes header + 4 bytes length)
+    let len = unsafe {
+        if ptr.is_null() {
+            return;
+        }
+        let header = std::slice::from_raw_parts(ptr, 8);
+        if header[0] == b'M' && header[1] == b'S' && header[2] == b'G' && header[3] == b'B' {
+            // MSGB format has length at bytes 4-7
+            u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize
+        } else {
+            // Fallback: use a fixed size if we can't determine length
+            1024
+        }
+    };
+    
+    unsafe {
+        let len_with_padding = len + 16;
+        let _ = Vec::from_raw_parts(ptr, len, len_with_padding);
+        // Memory will be deallocated when Vec is dropped
+    }
+}
+

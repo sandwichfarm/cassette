@@ -205,4 +205,74 @@ export function createEventTracker(): EventTracker {
       });
     }
   };
+}
+
+/**
+ * Process a cassette response according to NIP-01 protocol
+ * Handles parsing, validation, and processing responses
+ * 
+ * @param response Raw response string from a cassette
+ * @param subscriptionId The subscription ID to associate with events
+ * @param logger Optional logger for debugging
+ * @param eventTracker Optional event tracker for deduplication
+ * @returns Object with processed events and notices
+ */
+export function processCassetteResponse(
+  response: string, 
+  subscriptionId: string,
+  logger = createLogger(false),
+  eventTracker?: EventTracker
+): { 
+  events: string[], 
+  eose: boolean,
+  notices: string[] 
+} {
+  if (!response) {
+    logger.log('Empty response from cassette');
+    return { events: [], eose: false, notices: [] };
+  }
+
+  logger.log(`Processing cassette response: ${response}`);
+  const result = {
+    events: [] as string[],
+    eose: false,
+    notices: [] as string[]
+  };
+
+  try {
+    // Handle single response
+    try {
+      const parsedResponse = JSON.parse(response);
+      if (Array.isArray(parsedResponse)) {
+        if (parsedResponse[0] === "EOSE") {
+          result.eose = true;
+          // Don't push EOSE to events array, just set the flag
+        } else if (parsedResponse[0] === "EVENT" && parsedResponse.length >= 3) {
+          // Check for duplicates if we have an event tracker
+          if (eventTracker && parsedResponse[2] && parsedResponse[2].id) {
+            const eventId = parsedResponse[2].id;
+            if (eventTracker.addAndCheck(eventId)) {
+              // Only forward if it's not a duplicate
+              result.events.push(response);
+            } else {
+              logger.log(`Filtered duplicate event: ${eventId}`);
+              // Don't send NOTICE for deduplication, just log it
+            }
+          } else {
+            // No event tracker, forward all events
+            result.events.push(response);
+          }
+        } else if (parsedResponse[0] === "NOTICE") {
+          // Only forward NOTICE messages that came from the cassette
+          result.notices.push(response);
+        }
+      }
+    } catch (parseError) {
+      logger.log(`Error parsing response: ${parseError}`);
+    }
+  } catch (error) {
+    logger.log(`Error processing response: ${error}`);
+  }
+  
+  return result;
 } 

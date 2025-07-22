@@ -2,6 +2,10 @@
  * Memory management utilities for WebAssembly cassettes
  */
 
+// Constants
+const MAX_STRING_LENGTH = 10_000_000; // 10MB safety limit
+const MSGB_SIGNATURE = new Uint8Array([0x4D, 0x53, 0x47, 0x42]); // "MSGB"
+
 /**
  * Handles memory interactions between JavaScript and WebAssembly
  */
@@ -11,6 +15,7 @@ export class WasmMemoryManager {
   private decoder = new TextDecoder('utf-8');
   private encoder = new TextEncoder();
   private debugMode: boolean;
+  private allocatedPointers: Set<number>; // Track allocated pointers
 
   /**
    * Creates a new memory manager
@@ -22,6 +27,11 @@ export class WasmMemoryManager {
     this.memory = memory;
     this.exports = exports;
     this.debugMode = debug;
+    this.allocatedPointers = new Set<number>();
+    
+    if (debug) {
+      this.debug('Memory manager initialized');
+    }
   }
 
   /**
@@ -41,19 +51,74 @@ export class WasmMemoryManager {
   }
 
   /**
-   * Call a function in the exports
+   * Call a function in the exports with proper error handling
    */
   private callFunction(name: string, ...args: any[]): any {
     if (!this.hasFunction(name)) {
       throw new Error(`Function ${name} not found in WebAssembly exports`);
     }
-    return (this.exports[name as keyof typeof this.exports] as Function)(...args);
+    
+    try {
+      return (this.exports[name as keyof typeof this.exports] as Function)(...args);
+    } catch (error) {
+      this.debug(`Error calling ${name}:`, error);
+      throw error;
+    }
   }
 
   /**
-   * Read a string from memory using the enhanced format with signature
-   * The enhanced format includes a magic signature to detect truncation:
-   * [4-byte signature "MSGB"][4-byte length][string data][null terminator]
+   * Register an allocation in our tracking system
+   * @param ptr The pointer to track
+   */
+  private registerAllocation(ptr: number): void {
+    if (ptr === 0) return;
+    this.allocatedPointers.add(ptr);
+    this.debug(`Registered allocation at pointer ${ptr}, total allocations: ${this.allocatedPointers.size}`);
+  }
+  
+  /**
+   * Unregister an allocation from our tracking system
+   * @param ptr The pointer to unregister
+   */
+  private unregisterAllocation(ptr: number): void {
+    if (ptr === 0) return;
+    const wasPresent = this.allocatedPointers.delete(ptr);
+    this.debug(`Unregistered allocation at pointer ${ptr}, was present: ${wasPresent}, remaining allocations: ${this.allocatedPointers.size}`);
+  }
+  
+  /**
+   * Get the number of currently tracked allocations
+   */
+  public getAllocationCount(): number {
+    return this.allocatedPointers.size;
+  }
+  
+  /**
+   * Get a list of all currently tracked allocations
+   */
+  public getAllocatedPointers(): number[] {
+    return Array.from(this.allocatedPointers);
+  }
+
+  /**
+   * Check if a buffer has our MSGB signature
+   */
+  private hasMsgbSignature(ptr: number): boolean {
+    if (ptr === 0 || ptr + 4 > this.memory.buffer.byteLength) {
+      return false;
+    }
+    
+    const memory = new Uint8Array(this.memory.buffer);
+    return (
+      memory[ptr] === MSGB_SIGNATURE[0] &&
+      memory[ptr + 1] === MSGB_SIGNATURE[1] &&
+      memory[ptr + 2] === MSGB_SIGNATURE[2] &&
+      memory[ptr + 3] === MSGB_SIGNATURE[3]
+    );
+  }
+
+  /**
+   * Read a string from memory with proper handling for MSGB format
    * 
    * @param ptr Pointer to the memory location
    * @returns The string value
@@ -65,9 +130,10 @@ export class WasmMemoryManager {
     }
 
     try {
+      // Create a view of the memory
       const memory = new Uint8Array(this.memory.buffer);
       
-      // Enhanced logging: Show the first 16 bytes at the pointer location for debugging
+      // Enhanced logging: Show the first 16 bytes at the pointer location
       if (ptr < memory.length) {
         const headerBytes = Array.from(memory.subarray(ptr, Math.min(ptr + 16, memory.length)))
           .map(b => b.toString(16).padStart(2, '0'))
@@ -81,305 +147,404 @@ export class WasmMemoryManager {
         this.debug(`ASCII preview: ${asciiPreview}`);
       }
       
-      // Check for the magic signature "MSGB" (0x4D, 0x53, 0x47, 0x42)
-      // This signature is added by the enhanced string_to_ptr function
-      if (ptr + 8 <= memory.length && 
-          memory[ptr] === 0x4D && memory[ptr + 1] === 0x53 && 
-          memory[ptr + 2] === 0x47 && memory[ptr + 3] === 0x42) {
+      // Check for MSGB signature
+      if (this.hasMsgbSignature(ptr)) {
+        this.debug('Detected MSGB string format');
         
-        this.debug('Detected enhanced string format with MSGB signature');
+        // MSGB format: [signature(4 bytes)][length(4 bytes)][data(length bytes)]
+        const dataView = new DataView(this.memory.buffer);
+        const length = dataView.getUint32(ptr + 4, true); // true = little endian
         
-        // Read the length from bytes 4-7 (after signature)
-        const lengthBytes = memory.subarray(ptr + 4, ptr + 8);
-        const length = new DataView(lengthBytes.buffer, lengthBytes.byteOffset, 4).getUint32(0, true);
-        this.debug(`String length from enhanced format: ${length}`);
+        this.debug(`String length from MSGB format: ${length}`);
         
-        if (length <= 0 || length > 10000000) { // Sanity check for length
-          this.debug(`Invalid string length: ${length}, returning empty string`);
-          return '';
+        if (length > MAX_STRING_LENGTH) {
+          throw new Error(`String too large (${length} bytes)`);
         }
         
-        // Calculate the start of the actual string data (after signature and length)
-        const strPtr = ptr + 8;
+        const stringData = memory.subarray(ptr + 8, ptr + 8 + length);
+        const result = this.decoder.decode(stringData);
         
-        if (strPtr >= memory.length) {
-          this.debug(`String pointer ${strPtr} out of bounds for memory length ${memory.length}`);
-          return '';
-        }
+        // Enhanced debugging for JSON parsing
+        this.debug(`Read string: ${result.substring(0, 50)}${result.length > 50 ? '...' : ''}`);
         
-        // Log the actual string bytes
-        const stringBytes = Array.from(memory.subarray(strPtr, Math.min(strPtr + Math.min(32, length), memory.length)))
-          .map(b => b.toString(16).padStart(2, '0'))
-          .join(' ');
-        this.debug(`First ${Math.min(32, length)} bytes of string data: ${stringBytes}`);
-        
-        // Read the string data with bounds checking
-        const endPtr = Math.min(strPtr + length, memory.length);
-        const stringData = memory.subarray(strPtr, endPtr);
-        
+        // Validate if it's proper JSON
         try {
-          const result = this.decoder.decode(stringData);
-          this.debug(`Read string from enhanced format (length ${length}): ${result.substring(0, 50)}${result.length > 50 ? '...' : ''}`);
-          return result;
-        } catch (decodeError) {
-          this.debug(`Error decoding string: ${decodeError}`);
-          return '';
+          JSON.parse(result);
+          this.debug('Successfully validated as valid JSON');
+        } catch (jsonError: unknown) {
+          if (jsonError instanceof Error) {
+            this.debug(`JSON parsing error: ${jsonError.message}`);
+          } else {
+            this.debug(`JSON parsing error: ${String(jsonError)}`);
+          }
+          this.debug(`JSON data starts with: ${result.substring(0, 100)}`);
+          
+          // Detailed character analysis for first 50 chars to find invalid sequences
+          const firstChars = result.substring(0, 50);
+          const charCodes = Array.from(firstChars).map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join(' ');
+          this.debug(`Character codes: ${charCodes}`);
+          
+          // Try to identify common JSON parsing issues
+          if (result.includes('\0')) {
+            this.debug('Warning: String contains null bytes that may cause JSON parsing issues');
+          }
+          
+          // Look for structural issues
+          if (result.startsWith('[') && !result.includes(']')) {
+            this.debug('JSON structural issue: Array open bracket without matching close bracket');
+          } else if (result.startsWith('{') && !result.includes('}')) {
+            this.debug('JSON structural issue: Object open bracket without matching close bracket');
+          }
         }
+        
+        return result;
       }
       
-      // First check if we can use the get_string_len and get_string_ptr functions
+      // If we get here, try to use the WebAssembly helper functions
       if (this.hasFunction('get_string_len') && this.hasFunction('get_string_ptr')) {
-        // Get the string length using the helper function
-        const length = this.callFunction('get_string_len', ptr);
-        this.debug(`String length from get_string_len: ${length}`);
-        
-        if (length <= 0 || length > 10000000) { // Sanity check for length
-          this.debug(`Invalid string length: ${length}, returning empty string`);
-          return '';
+        try {
+          // Get the string length and pointer to data
+          const length = this.callFunction('get_string_len', ptr);
+          const strPtr = this.callFunction('get_string_ptr', ptr);
+          
+          this.debug(`Using helper functions: length=${length}, strPtr=${strPtr}`);
+          
+          // Validate
+          if (length <= 0 || length > MAX_STRING_LENGTH || 
+              strPtr === 0 || strPtr >= memory.length || strPtr + length > memory.length) {
+            this.debug('Invalid length or pointer from helper functions');
+            return '';
+          }
+          
+          // Read the string data
+          const stringData = new Uint8Array(memory.buffer.slice(strPtr, strPtr + length));
+          const result = this.decoder.decode(stringData);
+          
+          this.debug(`Read string using helper functions: ${result.substring(0, 50)}${result.length > 50 ? '...' : ''}`);
+          return result;
+        } catch (error) {
+          this.debug(`Error using helper functions: ${error}`);
+          // Continue with fallback
         }
-        
-        // Get pointer to the actual string data (after length prefix)
-        const strPtr = this.callFunction('get_string_ptr', ptr);
-        this.debug(`String pointer from get_string_ptr: ${strPtr}`);
-        
-        if (strPtr <= 0 || strPtr >= memory.length) {
-          this.debug(`Invalid string pointer: ${strPtr}, returning empty string`);
-          return '';
-        }
-        
-        // Log the actual string bytes
-        const stringBytes = Array.from(memory.subarray(strPtr, Math.min(strPtr + Math.min(32, length), memory.length)))
-          .map(b => b.toString(16).padStart(2, '0'))
-          .join(' ');
-        this.debug(`First ${Math.min(32, length)} bytes of string data: ${stringBytes}`);
-        
-        // Read the string data with bounds checking
-        const endPtr = Math.min(strPtr + length, memory.length);
-        const stringData = memory.subarray(strPtr, endPtr);
-        const result = this.decoder.decode(stringData);
-        this.debug(`Read string (length ${length}): ${result.substring(0, 50)}${result.length > 50 ? '...' : ''}`);
-        
-        return result;
       }
       
-      // Fallback: manually parse the 4-byte length prefix
-      if (ptr + 4 > memory.length) {
-        this.debug(`Pointer ${ptr} out of bounds for memory length ${memory.length}`);
+      // Fallback: try to read as a null-terminated string
+      this.debug('Using fallback method to read string');
+      
+      // Find the null terminator
+      let end = ptr;
+      while (end < memory.length && memory[end] !== 0) {
+        end++;
+      }
+      
+      if (end === ptr) {
+        this.debug('Empty string (null at start)');
         return '';
       }
       
-      // Log the raw length bytes
-      const rawLengthBytes = Array.from(memory.subarray(ptr, ptr + 4))
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join(' ');
-      this.debug(`Raw length bytes: ${rawLengthBytes}`);
+      // Read the string
+      const stringData = new Uint8Array(memory.buffer.slice(ptr, end));
+      const result = this.decoder.decode(stringData);
       
-      // Read the length prefix (4 bytes in little-endian)
-      const lengthBytes = memory.subarray(ptr, ptr + 4);
-      const length = new DataView(lengthBytes.buffer, lengthBytes.byteOffset, 4).getUint32(0, true);
-      this.debug(`String length from manual parsing: ${length}`);
-      
-      if (length <= 0 || length > 10000000) { // Sanity check for length
-        this.debug(`Invalid string length: ${length}, returning empty string`);
-        return '';
-      }
-      
-      // Calculate the start of the actual string data (after the 4-byte prefix)
-      const strPtr = ptr + 4;
-      
-      if (strPtr >= memory.length) {
-        this.debug(`String pointer ${strPtr} out of bounds for memory length ${memory.length}`);
-        return '';
-      }
-      
-      // Log the actual string bytes
-      const stringBytes = Array.from(memory.subarray(strPtr, Math.min(strPtr + Math.min(32, length), memory.length)))
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join(' ');
-      this.debug(`First ${Math.min(32, length)} bytes of string data: ${stringBytes}`);
-      
-      // Read the string data with bounds checking
-      const endPtr = Math.min(strPtr + length, memory.length);
-      const stringData = memory.subarray(strPtr, endPtr);
-      
-      try {
-        const result = this.decoder.decode(stringData);
-        this.debug(`Read string (length ${length}): ${result.substring(0, 50)}${result.length > 50 ? '...' : ''}`);
-        return result;
-      } catch (decodeError) {
-        this.debug(`Error decoding string: ${decodeError}`);
-        return '';
-      }
+      this.debug(`Read string using fallback: ${result.substring(0, 50)}${result.length > 50 ? '...' : ''}`);
+      return result;
     } catch (error) {
-      console.error('Error reading string from WebAssembly memory:', error);
+      this.debug(`Error reading string: ${error}`);
       return '';
     }
   }
 
   /**
-   * Write a string to memory
+   * Write a string to memory with proper MSGB format
+   * 
    * @param str String to write
    * @returns Pointer to the memory location
    */
   writeString(str: string): number {
-    try {
-      const bytes = this.encoder.encode(str);
-      this.debug(`Writing string (length ${bytes.length}): ${str.substring(0, 50)}${str.length > 50 ? '...' : ''}`);
-      
-      // Check if we can use string_to_ptr function directly
-      if (this.hasFunction('string_to_ptr')) {
-        this.debug('Using string_to_ptr function');
-        return this.callFunction('string_to_ptr', str);
+    if (!str) {
+      this.debug('Empty string provided to writeString, returning 0');
+      return 0;
+    }
+    
+    this.debug(`Writing string to memory (length ${str.length}): ${str.substring(0, 50)}${str.length > 50 ? '...' : ''}`);
+    
+    // First try to use the module's custom allocation function
+    let ptr = 0;
+    
+    // Create the UTF-8 encoded string
+    const bytes = this.encoder.encode(str);
+    
+    // Use allocString if available (most common name)
+    if (this.hasFunction('allocString')) {
+      this.debug('Using allocString function');
+      try {
+        ptr = this.callFunction('allocString', bytes.length);
+        this.registerAllocation(ptr);
+      } catch (error) {
+        this.debug('Error allocating memory with allocString:', error);
+        return 0;
       }
+    } 
+    // Try alloc_string (Rust-style naming)
+    else if (this.hasFunction('alloc_string')) {
+      this.debug('Using alloc_string function');
+      try {
+        ptr = this.callFunction('alloc_string', bytes.length);
+        this.registerAllocation(ptr);
+      } catch (error) {
+        this.debug('Error allocating memory with alloc_string:', error);
+        return 0;
+      }
+    }
+    // Try using standard malloc if available
+    else if (this.hasFunction('malloc')) {
+      this.debug('Using malloc function');
+      try {
+        // We need an extra byte for the null terminator with malloc
+        ptr = this.callFunction('malloc', bytes.length + 1);
+        this.registerAllocation(ptr);
+      } catch (error) {
+        this.debug('Error allocating memory with malloc:', error);
+        return 0;
+      }
+    } 
+    // As a fallback, try any other allocation function we can find
+    else {
+      this.debug('No standard allocation function found, searching for alternatives');
       
-      // Fallback: use alloc_string and manual memory writing
-      if (this.hasFunction('alloc_string')) {
-        // Allocate memory (include space for length prefix and null terminator)
-        const totalLength = 4 + bytes.length + 1;
-        const ptr = this.callFunction('alloc_string', totalLength);
-        this.debug(`Allocated memory at pointer: ${ptr}, total length: ${totalLength}`);
-        
-        // Write to memory
-        const memory = new Uint8Array(this.memory.buffer);
-        
-        // Write length prefix (4 bytes, little-endian)
-        const view = new DataView(memory.buffer);
-        view.setUint32(ptr, bytes.length, true);
-        
-        // Write string data
-        for (let i = 0; i < bytes.length; i++) {
-          memory[ptr + 4 + i] = bytes[i];
+      const allocationFunctions = [
+        'alloc_buffer', 'allocBuffer', 'alloc', 'create_string',
+        'createString', 'string_alloc', 'stringAlloc'
+      ];
+      
+      for (const funcName of allocationFunctions) {
+        if (this.hasFunction(funcName)) {
+          this.debug(`Found alternative allocation function: ${funcName}`);
+          try {
+            ptr = this.callFunction(funcName, bytes.length);
+            if (ptr !== 0) {
+              this.registerAllocation(ptr);
+              break;
+            }
+          } catch (error) {
+            this.debug(`Error allocating memory with ${funcName}:`, error);
+          }
         }
-        
-        // Add null terminator
-        memory[ptr + 4 + bytes.length] = 0;
-        
-        return ptr;
+      }
+    }
+    
+    if (ptr === 0) {
+      this.debug('Failed to allocate memory for string');
+      return 0;
+    }
+    
+    // Copy the string data to WASM memory
+    try {
+      const memory = new Uint8Array(this.memory.buffer);
+      
+      // Check buffer bounds
+      if (ptr + bytes.length > memory.length) {
+        this.debug(`Memory allocation error: ptr (${ptr}) + length (${bytes.length}) exceeds memory size (${memory.length})`);
+        this.deallocateString(ptr);
+        return 0;
       }
       
-      throw new Error('No string allocation functions found in WebAssembly exports');
+      // Copy the bytes
+      for (let i = 0; i < bytes.length; i++) {
+        memory[ptr + i] = bytes[i];
+      }
+      
+      // Add a null terminator if we're using malloc-style allocation
+      if (this.hasFunction('malloc')) {
+        memory[ptr + bytes.length] = 0;
+      }
+      
+      this.debug(`String written to memory at pointer ${ptr}`);
+      return ptr;
     } catch (error) {
-      console.error('Error writing string to WebAssembly memory:', error);
-      throw error;
+      this.debug('Error writing string to memory:', error);
+      this.deallocateString(ptr);
+      return 0;
     }
   }
 
   /**
-   * Deallocate a string from memory, with enhanced handling for different string formats
-   * and resilience to failures
+   * Deallocate a string from memory with proper handling for MSGB format
+   * 
    * @param ptr Pointer to the memory location
    */
   deallocateString(ptr: number): void {
     if (ptr === 0) {
+      this.debug('Ignoring request to deallocate null pointer');
       return;
     }
-
+    
+    this.debug(`Deallocating string at pointer ${ptr}`);
+    
+    // Check if this pointer is in our tracking system
+    const isTracked = this.allocatedPointers.has(ptr);
+    if (!isTracked) {
+      this.debug(`Warning: Attempting to deallocate untracked pointer ${ptr}`);
+    }
+    
+    // Perform memory analysis before deallocation
     try {
-      // Check if dealloc_string exists and is actually callable
-      if (!this.hasFunction('dealloc_string')) {
-        this.debug('No dealloc_string function available, skipping deallocation');
-        return;
-      }
-      
+      // Analyze memory at that pointer to see what we're about to deallocate
       const memory = new Uint8Array(this.memory.buffer);
-      
-      // First, detect the string format to determine the correct length
-      let length = 0;
-      let originalPtr = ptr;
-      
-      // Check for enhanced string format with MSGB signature
-      if (ptr + 8 <= memory.length && 
-          memory[ptr] === 0x4D && memory[ptr + 1] === 0x53 && 
-          memory[ptr + 2] === 0x47 && memory[ptr + 3] === 0x42) {
+      if (ptr < memory.length) {
+        const headerBytes = Array.from(memory.subarray(ptr, Math.min(ptr + 16, memory.length)))
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join(' ');
+        this.debug(`Memory to deallocate at ptr ${ptr} starts with bytes: ${headerBytes}`);
         
-        this.debug('Detected enhanced string format for deallocation');
-        
-        // Read length from bytes 4-7 (after signature)
-        try {
-          const lengthBytes = memory.subarray(ptr + 4, ptr + 8);
-          length = new DataView(lengthBytes.buffer, lengthBytes.byteOffset, 4).getUint32(0, true);
-          this.debug(`Enhanced format string length for deallocation: ${length}`);
-          
-          // For deallocation, we need to include the signature and length prefix
-          // so the original pointer is already correct
-        } catch (enhancedLenError) {
-          this.debug(`Error reading enhanced format length: ${enhancedLenError}`);
-          // Continue with other methods
+        // Check if it's a MSGB string
+        if (this.hasMsgbSignature(ptr)) {
+          this.debug('MSGB signature found at deallocation pointer');
+          const dataView = new DataView(this.memory.buffer);
+          const length = dataView.getUint32(ptr + 4, true); // true = little endian
+          this.debug(`String length from MSGB format: ${length}`);
+        } else {
+          this.debug('Not a MSGB string, trying to estimate length');
+          const length = this.estimateStringLength(ptr);
+          this.debug(`Estimated string length: ${length}`);
         }
+      } else {
+        this.debug(`Pointer ${ptr} is outside memory bounds (${memory.length})`);
       }
-      
-      // If length is still 0, try using get_string_len function
-      if (length === 0 && this.hasFunction('get_string_len')) {
+    } catch (analyzeError) {
+      this.debug(`Error analyzing memory before deallocation: ${analyzeError}`);
+    }
+    
+    // First try to use the module's custom deallocation function
+    try {
+      // Try deallocString (most common name)
+      if (this.hasFunction('deallocString')) {
+        this.debug('Using deallocString function');
         try {
-          length = this.callFunction('get_string_len', ptr);
-          this.debug(`Got string length from get_string_len: ${length}`);
-        } catch (lenError) {
-          this.debug(`Error calling get_string_len: ${lenError}`);
-          // Continue with manual method
+          this.callFunction('deallocString', ptr);
+          this.debug('deallocString call completed successfully');
+          this.unregisterAllocation(ptr);
+          return;
+        } catch (error) {
+          this.debug(`Error calling deallocString: ${error}`);
+          throw error; // Re-throw to be caught by outer try-catch
         }
       } 
-      
-      // If length is still 0, try manual reading of standard 4-byte prefix
-      if (length === 0) {
-        // Manually read length prefix
+      // Try dealloc_string (Rust-style naming)
+      else if (this.hasFunction('dealloc_string')) {
+        this.debug('Using dealloc_string function');
+        
+        // First try with length 0 since this works in cases where string length isn't needed
         try {
-          // Check if ptr is valid
-          if (ptr + 4 > memory.length) {
-            this.debug(`Pointer ${ptr} out of bounds for memory length ${memory.length}`);
-            return;
-          }
-          
-          const lengthBytes = memory.subarray(ptr, ptr + 4);
-          length = new DataView(lengthBytes.buffer, lengthBytes.byteOffset, 4).getUint32(0, true);
-          this.debug(`Got string length from manual reading: ${length}`);
-        } catch (manualLenError) {
-          this.debug(`Error manually reading string length: ${manualLenError}`);
-        }
-      }
-      
-      // Sanity check for length
-      if (length <= 0 || length > 10000000) {
-        this.debug(`Invalid or missing string length (${length}), attempting safe deallocation anyway`);
-        // Even with invalid length, try to deallocate with a reasonable default
-        // This is better than skipping deallocation entirely
-        length = 1; // Use minimal length just to call the function
-      }
-      
-      this.debug(`Deallocating string at pointer ${originalPtr} with length ${length}`);
-      
-      // Make the actual deallocation call, with try/catch and fallbacks
-      try {
-        // First verify the function is callable
-        if (typeof this.exports.dealloc_string !== 'function') {
-          this.debug('dealloc_string is not a function, skipping deallocation');
+          this.debug('Trying dealloc_string with length 0');
+          this.callFunction('dealloc_string', ptr, 0);
+          this.debug('dealloc_string call with length 0 completed successfully');
+          this.unregisterAllocation(ptr);
           return;
+        } catch (error) {
+          this.debug(`dealloc_string with length 0 failed: ${error}`);
+          
+          // If that failed, fall back to using estimated length
+          try {
+            const len = this.estimateStringLength(ptr);
+            this.debug(`Retrying with estimated length: ${len}`);
+            this.callFunction('dealloc_string', ptr, len);
+            this.debug('dealloc_string call with estimated length completed successfully');
+            this.unregisterAllocation(ptr);
+            return;
+          } catch (retryError) {
+            this.debug(`Retry with estimated length also failed: ${retryError}`);
+            throw error; // Re-throw original error
+          }
+        }
+      }
+      // Try standard free if available
+      else if (this.hasFunction('free')) {
+        this.debug('Using free function');
+        try {
+          this.callFunction('free', ptr);
+          this.debug('free call completed successfully');
+          this.unregisterAllocation(ptr);
+          return;
+        } catch (error) {
+          this.debug(`Error calling free: ${error}`);
+          throw error; // Re-throw the error
+        }
+      }
+      // As a fallback, try any other deallocation function we can find
+      else {
+        this.debug('No standard deallocation function found, searching for alternatives');
+        
+        const deallocationFunctions = [
+          'dealloc_buffer', 'deallocBuffer', 'dealloc', 'destroy_string',
+          'destroyString', 'string_dealloc', 'stringDealloc', 'free_string', 'freeString'
+        ];
+        
+        for (const funcName of deallocationFunctions) {
+          if (this.hasFunction(funcName)) {
+            this.debug(`Found alternative deallocation function: ${funcName}`);
+            try {
+              // Try with and without length parameter
+              let len = this.estimateStringLength(ptr);
+              if (funcName.includes('buffer') || funcName.includes('Buffer')) {
+                this.callFunction(funcName, ptr, len);
+              } else {
+                this.callFunction(funcName, ptr);
+              }
+              this.debug(`${funcName} call completed successfully`);
+              this.unregisterAllocation(ptr);
+              return;
+            } catch (error) {
+              this.debug(`Error deallocating memory with ${funcName}: ${error}`);
+              // Continue to try other functions
+            }
+          }
         }
         
-        // Create a safe wrapper function that won't throw on error
-        const safeDealloc = (p: number, l: number) => {
-          try {
-            return (this.exports.dealloc_string as Function).call(null, p, l);
-          } catch (e) {
-            this.debug(`Deallocation failed but caught error: ${e}`);
-            return undefined;
-          }
-        };
-        
-        // Try to deallocate
-        safeDealloc(originalPtr, length);
-        this.debug('Deallocation attempt completed');
-      } catch (deallocError) {
-        this.debug(`Error during deallocation process: ${deallocError}`);
-        // Continue execution despite errors
+        this.debug('No deallocation function found or all attempts failed, memory may leak');
+        // Still unregister it from our tracking even if we couldn't deallocate
+        this.unregisterAllocation(ptr);
       }
     } catch (error) {
-      // Log but don't throw - we want to continue even if deallocation fails
-      this.debug(`Error in deallocateString process: ${error}`);
+      this.debug(`Error deallocating memory: ${error}`);
+      // Still unregister it from our tracking even on error
+      this.unregisterAllocation(ptr);
     }
+  }
+  
+  /**
+   * Estimate the length of a null-terminated string
+   * @param ptr Pointer to the string
+   * @returns Estimated length
+   */
+  private estimateStringLength(ptr: number): number {
+    if (ptr === 0) return 0;
+    
+    const memory = new Uint8Array(this.memory.buffer);
+    let len = 0;
+    
+    // Look for null terminator or MSGB signature
+    if (this.hasMsgbSignature(ptr)) {
+      // Read MSGB format length
+      const lengthBuffer = memory.buffer.slice(ptr + 4, ptr + 8);
+      len = new DataView(lengthBuffer).getUint32(0, true);
+      return len;
+    }
+    
+    // Assume null-terminated string, scan for null byte
+    for (let i = 0; ptr + i < memory.length && i < MAX_STRING_LENGTH; i++) {
+      if (memory[ptr + i] === 0) {
+        return i;
+      }
+    }
+    
+    // Default to 100 as a fallback
+    return 100;
   }
 
   /**
    * Call a WebAssembly function that returns a pointer to a string
+   * 
    * @param funcName Name of the function to call
    * @param args Arguments to pass to the function
    * @returns The string value
@@ -405,7 +570,7 @@ export class WasmMemoryManager {
       
       return result;
     } catch (error) {
-      console.error(`Error calling WebAssembly function ${funcName}:`, error);
+      this.debug(`Error calling string function ${funcName}:`, error);
       return JSON.stringify({
         error: `Failed to call function ${funcName}: ${error}`
       });
@@ -415,6 +580,7 @@ export class WasmMemoryManager {
 
 /**
  * Create a memory manager for a WebAssembly instance
+ * 
  * @param instance WebAssembly instance
  * @param debug Whether to enable debug logging
  * @returns Memory manager instance
@@ -423,6 +589,10 @@ export function createMemoryManager(
   instance: WebAssembly.Instance, 
   debug = false
 ): WasmMemoryManager {
+  if (!instance.exports.memory) {
+    throw new Error('WebAssembly instance does not export memory');
+  }
+  
   const memory = instance.exports.memory as WebAssembly.Memory;
   return new WasmMemoryManager(memory, instance.exports, debug);
 } 

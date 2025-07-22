@@ -1,7 +1,7 @@
 {
   "name": "cassette-loader",
-  "version": "1.0.0",
-  "description": "WASM cassette loader for Nostr Cassettes",
+  "version": "1.1.0",
+  "description": "Cross-platform loader for Nostr WASM cassettes",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -16,7 +16,13 @@
     "build:all": "npm run clean && npm run build && npm run build:browser",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build:all",
-    "test": "node test.js"
+    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "test:unit": "node --experimental-vm-modules node_modules/.bin/jest tests/loader.test.js",
+    "test:memory": "node --experimental-vm-modules node_modules/.bin/jest tests/memory.test.js",
+    "test:integration": "node --experimental-vm-modules node_modules/.bin/jest tests/integration.test.js",
+    "test:coverage": "node --experimental-vm-modules node_modules/.bin/jest --coverage",
+    "test:watch": "node --experimental-vm-modules node_modules/.bin/jest --watch",
+    "test:legacy": "node test.js"
   },
   "exports": {
     ".": {
@@ -42,10 +48,12 @@
     "ws": "^8.16.0"
   },
   "devDependencies": {
+    "@types/jest": "^29.5.14",
     "@types/node": "^20.12.1",
     "@types/webassembly-js-api": "^0.0.3",
     "@types/ws": "^8.5.10",
     "esbuild": "^0.19.12",
+    "jest": "^29.7.0",
     "typescript": "^5.3.3"
   }
 }

@@ -1,6 +1,36 @@
 // wasm_interface.rs
 // Standardized WebAssembly interface for Cassette modules
 
+/// WebAssembly interface module
+/// 
+/// This module provides the standardized interface that all cassettes must implement.
+/// 
+/// # Example
+/// 
+/// ```rust
+/// use cassette_tools::{Cassette, CassetteSchema};
+/// use serde_json::json;
+/// 
+/// struct MyCassette;
+/// 
+/// impl Cassette for MyCassette {
+///     fn describe() -> String {
+///         "My test cassette".to_string()
+///     }
+///     
+///     fn get_schema() -> CassetteSchema {
+///         CassetteSchema {
+///             title: "Test Cassette".to_string(),
+///             description: "A test cassette".to_string(),
+///             schema_type: "object".to_string(),
+///             properties: json!({}),
+///             required: vec![],
+///             items: None,
+///         }
+///     }
+/// }
+/// ```
+
 // Define the standard interface that all WebAssembly cassettes must implement
 // to ensure compatibility across the entire platform.
 pub trait StandardCassetteInterface {
@@ -56,11 +86,28 @@ pub trait StandardCassetteInterface {
 /// 4. Use string_to_ptr and ptr_to_string for string conversion
 /// 
 /// Example implementation:
-/// ```
-/// use cassette_tools::{string_to_ptr, ptr_to_string, Cassette};
+/// ```rust
+/// use cassette_tools::{string_to_ptr, ptr_to_string, Cassette, CassetteSchema};
+/// use serde_json::json;
 /// 
 /// struct MyCassette;
-/// impl Cassette for MyCassette { /* ... */ }
+/// 
+/// impl Cassette for MyCassette {
+///     fn describe() -> String {
+///         "My test cassette".to_string()
+///     }
+///     
+///     fn get_schema() -> CassetteSchema {
+///         CassetteSchema {
+///             title: "Test Cassette".to_string(),
+///             description: "A test cassette".to_string(),
+///             schema_type: "object".to_string(),
+///             properties: json!({}),
+///             required: vec![],
+///             items: None,
+///         }
+///     }
+/// }
 /// 
 /// #[no_mangle]
 /// pub extern "C" fn describe() -> *mut u8 {

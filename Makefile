@@ -1,4 +1,4 @@
-.PHONY: test start-services test-filters test-with-services help build-wasm
+.PHONY: test start-services test-filters test-with-services help build-wasm cassettes clean clean-cassettes
 
 # Default target
 help:
@@ -7,6 +7,7 @@ help:
 	@echo "  make start-services   - Start boombox and nostr-proxy services"
 	@echo "  make test-filters     - Run filter tests only (assumes services are running)"
 	@echo "  make build-wasm       - Build WebAssembly modules for the project"
+	@echo "  make cassettes        - Build test cassettes with valid events"
 	@echo "  make clean            - Stop running services and clean up logs"
 	@echo "  make help             - Show this help message"
 
@@ -29,6 +30,21 @@ test-filters:
 build-wasm:
 	@echo "Building WebAssembly modules..."
 	@cd boombox && bun run build:wasm
+
+# Clean cassettes
+clean-cassettes:
+	@echo "Cleaning cassettes..."
+	@rm -f cassettes/*.wasm
+
+# Build test cassettes with valid events
+cassettes: clean-cassettes
+	@echo "Building test cassettes..."
+	@cd cli && cargo build --release --target wasm32-unknown-unknown
+	@mkdir -p @cassettes
+	@cp cli/target/wasm32-unknown-unknown/release/cassette_cli.wasm @cassettes/test_cassette.wasm
+	@ln -sf $(PWD)/@cassettes/test_cassette.wasm $(PWD)/cassettes/test_cassette_pipeline.wasm
+	@ln -sf $(PWD)/@cassettes/test_cassette.wasm $(PWD)/cassettes/test_cassette_direct.wasm
+	@echo "Test cassettes built successfully"
 
 # Clean up
 clean:

@@ -204,15 +204,57 @@ mod generator {
 
         fn copy_output(&self, wasm_path: PathBuf) -> Result<PathBuf> {
             // Create the output directory if it doesn't exist
+            println!("  Creating output directory: {:?}", self.output_dir);
             fs::create_dir_all(&self.output_dir)
                 .context("Failed to create output directory")?;
 
-            // Copy the WASM file to the output directory
-            let dest_path = self.output_dir.join(format!("{}@{}.wasm", self.name, "notes.json"));
-            fs::copy(&wasm_path, &dest_path)
-                .context("Failed to copy WASM file to output directory")?;
-
-            Ok(dest_path)
+            // Copy the WASM file to the output directory with a simple filename
+            let dest_path = self.output_dir.join(format!("{}.wasm", self.name));
+            
+            // Debug output to diagnose any issues
+            println!("  Copying from: {:?}", wasm_path);
+            println!("  Copying to: {:?}", dest_path);
+            
+            // Check if source file exists
+            if !wasm_path.exists() {
+                return Err(anyhow!("Source WASM file does not exist at {:?}", wasm_path));
+            }
+            
+            // Ensure the WASM target is installed
+            let status = Command::new("rustup")
+                .args(&["target", "add", "wasm32-unknown-unknown"])
+                .status();
+            
+            if let Ok(status) = status {
+                if !status.success() {
+                    println!("  ⚠️ Warning: Failed to ensure wasm32-unknown-unknown target is installed");
+                }
+            }
+            
+            // Try to copy the file with more robust error handling
+            match fs::copy(&wasm_path, &dest_path) {
+                Ok(_) => {
+                    println!("  ✅ Successfully copied WASM file to {:?}", dest_path);
+                    Ok(dest_path)
+                },
+                Err(e) => {
+                    println!("  ❌ Copy failed with error: {:?}", e);
+                    
+                    // As a fallback, try to use the 'cp' command
+                    let status = Command::new("cp")
+                        .arg(&wasm_path)
+                        .arg(&dest_path)
+                        .status();
+                        
+                    match status {
+                        Ok(exit) if exit.success() => {
+                            println!("  ✅ Successfully copied WASM file using cp command");
+                            Ok(dest_path)
+                        },
+                        _ => Err(anyhow!("Failed to copy WASM file to output directory: {}", e))
+                    }
+                }
+            }
         }
     }
 }
@@ -280,7 +322,7 @@ fn main() -> Result<()> {
             let author_value = author.clone().unwrap_or_else(|| "Cassette CLI".to_string());
             let output_value = output.clone().unwrap_or_else(|| PathBuf::from("./cassettes"));
             
-            // Check if input file exists
+            // Either process from file or stdin
             if let Some(path) = input_file {
                 if !path.exists() {
                     return Err(anyhow!("Input file doesn't exist: {}", path.display()));
@@ -295,7 +337,37 @@ fn main() -> Result<()> {
                     *no_bindings
                 )?;
             } else {
-                return Err(anyhow!("No input file provided. Please specify a file."));
+                // No input file, read from stdin
+                println!("Reading events from stdin...");
+                
+                // Create a temp file to store stdin content
+                let temp_dir = tempdir()?;
+                let temp_file_path = temp_dir.path().join("stdin_events.json");
+                let temp_file_path_str = temp_file_path.to_str().unwrap();
+                
+                // Read from stdin
+                let stdin = std::io::stdin();
+                let mut stdin_content = Vec::new();
+                stdin.lock().read_to_end(&mut stdin_content)?;
+                
+                if stdin_content.is_empty() {
+                    return Err(anyhow!("No data received from stdin. Please pipe in events or use an input file."));
+                }
+                
+                // Write the stdin content to the temp file
+                std::fs::write(&temp_file_path, stdin_content)?;
+                
+                // Process the temp file
+                process_events(
+                    temp_file_path_str,
+                    &name_value,
+                    &desc_value,
+                    &author_value,
+                    &output_value,
+                    *no_bindings
+                )?;
+                
+                // The temp directory will be cleaned up when it goes out of scope
             }
             
             Ok(())
@@ -507,13 +579,16 @@ pub fn process_events(
     );
     
     // Set template variables
-    generator.set_var("events_json", &events_json_string);
     generator.set_var("cassette_name", name);
     generator.set_var("cassette_description", description);
     generator.set_var("cassette_author", author);
     generator.set_var("cassette_created", &cassette_created);
     generator.set_var("event_count", &event_count.to_string());
     generator.set_var("cassette_version", "0.1.0");
+    
+    // Properly escape the JSON for template insertion
+    // Note: We're not double-escaping anymore, just using the raw JSON
+    generator.set_var("events_json", &events_json_string);
 
     // Generate the cassette
     match generator.generate() {

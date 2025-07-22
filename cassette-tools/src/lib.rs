@@ -1,227 +1,224 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+// Constants for string handling
+const MSGB_SIGNATURE: [u8; 4] = [0x4D, 0x53, 0x47, 0x42]; // "MSGB"
+const MAX_STRING_LENGTH: usize = 10_000_000; // 10MB safety limit
 
-pub fn one_plus_one() -> u64 {
-    1 + 1
+/// Allocate a buffer of specified size
+/// This function is called from JavaScript to allocate memory in the WebAssembly module
+/// for storing strings or other data.
+#[no_mangle]
+pub fn alloc_buffer(size: usize) -> *mut u8 {
+    // Safety check
+    if size > MAX_STRING_LENGTH {
+        return std::ptr::null_mut();
+    }
+    
+    // Create a new buffer with exact capacity
+    let mut buffer = Vec::with_capacity(size);
+    // Set the length to initialize memory
+    unsafe { buffer.set_len(size); }
+    
+    // Get raw pointer
+    let ptr = buffer.as_mut_ptr();
+    
+    // Prevent Rust from freeing the memory when this function returns
+    std::mem::forget(buffer);
+    
+    ptr
 }
 
 /// Convert a Rust string to a pointer that can be returned to WebAssembly
-/// This function converts a string to a pointer that can be returned to WebAssembly.
-/// It ensures that the string is properly null-terminated to avoid reading past the end.
+/// This function converts a string to a pointer that can be returned to JavaScript.
+/// Format: [4-byte signature][4-byte length][string bytes]
 /// 
-/// The function also prepends the string length as a 4-byte prefix so that JavaScript
-/// can efficiently determine the string length without scanning for null terminators.
-/// Additionally, it adds a 4-byte signature to help detect truncation.
-/// Format: [4-byte signature][4 bytes length][string bytes][null terminator]
+/// The signature helps identify this string format for debugging and validation.
 #[no_mangle]
 pub fn string_to_ptr(s: String) -> *mut u8 {
+    // Safety check for maximum size
+    if s.len() > MAX_STRING_LENGTH {
+        return std::ptr::null_mut();
+    }
+    
     // Get the bytes from the string
-    let string_bytes = s.into_bytes();
-    let string_len = string_bytes.len();
+    let bytes = s.into_bytes();
+    let bytes_len = bytes.len();
     
-    // Define a magic signature to detect truncation ("MSGB" in ASCII)
-    let signature: [u8; 4] = [0x4D, 0x53, 0x47, 0x42]; // "MSGB" in ASCII
+    // Calculate total size needed: signature + length + data
+    let total_size = 4 + 4 + bytes_len;
     
-    // Ensure alignment - memory in WebAssembly is often aligned to 8 bytes
-    // We'll allocate a bit extra to ensure proper alignment
-    const ALIGNMENT: usize = 8;
-    
-    // Calculate size with padding for alignment
-    let base_size = 4 + 4 + string_len + 1; // signature + length + string + null terminator
-    let padding = (ALIGNMENT - (base_size % ALIGNMENT)) % ALIGNMENT;
-    let total_size = base_size + padding;
-    
-    // Create a new buffer with additional alignment padding
+    // Allocate a buffer with exact capacity
     let mut buffer = Vec::with_capacity(total_size);
     
-    // Start with some padding for alignment if needed
-    // This helps ensure the signature and actual data are properly aligned
-    for _ in 0..padding {
-        buffer.push(0);
-    }
+    // Initialize memory to zeros
+    buffer.resize(total_size, 0);
     
-    // Add the signature to detect truncation
-    buffer.extend_from_slice(&signature);
+    // Write the "MSGB" signature
+    buffer[0..4].copy_from_slice(&MSGB_SIGNATURE);
     
-    // Add the length as 4 bytes in little-endian order
-    buffer.extend_from_slice(&(string_len as u32).to_le_bytes());
+    // Write the length as little-endian bytes
+    let len_bytes = (bytes_len as u32).to_le_bytes();
+    buffer[4..8].copy_from_slice(&len_bytes);
     
-    // Add the string bytes
-    buffer.extend_from_slice(&string_bytes);
+    // Copy the string bytes
+    buffer[8..8+bytes_len].copy_from_slice(&bytes);
     
-    // Add null terminator
-    buffer.push(0);
-    
-    // Get pointer to the buffer, accounting for alignment padding
-    let ptr = buffer.as_ptr() as *mut u8;
-    
-    // Log the pointer value and size for debugging (in debug builds)
-    #[cfg(debug_assertions)]
-    {
-        let ptr_value = ptr as usize;
-        let alignment_check = ptr_value % ALIGNMENT;
-        eprintln!("string_to_ptr: allocated at {:p}, alignment: {}, size: {}", 
-                 ptr, alignment_check, total_size);
-        
-        // Check if the pointer is aligned
-        if alignment_check != 0 {
-            eprintln!("WARNING: Pointer not aligned to {} bytes", ALIGNMENT);
-        }
-    }
+    // Get raw pointer to the buffer
+    let ptr = buffer.as_mut_ptr();
     
     // Prevent Rust from freeing the memory
     std::mem::forget(buffer);
     
-    // Return the pointer
     ptr
 }
 
-/// Convert a pointer and length to a Rust string
-/// This function reads a string from WebAssembly memory and converts it to a Rust string.
-/// It will stop reading at the first null byte or after `len` bytes, whichever comes first.
+/// Convert a buffer in WebAssembly memory to a Rust string
+/// 
+/// Args:
+///   ptr: Pointer to the memory location
+///   len: Length of the data (including any prefix if present)
+///
+/// Returns: The string value
 #[no_mangle]
 pub fn ptr_to_string(ptr: *const u8, len: usize) -> String {
-    unsafe {
-        if ptr.is_null() || len == 0 {
+    // Safety checks
+    if ptr.is_null() || len == 0 {
+        return String::new();
+    }
+    
+    // Create a safe slice from the pointer
+    let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+    
+    // Check if this has an MSGB signature
+    if len >= 8 && 
+       slice[0] == MSGB_SIGNATURE[0] &&
+       slice[1] == MSGB_SIGNATURE[1] &&
+       slice[2] == MSGB_SIGNATURE[2] &&
+       slice[3] == MSGB_SIGNATURE[3] {
+        // Read the embedded length
+        let mut length_bytes = [0u8; 4];
+        length_bytes.copy_from_slice(&slice[4..8]);
+        let string_len = u32::from_le_bytes(length_bytes) as usize;
+        
+        // Safety check for reasonable string length
+        if string_len > MAX_STRING_LENGTH || string_len + 8 > len {
             return String::new();
         }
         
-        let slice = std::slice::from_raw_parts(ptr, len);
-        
-        // Find position of null terminator, if any
-        let null_pos = slice.iter().position(|&b| b == 0).unwrap_or(len);
-        
-        // Create a new slice that stops at the null terminator
-        let trimmed_slice = &slice[0..null_pos];
-        
-        // Convert to string, handling invalid UTF-8
-        String::from_utf8_lossy(trimmed_slice).to_string()
+        // Extract just the string bytes (after signature and length)
+        return String::from_utf8_lossy(&slice[8..8+string_len]).to_string();
+    }
+    
+    // No signature, treat the entire buffer as a string
+    String::from_utf8_lossy(slice).to_string()
+}
+
+/// Deallocate memory previously allocated with string_to_ptr or alloc_buffer
+/// 
+/// Args:
+///   ptr: Pointer to the memory location
+///   len: Length of the allocation
+#[no_mangle]
+pub fn dealloc_buffer(ptr: *mut u8, len: usize) {
+    if ptr.is_null() || len == 0 {
+        return;
+    }
+    
+    unsafe {
+        // Recreate the Vec and let it drop
+        Vec::from_raw_parts(ptr, len, len);
     }
 }
 
 /// Deallocate a string that was allocated with string_to_ptr
-/// This function properly deallocates the memory for a string that was 
-/// allocated with string_to_ptr, handling both the enhanced format with signature
-/// and the older format with just a length prefix.
-/// It's designed to be resilient to errors and prevent crashes.
+/// This function is called from JavaScript to free memory allocated by string_to_ptr
 #[no_mangle]
-pub fn dealloc_string(ptr: *mut u8, len: usize) {
-    unsafe {
-        // Safety checks to prevent crashes
-        if ptr.is_null() {
-            return;
-        }
-        
-        // First, check for the signature to detect the enhanced format
-        // The signature is "MSGB" (0x4D, 0x53, 0x47, 0x42)
-        let has_signature = if let Some(first_bytes) = try_read_bytes(ptr, 4) {
-            first_bytes == [0x4D, 0x53, 0x47, 0x42]
-        } else {
-            false
-        };
-        
-        // Based on the format, determine the real memory layout
-        if has_signature {
-            // Enhanced format: [padding][signature(4)][length(4)][data(len)][null(1)]
-            // Find out the alignment padding by checking if signature is at the actual ptr
-            let alignment = 8;  // Same alignment as in string_to_ptr
-            
-            // Calculate probable allocation size using the alignment from string_to_ptr
-            let base_size = 4 + 4 + len + 1; // signature + length + data + null
-            let padding = (alignment - (base_size % alignment)) % alignment;
-            let total_size = base_size + padding;
-            
-            // Recreate the Vec with capacity and padding to match what was allocated
-            // We're dropping the entire memory block including padding, signature, etc.
-            let _ = Vec::from_raw_parts(ptr, total_size, total_size);
-            
-            #[cfg(debug_assertions)]
-            {
-                eprintln!("dealloc_string: deallocated enhanced format string at {:p} with length {} (total size: {})",
-                         ptr, len, total_size);
-            }
-        } else {
-            // Legacy format: [length(4)][data(len)][null(1)]
-            let total_len = 4 + len + 1;
-            let _ = Vec::from_raw_parts(ptr, total_len, total_len);
-            
-            #[cfg(debug_assertions)]
-            {
-                eprintln!("dealloc_string: deallocated legacy format string at {:p} with length {} (total size: {})",
-                         ptr, len, total_len);
-            }
+pub extern "C" fn dealloc_string(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() && len >= 8 {
+        unsafe {
+            // Check for MSGB signature
+            let slice = std::slice::from_raw_parts(ptr, 4);
+            let _is_msgb = slice == &MSGB_SIGNATURE;
+
+            // If it's MSGB format, deallocate the entire buffer
+            // We don't need to adjust the pointer because the entire buffer was allocated as one piece
+            let _ = Vec::from_raw_parts(ptr, len, len);
         }
     }
 }
 
-/// Safely try to read a slice of bytes without causing undefined behavior
-/// Returns None if the memory can't be safely read
-unsafe fn try_read_bytes(ptr: *const u8, len: usize) -> Option<Vec<u8>> {
-    if ptr.is_null() || len == 0 {
-        return None;
-    }
-    
-    // Create a buffer to hold the bytes
-    let mut buffer = vec![0u8; len];
-    
-    // Try to copy the bytes, but safely
-    for i in 0..len {
-        // Check if we can safely read this address
-        // This is a simplified check and not 100% safe in all cases
-        // but it's better than nothing
-        if ptr.add(i).is_null() || ptr.add(i) as usize > usize::MAX - 100 {
-            return None;
-        }
-        buffer[i] = *ptr.add(i);
-    }
-    
-    Some(buffer)
-}
-
-/// Get length of a string at a pointer
-/// This function reads the 4-byte length prefix of a string created by string_to_ptr.
+/// Get the length of a string at a given pointer
+/// This works with both MSGB format and raw strings.
 /// 
 /// Args:
-///   ptr: Pointer to memory returned by string_to_ptr
-/// 
-/// Returns: The length of the string (not including length prefix or null terminator)
+///   ptr: Pointer to the memory location
+///
+/// Returns: The length of the string data (not including any prefix)
 #[no_mangle]
 pub fn get_string_len(ptr: *const u8) -> usize {
-    unsafe {
-        if ptr.is_null() {
-            return 0;
+    if ptr.is_null() {
+        return 0;
+    }
+    
+    // Check if this has our signature
+    let has_signature = unsafe {
+        let bytes = std::slice::from_raw_parts(ptr, 4);
+        bytes.len() == 4 && 
+        bytes[0] == MSGB_SIGNATURE[0] && 
+        bytes[1] == MSGB_SIGNATURE[1] && 
+        bytes[2] == MSGB_SIGNATURE[2] && 
+        bytes[3] == MSGB_SIGNATURE[3]
+    };
+    
+    if has_signature {
+        // Read the embedded length
+        unsafe {
+            let mut length_bytes = [0u8; 4];
+            let bytes = std::slice::from_raw_parts(ptr.add(4), 4);
+            length_bytes.copy_from_slice(bytes);
+            let length = u32::from_le_bytes(length_bytes) as usize;
+            
+            // Validate the length
+            if length > MAX_STRING_LENGTH {
+                return 0;
+            }
+            length
         }
-        
-        // Read the first 4 bytes as a little-endian u32
-        let len_bytes = std::slice::from_raw_parts(ptr, 4);
-        let mut len_array = [0u8; 4];
-        len_array.copy_from_slice(len_bytes);
-        
-        // Convert to usize and return
-        u32::from_le_bytes(len_array) as usize
+    } else {
+        // If no signature, we can't determine length safely
+        0
     }
 }
 
-/// Get pointer to the actual string data (skipping the length prefix)
-/// This function returns a pointer to the string data after the 4-byte length prefix.
+/// Get a pointer to the actual string data, skipping any prefix
 /// 
 /// Args:
-///   ptr: Pointer to memory returned by string_to_ptr
-/// 
-/// Returns: Pointer to the actual string data
+///   ptr: Pointer to the memory location
+///
+/// Returns: Pointer to the start of the string data
 #[no_mangle]
 pub fn get_string_ptr(ptr: *const u8) -> *const u8 {
-    unsafe {
-        if ptr.is_null() {
-            return ptr;
-        }
-        
-        // Return pointer to the first byte after the 4-byte length prefix
-        ptr.add(4)
+    if ptr.is_null() {
+        return ptr;
+    }
+    
+    // Check if this has our signature
+    let has_signature = unsafe {
+        let bytes = std::slice::from_raw_parts(ptr, 4);
+        bytes.len() == 4 && 
+        bytes[0] == MSGB_SIGNATURE[0] && 
+        bytes[1] == MSGB_SIGNATURE[1] && 
+        bytes[2] == MSGB_SIGNATURE[2] && 
+        bytes[3] == MSGB_SIGNATURE[3]
+    };
+    
+    if has_signature {
+        // Skip signature and length to get to the string data
+        unsafe { ptr.add(8) }
+    } else {
+        // Return the pointer as is
+        ptr
     }
 }
 
@@ -259,16 +256,6 @@ impl Default for CassetteSchema {
 
 /// Result type for relay operations
 pub type RelayResult = Result<String, String>;
-
-/// Relay operation types
-pub enum RelayOperation {
-    /// Client made a REQ request
-    Request,
-    /// Client closed a subscription
-    Close,
-    /// Other operation
-    Other(String),
-}
 
 /// Trait that all cassettes must implement
 pub trait Cassette {
@@ -382,11 +369,15 @@ impl RelayHandler for EventBasedHandler {
                             array[0].as_str().unwrap_or("non-string value")).to_string());
                     }
                     
-                    // Get subscription ID (second element)
+                    // Get subscription ID (second element) with validation
                     let subscription_id = match array[1].as_str() {
-                        Some(id) => id,
+                        Some(id) if !id.trim().is_empty() => id,
+                        Some(_) => return Err("Subscription ID cannot be empty or whitespace".to_string()),
                         None => return Err("Subscription ID must be a string".to_string())
                     };
+                    
+                    // Log the subscription ID for debugging
+                    println!("Processing request for subscription: {}", subscription_id);
                     
                     // Validate there's at least one filter if filters are expected
                     if array.len() < 3 {
@@ -405,6 +396,9 @@ impl RelayHandler for EventBasedHandler {
                                     ])
                                 })
                                 .collect();
+                            
+                            // Log the number of events being returned
+                            println!("Returning {} events for subscription {}", events.len(), subscription_id);
                             
                             return Ok(json!({
                                 "events": events,
@@ -675,7 +669,7 @@ impl RelayHandler for EventBasedHandler {
                             }
                         }
                         
-                        // Convert to EVENT messages
+                        // Convert filtered events to EVENT messages
                         let events: Vec<Value> = filtered_events.into_iter()
                             .map(|event| {
                                 json!([
@@ -686,24 +680,22 @@ impl RelayHandler for EventBasedHandler {
                             })
                             .collect();
                         
-                        // Return a properly formatted response
+                        // Log the number of filtered events
+                        println!("Returning {} filtered events for subscription {}", events.len(), subscription_id);
+                        
                         return Ok(json!({
                             "events": events,
                             "eose": ["EOSE", subscription_id]
                         }).to_string());
                     } else {
-                        // If we couldn't parse the embedded events JSON
-                        return Err("Error parsing embedded events JSON. This cassette may be corrupted.".to_string());
+                        return Err("Error parsing embedded events JSON".to_string());
                     }
                 } else {
-                    // The request is valid JSON but not an array
-                    return Err("Invalid request format. Expected a JSON array for REQ message.".to_string());
+                    return Err("Request must be a JSON array".to_string());
                 }
-            },
+            }
             Err(e) => {
-                // If JSON parsing failed, return a detailed error message
-                let error_msg = format!("Invalid JSON in request: {}", e.to_string());
-                return Err(error_msg);
+                return Err(format!("Invalid JSON in request: {}", e).to_string());
             }
         }
     }
@@ -751,7 +743,7 @@ impl RelayHandler for EventBasedHandler {
 macro_rules! cassette_module {
     ($struct_name:ident, $title:expr, $description:expr) => {
         use cassette_tools::{Cassette, CassetteSchema, RelayHandler, RelayResult};
-        use cassette_tools::nip01::{ClientReq, RelayEvent, RelayNotice};
+        use cassette_tools::nip01::{ClientReq, RelayEvent, RelayNotice, RelayEose};
         use serde_json::{json, Value, from_str, to_string};
         use wasm_bindgen::prelude::*;
 
@@ -809,7 +801,8 @@ macro_rules! cassette_module {
                         "output": {
                             "oneOf": [
                                 from_str(&<RelayEvent as Cassette>::get_schema_json()).unwrap_or(json!({})),
-                                from_str(&<RelayNotice as Cassette>::get_schema_json()).unwrap_or(json!({}))
+                                from_str(&<RelayNotice as Cassette>::get_schema_json()).unwrap_or(json!({})),
+                                from_str(&<RelayEose as Cassette>::get_schema_json()).unwrap_or(json!({}))
                             ]
                         }
                     },
@@ -910,23 +903,23 @@ pub mod nip01 {
                                 "type": "array",
                                 "items": {
                                     "type": "integer",
-                                    "minimum": "0"
+                                    "minimum": 0
                                 },
                                 "description": "A list of kind numbers"
                             },
                             "since": {
                                 "type": "integer",
-                                "minimum": "0",
+                                "minimum": 0,
                                 "description": "An integer Unix timestamp in seconds, where events must have created_at >= since"
                             },
                             "until": {
                                 "type": "integer",
-                                "minimum": "0",
+                                "minimum": 0,
                                 "description": "An integer Unix timestamp in seconds, where events must have created_at <= until"
                             },
                             "limit": {
                                 "type": "integer",
-                                "minimum": "1",
+                                "minimum": 1,
                                 "description": "The maximum number of events relays SHOULD return in the initial query"
                             }
                         },
@@ -937,6 +930,13 @@ pub mod nip01 {
                                     "type": "string"
                                 },
                                 "description": "A list of tag values, where specific tags (#e, #p) have designated meanings"
+                            },
+                            "^&[a-zA-Z]$": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "A list of tag values that must ALL be present (NIP-119)"
                             }
                         },
                         "additionalProperties": false
@@ -1056,8 +1056,130 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn test_string_roundtrip() {
+        let test_str = "Hello, World!";
+        let ptr = string_to_ptr(test_str.to_string());
+        assert!(!ptr.is_null());
+
+        // Get total length including header
+        let total_len = unsafe { std::slice::from_raw_parts(ptr.add(4), 4) };
+        let str_len = u32::from_le_bytes(total_len.try_into().unwrap()) as usize;
+        assert_eq!(str_len, test_str.len());
+
+        // Read back the string
+        let result = ptr_to_string(ptr, str_len + 8); // Add 8 for header
+        assert_eq!(result, test_str);
+
+        // Clean up
+        unsafe { dealloc_string(ptr, str_len + 8) };
+    }
+
+    #[test]
+    fn test_empty_string() {
+        let test_str = "";
+        let ptr = string_to_ptr(test_str.to_string());
+        assert!(!ptr.is_null());
+
+        // Get total length including header
+        let total_len = unsafe { std::slice::from_raw_parts(ptr.add(4), 4) };
+        let str_len = u32::from_le_bytes(total_len.try_into().unwrap()) as usize;
+        assert_eq!(str_len, 0);
+
+        // Read back the string
+        let result = ptr_to_string(ptr, 8); // Just header for empty string
+        assert_eq!(result, test_str);
+
+        // Clean up
+        unsafe { dealloc_string(ptr, 8) };
+    }
+
+    #[test]
+    fn test_unicode_string() {
+        let test_str = "Hello, 世界! 🌍";
+        let ptr = string_to_ptr(test_str.to_string());
+        assert!(!ptr.is_null());
+
+        // Get total length including header
+        let total_len = unsafe { std::slice::from_raw_parts(ptr.add(4), 4) };
+        let str_len = u32::from_le_bytes(total_len.try_into().unwrap()) as usize;
+        assert_eq!(str_len, test_str.len());
+
+        // Read back the string
+        let result = ptr_to_string(ptr, str_len + 8);
+        assert_eq!(result, test_str);
+
+        // Clean up
+        unsafe { dealloc_string(ptr, str_len + 8) };
+    }
+
+    #[test]
+    fn test_msgb_signature() {
+        let test_str = "Test";
+        let ptr = string_to_ptr(test_str.to_string());
+        
+        // Check MSGB signature
+        let signature = unsafe { std::slice::from_raw_parts(ptr, 4) };
+        assert_eq!(signature, &MSGB_SIGNATURE);
+
+        // Clean up
+        unsafe { dealloc_string(ptr, test_str.len() + 8) };
+    }
+
+    #[test]
+    fn test_large_string() {
+        let test_str = "a".repeat(1_000_000); // 1MB string
+        let ptr = string_to_ptr(test_str.to_string());
+        assert!(!ptr.is_null());
+
+        // Get total length including header
+        let total_len = unsafe { std::slice::from_raw_parts(ptr.add(4), 4) };
+        let str_len = u32::from_le_bytes(total_len.try_into().unwrap()) as usize;
+        assert_eq!(str_len, test_str.len());
+
+        // Read back the string
+        let result = ptr_to_string(ptr, str_len + 8);
+        assert_eq!(result, test_str);
+
+        // Clean up
+        unsafe { dealloc_string(ptr, str_len + 8) };
+    }
+
+    #[test]
+    fn test_too_large_string() {
+        let test_str = "a".repeat(MAX_STRING_LENGTH + 1);
+        let ptr = string_to_ptr(test_str);
+        assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn test_null_pointer_handling() {
+        let result = ptr_to_string(std::ptr::null(), 0);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_buffer_allocation() {
+        let size = 1024;
+        let ptr = alloc_buffer(size);
+        assert!(!ptr.is_null());
+
+        // Write some data
+        unsafe {
+            let slice = std::slice::from_raw_parts_mut(ptr, size);
+            for i in 0..size {
+                slice[i] = (i % 256) as u8;
+            }
+        }
+
+        // Read it back
+        unsafe {
+            let slice = std::slice::from_raw_parts(ptr, size);
+            for i in 0..size {
+                assert_eq!(slice[i], (i % 256) as u8);
+            }
+        }
+
+        // Clean up
+        unsafe { dealloc_buffer(ptr, size) };
     }
 }

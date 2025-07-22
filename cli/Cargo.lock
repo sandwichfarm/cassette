@@ -109,10 +109,10 @@ dependencies = [
  "chrono",
  "clap",
  "handlebars",
+ "serde",
  "serde_json",
  "tempfile",
  "uuid",
- "wasm-bindgen",
 ]
 
 [[package]]

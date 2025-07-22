@@ -134,6 +134,121 @@ console.log(ENV_INFO);
 // }
 ```
 
+## WebAssembly Interface Requirements
+
+If you're developing your own cassettes (rather than using the CLI to generate them), make sure they implement the following interface functions correctly:
+
+```rust
+#[no_mangle]
+pub extern "C" fn describe() -> *mut u8;
+
+#[no_mangle]
+pub extern "C" fn get_schema() -> *mut u8;
+
+#[no_mangle]
+pub extern "C" fn req(request_ptr: *const u8, request_len: usize) -> *mut u8;
+
+#[no_mangle]
+pub extern "C" fn close(close_ptr: *const u8, close_len: usize) -> *mut u8;
+```
+
+**Important**: The `req` and `close` functions must accept both a pointer to the string and its length. Failing to implement this correctly will result in empty or incorrect strings being passed to your cassette.
+
+It's recommended to use the `cassette-tools` crate for proper string handling between WebAssembly and JavaScript:
+
+```rust
+use cassette_tools::{string_to_ptr, ptr_to_string};
+
+#[no_mangle]
+pub extern "C" fn req(request_ptr: *const u8, request_len: usize) -> *mut u8 {
+    // Convert WebAssembly pointer to Rust string
+    let request_str = ptr_to_string(request_ptr, request_len);
+    
+    // Process request...
+    
+    // Convert response back to WebAssembly pointer
+    string_to_ptr(response)
+}
+```
+
+## Memory Management
+
+Proper memory management is crucial when working with WebAssembly modules, especially when string data is passed between JavaScript and WebAssembly. The cassette-loader includes built-in memory tracking and leak detection functionality.
+
+### Detecting Memory Leaks
+
+Each cassette object includes a `getMemoryStats()` method that provides information about the current memory state:
+
+```javascript
+// Get memory statistics
+const memStats = cassette.getMemoryStats();
+console.log(`Allocation count: ${memStats.allocationCount}`);
+console.log(`Memory usage: ${(memStats.memory.totalBytes / 1024 / 1024).toFixed(2)} MB`);
+
+// Check for leaks
+if (memStats.allocationCount > 0) {
+  console.warn(`Potential memory leak detected: ${memStats.allocationCount} allocations`);
+  console.log(`Allocated pointers: ${memStats.allocatedPointers.join(', ')}`);
+}
+```
+
+### Automatic Leak Detection
+
+When loading a cassette with debug mode enabled, automatic leak detection is activated:
+
+```javascript
+// Load a cassette with debug and leak detection enabled
+const result = await loadCassette('path/to/cassette.wasm', undefined, { 
+  debug: true 
+});
+
+// After 10 seconds, the loader will automatically check for leaks and log warnings if found
+```
+
+### Cleaning Up Resources
+
+To properly clean up resources and prevent memory leaks, use the `dispose()` method when you're done with a cassette:
+
+```javascript
+// Clean up resources
+const disposeResult = cassette.dispose();
+console.log(`Cleaned up ${disposeResult.allocationsCleanedUp} allocations`);
+
+// Verify cleanup was successful
+const finalStats = cassette.getMemoryStats();
+if (finalStats.allocationCount === 0) {
+  console.log('Memory cleanup successful');
+}
+```
+
+### Best Practices for Memory Management
+
+1. **Always dispose cassettes when done**: Call `cassette.dispose()` when you're finished with a cassette.
+2. **Enable debug mode during development**: Set `debug: true` when loading cassettes to enable leak detection.
+3. **Monitor memory usage**: Periodically check `getMemoryStats()` for long-running applications.
+4. **Use the WebAssembly memory interface consistently**: Ensure that memory allocation and deallocation functions match in WebAssembly modules.
+
+### Memory Usage Pattern
+
+The proper usage pattern to avoid memory leaks is:
+
+```javascript
+// Load the cassette
+const result = await loadCassette('path/to/cassette.wasm');
+const cassette = result.cassette;
+
+try {
+  // Use the cassette...
+  const response = cassette.methods.req('["REQ", "sub1", {"kinds":[1]}]');
+  // Process response...
+} catch (error) {
+  console.error('Error:', error);
+} finally {
+  // Always clean up resources
+  cassette.dispose();
+}
+```
+
 ## API Reference
 
 ### Main Functions
