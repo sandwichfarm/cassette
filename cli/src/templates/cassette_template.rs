@@ -49,7 +49,7 @@ struct Note {
 
 // Events embedded by CLI during build
 #[cfg(not(test))]
-const EVENTS: &str = r###"{{ events_json }}"###;
+const EVENTS: &str = r###"{{{ events_json }}}"###;
 
 #[cfg(test)]
 const EVENTS: &str = r#"[{
@@ -222,8 +222,9 @@ pub extern "C" fn req(ptr: *const u8, len: usize) -> *mut u8 {
                     }
                 });
                 
-                // Return a notice with more detailed error information
-                return string_to_ptr(json!(["NOTICE", format!("Failed to load events: {}", e)]).to_string())
+                // Return a notice with more detailed error information including the exact error position
+                let error_msg = format!("Failed to load events: {} at position {}", e, e.column());
+                return string_to_ptr(json!(["NOTICE", error_msg]).to_string())
             }
         };
 
