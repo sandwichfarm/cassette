@@ -8,6 +8,8 @@ Download the latest binary from [releases](https://github.com/dskvr/cassette/rel
 
 ### Record a cassette
 
+_Pipe the events or provide the path to a json file with events._
+
 ```bash
 # From a relay
 nak req -k 1 -l 100 wss://nos.lol | cassette record --name my-notes
@@ -18,7 +20,9 @@ cassette record events.json --name my-notes
 # Output: my-notes.wasm
 ```
 
-### "Play" a cassette
+### Play a cassette
+
+_Dump all the events, or use filters_
 
 ```bash
 # Get all events
@@ -58,7 +62,7 @@ A cassette is a WebAssembly module containing Nostr events that implements the N
 
 ## CLI Commands
 
-### `record` - Create cassettes from events
+### `record` - Record events onto cassettes
 
 ```bash
 cassette record [OPTIONS] [INPUT_FILE]
@@ -75,7 +79,7 @@ nak req -k 30023 wss://relay.nostr.band | cassette record -n "long-form"
 cassette record my-events.json --name "my-backup"
 ```
 
-### `req` - Query cassettes
+### `play` - Play cassettes (send a `req`)
 
 ```bash
 cassette play [OPTIONS] <CASSETTE>
@@ -96,7 +100,7 @@ cassette play archive.wasm --filter '{"#t": ["bitcoin", "lightning"]}'
 cassette play events.wasm --output ndjson | grep "pattern"
 ```
 
-### `dub` - Combine cassettes
+### `dub` - Combine cassettes into a Mixtape
 
 ```bash
 cassette dub [OPTIONS] <CASSETTES...> <OUTPUT>
