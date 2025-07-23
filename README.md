@@ -4,7 +4,9 @@ NIP-01 compatible, portable WebAssembly read-only relays
 
 ## Quick Start
 
-Download the latest binary from [releases](https://github.com/dskvr/cassette/releases/latest).
+Download the latest `cli` binary from [releases](https://github.com/dskvr/cassette/releases/latest).
+
+_**Knowledge is power:** The `cli` includes an ability to both `record` and `play` cassettes (create/read). Cassettes respond to `REQ` messages to `stdin` with `EVENT`, `NOTICE` and `EOSE` messages to `stdout`._
 
 ### Record a cassette
 
