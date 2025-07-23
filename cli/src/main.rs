@@ -2,11 +2,9 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 use std::fs;
-use std::io::{self, Read, Write, BufReader, BufRead, Seek};
-use std::path::{Path, PathBuf};
-use uuid::Uuid;
-use chrono::{Local, Utc};
-use std::process::Command;
+use std::io::{Read, Write, BufReader, BufRead, Seek};
+use std::path::PathBuf;
+use chrono::Utc;
 use std::fs::File;
 use tempfile::tempdir;
 use std::collections::HashMap;
@@ -20,10 +18,8 @@ mod generator {
     use std::collections::HashMap;
     use anyhow::{Context, Result, anyhow};
     use handlebars::Handlebars;
-    use serde_json::{json, Value};
+    use serde_json::json;
     use std::process::Command;
-    use uuid::Uuid;
-    use chrono::Local;
 
     // Load template files
     const TEMPLATE_RS: &str = include_str!("templates/cassette_template.rs");
@@ -385,6 +381,318 @@ fn process_req_command(
     Ok(())
 }
 
+/// Process the DUB command - combine multiple cassettes into a new one
+fn process_dub_command(
+    cassette_paths: &[PathBuf],
+    output_path: &PathBuf,
+    name: Option<&str>,
+    description: Option<&str>,
+    author: Option<&str>,
+    filter_args: &[String],
+    kinds: &[i64],
+    authors: &[String],
+    limit: Option<usize>,
+    since: Option<i64>,
+    until: Option<i64>,
+) -> Result<()> {
+    if cassette_paths.is_empty() {
+        return Err(anyhow!("No input cassettes specified"));
+    }
+    
+    println!("=== Cassette CLI - Dub Command ===");
+    println!("Combining {} cassettes...", cassette_paths.len());
+    
+    // Collect all events from all cassettes
+    let mut all_events = Vec::new();
+    
+    for (idx, cassette_path) in cassette_paths.iter().enumerate() {
+        println!("\n📼 Processing cassette {}/{}: {}", 
+            idx + 1, 
+            cassette_paths.len(), 
+            cassette_path.display()
+        );
+        
+        if !cassette_path.exists() {
+            return Err(anyhow!("Cassette file not found: {}", cassette_path.display()));
+        }
+        
+        // Read the WASM file
+        let wasm_bytes = fs::read(cassette_path)
+            .context("Failed to read cassette WASM file")?;
+        
+        // Initialize wasmtime
+        let mut store = Store::default();
+        let module = Module::from_binary(store.engine(), &wasm_bytes)?;
+        let instance = Instance::new(&mut store, &module, &[])?;
+        
+        // Get memory export
+        let memory = instance
+            .get_memory(&mut store, "memory")
+            .ok_or_else(|| anyhow!("Memory export not found"))?;
+        
+        // Get the req function
+        let req_func = instance
+            .get_typed_func::<(i32, i32), i32>(&mut store, "req")
+            .context("Failed to get req function")?;
+        
+        // Get allocation function
+        let alloc_func = instance
+            .get_typed_func::<i32, i32>(&mut store, "alloc_buffer")
+            .or_else(|_| instance.get_typed_func::<i32, i32>(&mut store, "alloc_string"))
+            .context("Failed to get allocation function")?;
+        
+        // Get deallocation function
+        let dealloc_func = instance
+            .get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string")
+            .context("Failed to get deallocation function")?;
+        
+        // Create a REQ message to get all events from this cassette
+        let req_message = json!(["REQ", "dub_extract", {}]);
+        let req_string = req_message.to_string();
+        let req_bytes = req_string.as_bytes();
+        
+        // Keep calling req until we get EOSE
+        let mut cassette_events = Vec::new();
+        let mut first_call = true;
+        
+        loop {
+            // Allocate memory for the request string for each call
+            let req_ptr = alloc_func.call(&mut store, req_bytes.len() as i32)?;
+            
+            if req_ptr == 0 {
+                return Err(anyhow!("Failed to allocate memory for request"));
+            }
+            
+            // Write request to memory
+            memory.write(&mut store, req_ptr as usize, req_bytes)?;
+            
+            // Call the req function
+            let result_ptr = req_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
+            
+            // Deallocate request memory immediately after use
+            dealloc_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
+            
+            if result_ptr == 0 {
+                if first_call {
+                    println!("  No events found in cassette");
+                }
+                break; // No more events
+            }
+            
+            first_call = false;
+            
+            // Read the result
+            let result = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
+            
+            // We might need to deallocate the result pointer too
+            // Check if there's a get_allocation_size function
+            if let Ok(get_size_func) = instance.get_typed_func::<i32, i32>(&mut store, "get_allocation_size") {
+                let size = get_size_func.call(&mut store, result_ptr)?;
+                if size > 0 && dealloc_func.call(&mut store, (result_ptr, size)).is_ok() {
+                    // Successfully deallocated result
+                }
+            }
+            
+            // Parse the result
+            let parsed_result: Value = serde_json::from_str(&result)?;
+            
+            if let Some(arr) = parsed_result.as_array() {
+                if arr.len() >= 2 {
+                    match arr[0].as_str() {
+                        Some("EVENT") => {
+                            if arr.len() >= 3 {
+                                cassette_events.push(arr[2].clone());
+                            }
+                        }
+                        Some("EOSE") => {
+                            break; // End of events
+                        }
+                        Some("NOTICE") => {
+                            // Just continue, might be "No more events"
+                            if result.contains("No more events") {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        
+        println!("  Found {} events", cassette_events.len());
+        all_events.extend(cassette_events);
+    }
+    
+    println!("\n📊 Total events collected: {}", all_events.len());
+    
+    // Apply filters if specified
+    if !kinds.is_empty() || !authors.is_empty() || !filter_args.is_empty() || since.is_some() || until.is_some() {
+        println!("\n🔍 Applying filters...");
+        
+        let mut filtered_events = Vec::new();
+        
+        // Create a filter object
+        let mut filter = serde_json::Map::new();
+        
+        if !kinds.is_empty() {
+            filter.insert("kinds".to_string(), json!(kinds));
+        }
+        
+        if !authors.is_empty() {
+            filter.insert("authors".to_string(), json!(authors));
+        }
+        
+        if let Some(l) = limit {
+            filter.insert("limit".to_string(), json!(l));
+        }
+        
+        if let Some(s) = since {
+            filter.insert("since".to_string(), json!(s));
+        }
+        
+        if let Some(u) = until {
+            filter.insert("until".to_string(), json!(u));
+        }
+        
+        // Parse any custom filter JSON arguments
+        for filter_json in filter_args {
+            let parsed: serde_json::Map<String, Value> = serde_json::from_str(filter_json)
+                .context("Failed to parse filter JSON")?;
+            filter.extend(parsed);
+        }
+        
+        // Apply the filter to each event
+        for event in all_events {
+            if event_matches_filter(&event, &filter) {
+                filtered_events.push(event);
+            }
+        }
+        
+        println!("  Events after filtering: {}", filtered_events.len());
+        all_events = filtered_events;
+    }
+    
+    // Apply limit if specified and not already applied via filter
+    if let Some(l) = limit {
+        if all_events.len() > l {
+            println!("  Applying limit of {} events", l);
+            all_events.truncate(l);
+        }
+    }
+    
+    // Preprocess events to handle replaceable events
+    println!("\n🔍 Preprocessing events according to NIP-01...");
+    let processed_events = preprocess_events(all_events);
+    println!("  Final event count: {}", processed_events.len());
+    
+    // Generate the new cassette
+    let cassette_name = name.unwrap_or("dubbed_cassette");
+    let cassette_desc = description.unwrap_or("Combined cassette created by dubbing multiple cassettes");
+    let cassette_author = author.unwrap_or("Cassette CLI Dub");
+    
+    // Create a temporary directory for building
+    let temp_dir = tempdir()?;
+    let temp_file = temp_dir.path().join("dubbed_events.json");
+    
+    // Write events to temp file
+    let events_json = serde_json::to_string(&processed_events)?;
+    fs::write(&temp_file, &events_json)?;
+    
+    // Get the output directory from the output path
+    let output_dir = output_path.parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    
+    // Process events to create the new cassette
+    process_events(
+        temp_file.to_str().unwrap(),
+        cassette_name,
+        cassette_desc,
+        cassette_author,
+        &output_dir,
+        false // no_bindings
+    )?;
+    
+    // Rename the generated file to the specified output name if needed
+    let generated_path = output_dir.join(format!("{}.wasm", cassette_name));
+    if generated_path != *output_path {
+        fs::rename(&generated_path, output_path)
+            .context("Failed to rename output file")?;
+        println!("\n✅ Dubbed cassette saved to: {}", output_path.display());
+    }
+    
+    Ok(())
+}
+
+/// Helper function to check if an event matches a filter
+fn event_matches_filter(event: &Value, filter: &serde_json::Map<String, Value>) -> bool {
+    // Check kinds
+    if let Some(kinds) = filter.get("kinds").and_then(|k| k.as_array()) {
+        if let Some(event_kind) = event.get("kind").and_then(|k| k.as_i64()) {
+            let kind_match = kinds.iter().any(|k| k.as_i64() == Some(event_kind));
+            if !kind_match {
+                return false;
+            }
+        }
+    }
+    
+    // Check authors
+    if let Some(authors) = filter.get("authors").and_then(|a| a.as_array()) {
+        if let Some(event_author) = event.get("pubkey").and_then(|p| p.as_str()) {
+            let author_match = authors.iter().any(|a| a.as_str() == Some(event_author));
+            if !author_match {
+                return false;
+            }
+        }
+    }
+    
+    // Check timestamps
+    if let Some(since) = filter.get("since").and_then(|s| s.as_i64()) {
+        if let Some(created_at) = event.get("created_at").and_then(|t| t.as_i64()) {
+            if created_at < since {
+                return false;
+            }
+        }
+    }
+    
+    if let Some(until) = filter.get("until").and_then(|u| u.as_i64()) {
+        if let Some(created_at) = event.get("created_at").and_then(|t| t.as_i64()) {
+            if created_at > until {
+                return false;
+            }
+        }
+    }
+    
+    // Check tag filters
+    for (key, values) in filter {
+        if key.starts_with('#') && key.len() == 2 {
+            let tag_name = &key[1..];
+            if let Some(tags) = event.get("tags").and_then(|t| t.as_array()) {
+                let has_matching_tag = tags.iter().any(|tag| {
+                    if let Some(tag_arr) = tag.as_array() {
+                        if tag_arr.len() >= 2 {
+                            if let (Some(t_name), Some(t_value)) = (tag_arr[0].as_str(), tag_arr[1].as_str()) {
+                                if t_name == tag_name {
+                                    if let Some(filter_values) = values.as_array() {
+                                        return filter_values.iter().any(|v| v.as_str() == Some(t_value));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    false
+                });
+                
+                if !has_matching_tag {
+                    return false;
+                }
+            }
+        }
+    }
+    
+    true
+}
+
 /// Read a string from WASM memory using MSGB format
 fn read_string_from_memory(
     store: &mut Store<()>,
@@ -430,8 +738,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Process a Nostr events file or piped input to create a cassette
-    Dub {
+    /// Record Nostr events from a file or piped input to create a cassette
+    Record {
         /// Path to input events.json file (if not provided, reads from stdin)
         input_file: Option<PathBuf>,
 
@@ -462,6 +770,51 @@ enum Commands {
             action = clap::ArgAction::SetTrue
         )]
         no_bindings: bool,
+    },
+    
+    /// Combine multiple cassettes into a new cassette (dubbing/mixing)
+    Dub {
+        /// Input cassette files to combine
+        cassettes: Vec<PathBuf>,
+        
+        /// Output cassette file path
+        output: PathBuf,
+        
+        /// Name for the generated cassette
+        #[arg(short, long)]
+        name: Option<String>,
+        
+        /// Description for the generated cassette
+        #[arg(short, long)]
+        description: Option<String>,
+        
+        /// Author of the cassette
+        #[arg(short, long)]
+        author: Option<String>,
+        
+        /// Filter JSON (can be specified multiple times)
+        #[arg(short, long, value_name = "JSON")]
+        filter: Vec<String>,
+        
+        /// Kinds to filter (can be specified multiple times)
+        #[arg(short, long)]
+        kinds: Vec<i64>,
+        
+        /// Authors to filter (can be specified multiple times)
+        #[arg(long)]
+        authors: Vec<String>,
+        
+        /// Limit number of events
+        #[arg(short, long)]
+        limit: Option<usize>,
+        
+        /// Since timestamp
+        #[arg(long)]
+        since: Option<i64>,
+        
+        /// Until timestamp
+        #[arg(long)]
+        until: Option<i64>,
     },
     
     /// Send a REQ message to a cassette and get events
@@ -507,7 +860,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Dub { 
+        Commands::Record { 
             input_file, 
             name, 
             description, 
@@ -571,6 +924,33 @@ fn main() -> Result<()> {
             }
             
             Ok(())
+        }
+        Commands::Dub {
+            cassettes,
+            output,
+            name,
+            description,
+            author,
+            filter,
+            kinds,
+            authors,
+            limit,
+            since,
+            until,
+        } => {
+            process_dub_command(
+                cassettes,
+                output,
+                name.as_deref(),
+                description.as_deref(),
+                author.as_deref(),
+                filter,
+                kinds,
+                authors,
+                *limit,
+                *since,
+                *until,
+            )
         }
         Commands::Req {
             cassette,
@@ -756,13 +1136,13 @@ pub fn process_events(
     description: &str,
     author: &str,
     output_dir: &PathBuf,
-    no_bindings: bool
+    _no_bindings: bool
 ) -> Result<()> {
     // Parse input file (supports both JSON array and NDJSON)
     let original_events = parse_events_from_file(input_file)?;
     
     // Display statistics
-    println!("=== Cassette CLI - Dub Command ===");
+    println!("=== Cassette CLI - Record Command ===");
     println!("Processing events for cassette creation...");
     
     println!("\n📊 Initial Event Summary:");
