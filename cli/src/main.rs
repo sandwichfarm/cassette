@@ -7,8 +7,12 @@ use std::path::PathBuf;
 use chrono::Utc;
 use std::fs::File;
 use tempfile::tempdir;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use wasmtime::{Store, Module, Instance, Memory};
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use futures_util::{StreamExt, SinkExt};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // Module for cassette generation
 mod generator {
@@ -892,6 +896,32 @@ enum Commands {
         #[arg(short, long, default_value = "json")]
         output: String,
     },
+    
+    /// Cast events from cassettes to Nostr relays
+    Cast {
+        /// Input cassette files to broadcast
+        cassettes: Vec<PathBuf>,
+        
+        /// Target relay URLs
+        #[arg(short, long, required = true)]
+        relays: Vec<String>,
+        
+        /// Maximum concurrent relay connections
+        #[arg(short, long, default_value = "5")]
+        concurrency: usize,
+        
+        /// Delay between event publishes in milliseconds (per relay)
+        #[arg(short, long, default_value = "100")]
+        throttle: u64,
+        
+        /// Timeout for relay connections in seconds
+        #[arg(long, default_value = "30")]
+        timeout: u64,
+        
+        /// Dry run - show what would be sent without actually sending
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -936,17 +966,23 @@ fn main() -> Result<()> {
                 let temp_file_path = temp_dir.path().join("stdin_events.json");
                 let temp_file_path_str = temp_file_path.to_str().unwrap();
                 
-                // Read from stdin
+                // Read from stdin line by line (for NDJSON from nak)
                 let stdin = std::io::stdin();
-                let mut stdin_content = Vec::new();
-                stdin.lock().read_to_end(&mut stdin_content)?;
+                let mut temp_file = File::create(&temp_file_path)?;
                 
-                if stdin_content.is_empty() {
-                    return Err(anyhow!("No data received from stdin. Please pipe in events or use an input file."));
+                for line in stdin.lock().lines() {
+                    let line = line?;
+                    if !line.trim().is_empty() {
+                        writeln!(temp_file, "{}", line)?;
+                    }
                 }
                 
-                // Write the stdin content to the temp file
-                std::fs::write(&temp_file_path, stdin_content)?;
+                // Ensure file has content
+                temp_file.flush()?;
+                let metadata = std::fs::metadata(&temp_file_path)?;
+                if metadata.len() == 0 {
+                    return Err(anyhow!("No data received from stdin. Please pipe in events or use an input file."));
+                }
                 
                 // Process the temp file
                 process_events(
@@ -1012,6 +1048,25 @@ fn main() -> Result<()> {
                 *until,
                 output,
             )
+        }
+        Commands::Cast {
+            cassettes,
+            relays,
+            concurrency,
+            throttle,
+            timeout,
+            dry_run,
+        } => {
+            // Use tokio runtime for async operations
+            let runtime = tokio::runtime::Runtime::new()?;
+            runtime.block_on(process_cast_command(
+                cassettes,
+                relays,
+                *concurrency,
+                *throttle,
+                *timeout,
+                *dry_run,
+            ))
         }
     }
 }
@@ -1289,5 +1344,340 @@ pub fn process_events(
             println!("  ❌ Failed to generate WASM module: {}", e);
             Err(anyhow!("Failed to generate WASM module: {}", e))
         }
+    }
+}
+// Cast command implementation
+
+#[derive(Clone)]
+struct RelayStatus {
+    url: String,
+    connected: bool,
+    total: usize,
+    successful: usize,
+    failed: usize,
+}
+
+async fn process_cast_command(
+    cassette_paths: &[std::path::PathBuf],
+    relay_urls: &[String],
+    concurrency: usize,
+    throttle_ms: u64,
+    timeout_secs: u64,
+    dry_run: bool,
+) -> Result<()> {
+    if cassette_paths.is_empty() {
+        return Err(anyhow!("No cassettes specified"));
+    }
+    
+    if relay_urls.is_empty() {
+        return Err(anyhow!("No relays specified"));
+    }
+    
+    println!("🎯 Casting events from {} cassette(s) to {} relay(s)", 
+        cassette_paths.len(), relay_urls.len());
+    
+    if dry_run {
+        println!("🏃 DRY RUN MODE - No events will actually be sent");
+    }
+    
+    // Extract all unique events from cassettes
+    let mut all_events = Vec::new();
+    let mut event_ids = HashSet::new();
+    
+    for cassette_path in cassette_paths {
+        println!("\n📼 Loading cassette: {}", cassette_path.display());
+        
+        if !cassette_path.exists() {
+            eprintln!("  ⚠️  Warning: Cassette file not found, skipping");
+            continue;
+        }
+        
+        let events = extract_all_events_from_cassette(cassette_path)?;
+        let initial_count = events.len();
+        let mut added = 0;
+        
+        for event in events {
+            if let Some(id) = event.get("id").and_then(|v| v.as_str()) {
+                if event_ids.insert(id.to_string()) {
+                    all_events.push(event);
+                    added += 1;
+                }
+            }
+        }
+        
+        println!("  ✓ Loaded {} events ({} unique)", initial_count, added);
+    }
+    
+    if all_events.is_empty() {
+        return Err(anyhow!("No events found in cassettes"));
+    }
+    
+    println!("\n📊 Total unique events to cast: {}", all_events.len());
+    
+    // Initialize relay status tracking
+    let relay_statuses = Arc::new(Mutex::new(
+        relay_urls.iter().enumerate().map(|(idx, url)| RelayStatus {
+            url: url.clone(),
+            connected: false,
+            total: all_events.len(),
+            successful: 0,
+            failed: 0,
+        }).collect::<Vec<_>>()
+    ));
+    
+    if dry_run {
+        println!("\n🔍 Events that would be sent:");
+        for (i, event) in all_events.iter().take(5).enumerate() {
+            if let Some(id) = event.get("id").and_then(|v| v.as_str()) {
+                println!("  Event {}: {}", i + 1, id);
+            }
+        }
+        if all_events.len() > 5 {
+            println!("  ... and {} more events", all_events.len() - 5);
+        }
+        return Ok(());
+    }
+    
+    // Broadcast to all relays concurrently
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let timeout = tokio::time::Duration::from_secs(timeout_secs);
+    let throttle = tokio::time::Duration::from_millis(throttle_ms);
+    
+    let tasks: Vec<_> = relay_urls.iter().enumerate().map(|(idx, relay_url)| {
+        let events = all_events.clone();
+        let relay_url = relay_url.clone();
+        let statuses = relay_statuses.clone();
+        let semaphore = semaphore.clone();
+        
+        tokio::spawn(async move {
+            let _permit = semaphore.acquire().await.unwrap();
+            broadcast_to_relay(idx, relay_url, events, statuses, timeout, throttle).await
+        })
+    }).collect();
+    
+    // Start progress display
+    let display_handle = {
+        let statuses = relay_statuses.clone();
+        tokio::spawn(async move {
+            loop {
+                display_relay_status(&statuses).await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                
+                // Check if all relays are done
+                let all_done = {
+                    let statuses = statuses.lock().await;
+                    statuses.iter().all(|s| s.successful + s.failed >= s.total)
+                };
+                
+                if all_done {
+                    break;
+                }
+            }
+            // Final display
+            display_relay_status(&statuses).await;
+        })
+    };
+    
+    // Wait for all broadcasts to complete
+    let results = futures_util::future::join_all(tasks).await;
+    
+    // Stop display task
+    display_handle.abort();
+    
+    // Print final results
+    println!("\n\n📊 Final Results:");
+    let statuses = relay_statuses.lock().await;
+    for status in statuses.iter() {
+        let success_rate = if status.total > 0 {
+            status.successful as f64 / status.total as f64 * 100.0
+        } else {
+            0.0
+        };
+        println!("  {} - {}/{} events ({:.1}% success rate)", 
+            status.url, status.successful, status.total, success_rate);
+    }
+    
+    // Check for errors
+    for result in results {
+        if let Err(e) = result {
+            eprintln!("\n⚠️  Task error: {}", e);
+        }
+    }
+    
+    Ok(())
+}
+
+/// Extract all events from a cassette
+fn extract_all_events_from_cassette(cassette_path: &std::path::PathBuf) -> Result<Vec<Value>> {
+    use wasmtime::{Store, Module, Instance};
+    
+    let engine = wasmtime::Engine::default();
+    let module = Module::from_file(&engine, cassette_path)?;
+    let mut store = Store::new(&engine, ());
+    let instance = Instance::new(&mut store, &module, &[])?;
+    
+    let memory = instance.get_memory(&mut store, "memory")
+        .ok_or_else(|| anyhow!("No memory export found"))?;
+    
+    let alloc_func = instance
+        .get_typed_func::<i32, i32>(&mut store, "alloc_buffer")
+        .or_else(|_| instance.get_typed_func::<i32, i32>(&mut store, "alloc_string"))?;
+    let req_func = instance.get_typed_func::<(i32, i32), i32>(&mut store, "req")?;
+    let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string").ok();
+    
+    // Request all events
+    let req_message = json!(["REQ", "cast-extract", {}]);
+    let req_string = serde_json::to_string(&req_message)?;
+    let req_bytes = req_string.as_bytes();
+    
+    let mut events = Vec::new();
+    
+    loop {
+        let req_ptr = alloc_func.call(&mut store, req_bytes.len() as i32)?;
+        if req_ptr == 0 {
+            break;
+        }
+        
+        memory.write(&mut store, req_ptr as usize, req_bytes)?;
+        let result_ptr = req_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
+        
+        if let Some(dealloc) = &dealloc_func {
+            dealloc.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
+        }
+        
+        if result_ptr == 0 {
+            break;
+        }
+        
+        let result = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
+        
+        if let Ok(get_size_func) = instance.get_typed_func::<i32, i32>(&mut store, "get_allocation_size") {
+            if let Ok(size) = get_size_func.call(&mut store, result_ptr) {
+                if let Some(dealloc) = &dealloc_func {
+                    let _ = dealloc.call(&mut store, (result_ptr, size));
+                }
+            }
+        }
+        
+        let parsed: Value = serde_json::from_str(&result)?;
+        if let Some(arr) = parsed.as_array() {
+            if arr.len() >= 2 {
+                match arr[0].as_str() {
+                    Some("EVENT") => {
+                        if let Some(event) = arr.get(2) {
+                            events.push(event.clone());
+                        }
+                    }
+                    Some("EOSE") => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+    
+    Ok(events)
+}
+
+/// Broadcast events to a single relay
+async fn broadcast_to_relay(
+    idx: usize,
+    relay_url: String,
+    events: Vec<Value>,
+    statuses: Arc<Mutex<Vec<RelayStatus>>>,
+    timeout: tokio::time::Duration,
+    throttle: tokio::time::Duration,
+) -> Result<()> {
+    // Connect to relay with timeout
+    let ws_stream = tokio::time::timeout(
+        timeout,
+        connect_async(&relay_url)
+    ).await
+        .map_err(|_| anyhow!("Connection timeout"))?
+        .map_err(|e| anyhow!("Connection failed: {}", e))?;
+    
+    // Update connection status
+    {
+        let mut statuses = statuses.lock().await;
+        statuses[idx].connected = true;
+    }
+    
+    let (mut write, mut read) = ws_stream.0.split();
+    
+    // Send events
+    for event in events {
+        let event_msg = json!(["EVENT", event]);
+        let msg_text = serde_json::to_string(&event_msg)?;
+        
+        // Send event
+        write.send(Message::Text(msg_text)).await?;
+        
+        // Wait for OK response
+        let success = wait_for_ok(&mut read).await?;
+        
+        // Update status
+        {
+            let mut statuses = statuses.lock().await;
+            if success {
+                statuses[idx].successful += 1;
+            } else {
+                statuses[idx].failed += 1;
+            }
+        }
+        
+        // Throttle between sends
+        if throttle.as_millis() > 0 {
+            tokio::time::sleep(throttle).await;
+        }
+    }
+    
+    // Close connection
+    let _ = write.close().await;
+    
+    Ok(())
+}
+
+/// Wait for OK response from relay
+async fn wait_for_ok(
+    read: &mut futures_util::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>
+        >
+    >
+) -> Result<bool> {
+    while let Some(msg) = read.next().await {
+        match msg? {
+            Message::Text(text) => {
+                if let Ok(parsed) = serde_json::from_str::<Vec<Value>>(&text) {
+                    if parsed.len() >= 3 && parsed[0] == "OK" {
+                        // Check if success (third element is true)
+                        return Ok(parsed[2].as_bool().unwrap_or(false));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+
+/// Display relay status with ANSI escape codes
+async fn display_relay_status(statuses: &Arc<Mutex<Vec<RelayStatus>>>) {
+    let statuses = statuses.lock().await;
+    
+    // Move cursor up and clear lines
+    let lines = statuses.len() + 2;
+    print!("\x1b[{}A", lines);
+    
+    println!("\n🎯 Broadcasting Progress:");
+    for status in statuses.iter() {
+        let progress = if status.total > 0 {
+            (status.successful + status.failed) as f64 / status.total as f64 * 100.0
+        } else {
+            0.0
+        };
+        
+        let connection_status = if status.connected { "🟢" } else { "🔴" };
+        println!("{} {} - {}/{} ({:.1}%)", 
+            connection_status, status.url, status.successful, status.total, progress);
     }
 }

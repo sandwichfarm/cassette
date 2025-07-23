@@ -1,6 +1,6 @@
 [package]
 name = "cassette-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "CLI tool for creating and managing Cassette platform modules"
 
@@ -26,6 +26,13 @@ clap = { version = "4.0", features = ["derive"] }
 tempfile = "3.8"
 handlebars = "4.3"
 wasmtime = "15.0"
+tokio = { version = "1.0", features = ["full"] }
+tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+futures-util = "0.3"
+crossterm = "0.27"
+sha2 = "0.10"
+hex = "0.4"
+secp256k1 = { version = "0.27", features = ["global-context", "rand-std"] }
 
 [dev-dependencies]
 # Add any test-specific dependencies here if needed

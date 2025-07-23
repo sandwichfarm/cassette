@@ -1,0 +1,20 @@
+[
+  {
+    "id": "test123",
+    "pubkey": "testpubkey",
+    "created_at": 1234567890,
+    "kind": 1,
+    "tags": [],
+    "content": "Test event for cast command",
+    "sig": "testsig123"
+  },
+  {
+    "id": "test456",
+    "pubkey": "testpubkey",
+    "created_at": 1234567891,
+    "kind": 1,
+    "tags": [],
+    "content": "Another test event",
+    "sig": "testsig456"
+  }
+]
