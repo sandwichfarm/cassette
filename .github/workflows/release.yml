@@ -83,8 +83,12 @@ jobs:
             !in_lib { print }
           ' Cargo.toml.bak > Cargo.toml
           cargo build --release --target ${{ matrix.platform.target }} --bin cassette
-          # Restore Cargo.toml
-          mv Cargo.toml.bak Cargo.toml
+          # Restore Cargo.toml (force overwrite on all platforms)
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            Move-Item -Path Cargo.toml.bak -Destination Cargo.toml -Force
+          else
+            mv -f Cargo.toml.bak Cargo.toml
+          fi
           cd ..
           
       - name: Package as archive
