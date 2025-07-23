@@ -1,8 +1,8 @@
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::fs;
-use std::io::{self, Read, Write, BufReader};
+use std::io::{self, Read, Write, BufReader, BufRead, Seek};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use chrono::{Local, Utc};
@@ -10,6 +10,7 @@ use std::process::Command;
 use std::fs::File;
 use tempfile::tempdir;
 use std::collections::HashMap;
+use wasmtime::{Store, Module, Instance, Memory};
 
 // Module for cassette generation
 mod generator {
@@ -259,6 +260,167 @@ mod generator {
     }
 }
 
+/// Process the REQ command - send requests to a cassette and get events
+fn process_req_command(
+    cassette_path: &PathBuf,
+    subscription: &str,
+    filter_args: &[String],
+    kinds: &[i64],
+    authors: &[String],
+    limit: Option<usize>,
+    since: Option<i64>,
+    until: Option<i64>,
+    output_format: &str,
+) -> Result<()> {
+    // Read the WASM file
+    let wasm_bytes = fs::read(cassette_path)
+        .context("Failed to read cassette WASM file")?;
+    
+    // Create a filter object
+    let mut filter = serde_json::Map::new();
+    
+    // Add kinds if specified
+    if !kinds.is_empty() {
+        filter.insert("kinds".to_string(), json!(kinds));
+    }
+    
+    // Add authors if specified
+    if !authors.is_empty() {
+        filter.insert("authors".to_string(), json!(authors));
+    }
+    
+    // Add limit if specified
+    if let Some(l) = limit {
+        filter.insert("limit".to_string(), json!(l));
+    }
+    
+    // Add time filters if specified
+    if let Some(s) = since {
+        filter.insert("since".to_string(), json!(s));
+    }
+    if let Some(u) = until {
+        filter.insert("until".to_string(), json!(u));
+    }
+    
+    // Parse any custom filter JSON arguments
+    for filter_json in filter_args {
+        let parsed: serde_json::Map<String, Value> = serde_json::from_str(filter_json)
+            .context("Failed to parse filter JSON")?;
+        filter.extend(parsed);
+    }
+    
+    // Create the REQ message
+    let req_message = json!(["REQ", subscription, filter]);
+    let req_string = req_message.to_string();
+    
+    // Initialize wasmtime
+    let mut store = Store::default();
+    let module = Module::from_binary(store.engine(), &wasm_bytes)?;
+    let instance = Instance::new(&mut store, &module, &[])?;
+    
+    // Get memory export
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .ok_or_else(|| anyhow!("Memory export not found"))?;
+    
+    // Get the req function
+    let req_func = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "req")
+        .context("Failed to get req function")?;
+    
+    // Get allocation function
+    let alloc_func = instance
+        .get_typed_func::<i32, i32>(&mut store, "alloc_buffer")
+        .or_else(|_| instance.get_typed_func::<i32, i32>(&mut store, "alloc_string"))
+        .context("Failed to get allocation function")?;
+    
+    // Get deallocation function
+    let dealloc_func = instance
+        .get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string")
+        .context("Failed to get deallocation function")?;
+    
+    // Allocate memory for the request string
+    let req_bytes = req_string.as_bytes();
+    let req_ptr = alloc_func.call(&mut store, req_bytes.len() as i32)?;
+    
+    if req_ptr == 0 {
+        return Err(anyhow!("Failed to allocate memory for request"));
+    }
+    
+    // Write request to memory
+    memory.write(&mut store, req_ptr as usize, req_bytes)?;
+    
+    // Call the req function
+    let result_ptr = req_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
+    
+    // Deallocate request memory
+    dealloc_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
+    
+    if result_ptr == 0 {
+        return Err(anyhow!("req function returned null pointer"));
+    }
+    
+    // Read the result
+    let result = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
+    
+    // Parse and output the result
+    let parsed_result: Value = serde_json::from_str(&result)?;
+    
+    match output_format {
+        "ndjson" => {
+            // For NDJSON, output each event on its own line
+            if let Some(arr) = parsed_result.as_array() {
+                if arr.len() >= 3 && arr[0].as_str() == Some("EVENT") {
+                    // Single EVENT response
+                    println!("{}", serde_json::to_string(&arr[2])?);
+                }
+            }
+        }
+        _ => {
+            // Default JSON output
+            println!("{}", serde_json::to_string_pretty(&parsed_result)?);
+        }
+    }
+    
+    Ok(())
+}
+
+/// Read a string from WASM memory using MSGB format
+fn read_string_from_memory(
+    store: &mut Store<()>,
+    _instance: &Instance,
+    memory: &Memory,
+    ptr: i32,
+) -> Result<String> {
+    // Check for MSGB signature
+    let mut sig_bytes = [0u8; 4];
+    memory.read(&mut *store, ptr as usize, &mut sig_bytes)?;
+    
+    if &sig_bytes == b"MSGB" {
+        // Read length
+        let mut len_bytes = [0u8; 4];
+        memory.read(&mut *store, (ptr + 4) as usize, &mut len_bytes)?;
+        let length = u32::from_le_bytes(len_bytes) as usize;
+        
+        // Read string data
+        let mut string_data = vec![0u8; length];
+        memory.read(&mut *store, (ptr + 8) as usize, &mut string_data)?;
+        
+        String::from_utf8(string_data).context("Invalid UTF-8 in response")
+    } else {
+        // Fallback: read null-terminated string
+        let mem_data = memory.data(&*store);
+        let start = ptr as usize;
+        let mut end = start;
+        
+        while end < mem_data.len() && mem_data[end] != 0 {
+            end += 1;
+        }
+        
+        String::from_utf8(mem_data[start..end].to_vec()).context("Invalid UTF-8 in response")
+    }
+}
+
 #[derive(Parser)]
 #[command(author, version, about = "CLI tool for Cassette platform")]
 struct Cli {
@@ -300,6 +462,44 @@ enum Commands {
             action = clap::ArgAction::SetTrue
         )]
         no_bindings: bool,
+    },
+    
+    /// Send a REQ message to a cassette and get events
+    Req {
+        /// Path to the cassette WASM file
+        cassette: PathBuf,
+        
+        /// Subscription ID
+        #[arg(short, long, default_value = "sub1")]
+        subscription: String,
+        
+        /// Filter JSON (can be specified multiple times)
+        #[arg(short, long, value_name = "JSON")]
+        filter: Vec<String>,
+        
+        /// Kinds to filter (can be specified multiple times)
+        #[arg(short, long)]
+        kinds: Vec<i64>,
+        
+        /// Authors to filter (can be specified multiple times)
+        #[arg(short, long)]
+        authors: Vec<String>,
+        
+        /// Limit number of events
+        #[arg(short, long)]
+        limit: Option<usize>,
+        
+        /// Since timestamp
+        #[arg(long)]
+        since: Option<i64>,
+        
+        /// Until timestamp
+        #[arg(long)]
+        until: Option<i64>,
+        
+        /// Output format: json (default) or ndjson
+        #[arg(short, long, default_value = "json")]
+        output: String,
     },
 }
 
@@ -371,6 +571,29 @@ fn main() -> Result<()> {
             }
             
             Ok(())
+        }
+        Commands::Req {
+            cassette,
+            subscription,
+            filter,
+            kinds,
+            authors,
+            limit,
+            since,
+            until,
+            output,
+        } => {
+            process_req_command(
+                cassette,
+                subscription,
+                filter,
+                kinds,
+                authors,
+                *limit,
+                *since,
+                *until,
+                output,
+            )
         }
     }
 }
@@ -480,6 +703,53 @@ fn preprocess_events(events: Vec<Value>) -> Vec<Value> {
     filtered_events
 }
 
+/// Parse events from file, supporting both JSON array and NDJSON formats
+fn parse_events_from_file(input_file: &str) -> Result<Vec<Value>> {
+    let file = File::open(input_file)?;
+    let mut reader = BufReader::new(file);
+    
+    // Read first character to determine format
+    let mut first_char = [0u8; 1];
+    reader.read_exact(&mut first_char)?;
+    
+    // Reset reader to beginning
+    reader.seek(std::io::SeekFrom::Start(0))?;
+    
+    if first_char[0] == b'[' {
+        // JSON array format
+        serde_json::from_reader(reader).context("Failed to parse JSON array")
+    } else {
+        // Assume NDJSON format (newline-delimited JSON)
+        let mut events = Vec::new();
+        let lines = reader.lines();
+        
+        for (line_num, line_result) in lines.enumerate() {
+            let line = line_result.context("Failed to read line")?;
+            let trimmed = line.trim();
+            
+            // Skip empty lines
+            if trimmed.is_empty() {
+                continue;
+            }
+            
+            // Parse each line as a JSON object
+            match serde_json::from_str::<Value>(trimmed) {
+                Ok(event) => events.push(event),
+                Err(e) => {
+                    // Skip invalid lines with a warning
+                    eprintln!("Warning: Skipping invalid JSON on line {}: {}", line_num + 1, e);
+                }
+            }
+        }
+        
+        if events.is_empty() {
+            return Err(anyhow!("No valid events found in input file"));
+        }
+        
+        Ok(events)
+    }
+}
+
 pub fn process_events(
     input_file: &str,
     name: &str,
@@ -488,10 +758,8 @@ pub fn process_events(
     output_dir: &PathBuf,
     no_bindings: bool
 ) -> Result<()> {
-    // Parse input file
-    let file = File::open(input_file)?;
-    let reader = BufReader::new(file);
-    let original_events: Vec<Value> = serde_json::from_reader(reader)?;
+    // Parse input file (supports both JSON array and NDJSON)
+    let original_events = parse_events_from_file(input_file)?;
     
     // Display statistics
     println!("=== Cassette CLI - Dub Command ===");
