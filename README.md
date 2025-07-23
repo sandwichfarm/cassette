@@ -1,6 +1,6 @@
 # Cassette
 
-Store Nostr events in NIP-01 compatible (read-only) portable WebAssembly relays.
+NIP-01 compatible, portable WebAssembly read-only relays
 
 ## Quick Start
 
