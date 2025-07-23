@@ -4,8 +4,8 @@
  * This file demonstrates how to use the CassetteManager exported from the library
  * rather than implementing its own version.
  */
-import { loadCassette, isWebAssemblySupported, ENV_INFO } from '../src/index.js';
-import { CassetteManager } from '../src/browser.js';
+import { loadCassette, isWebAssemblySupported, ENV_INFO } from '../../loaders/js/src/index.js';
+import { CassetteManager } from '../../loaders/js/src/browser.js';
 
 // Example usage of the CassetteManager
 async function exampleUsage() {

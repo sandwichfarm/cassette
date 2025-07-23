@@ -11,6 +11,6 @@
     "rootDir": ".",
     "skipLibCheck": true
   },
-  "include": ["src/**/*", "examples/**/*"],
+  "include": ["../loaders/js/src/**/*", "examples/**/*"],
   "exclude": ["node_modules", "dist", "examples/boombox-integration.ts"]
 } 

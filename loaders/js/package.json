@@ -1,0 +1,37 @@
+{
+  "name": "cassette-loader",
+  "version": "1.1.0",
+  "description": "WebAssembly loader for Nostr event cassettes",
+  "main": "dist/src/index.js",
+  "module": "dist/src/index.js",
+  "browser": "dist/browser/cassette-loader.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/src/index.js",
+      "require": "./dist/src/index.js",
+      "browser": "./dist/browser/cassette-loader.js",
+      "types": "./dist/src/index.d.ts"
+    }
+  },
+  "files": [
+    "dist/**/*"
+  ],
+  "scripts": {
+    "test": "jest",
+    "build": "node build.js"
+  },
+  "keywords": [
+    "nostr",
+    "cassette",
+    "webassembly",
+    "wasm",
+    "loader"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "jest": "^29.0.0",
+    "typescript": "^5.0.0"
+  }
+}

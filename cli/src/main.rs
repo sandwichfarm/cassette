@@ -818,7 +818,7 @@ enum Commands {
     },
     
     /// Send a REQ message to a cassette and get events
-    Req {
+    Play {
         /// Path to the cassette WASM file
         cassette: PathBuf,
         
@@ -952,7 +952,7 @@ fn main() -> Result<()> {
                 *until,
             )
         }
-        Commands::Req {
+        Commands::Play {
             cassette,
             subscription,
             filter,
