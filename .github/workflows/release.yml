@@ -75,16 +75,13 @@ jobs:
           cd cli
           # Temporarily remove the library section from Cargo.toml
           cp Cargo.toml Cargo.toml.bak
-          # Use Python for cross-platform file editing
-          python3 -c "
-import re
-with open('Cargo.toml', 'r') as f:
-    content = f.read()
-# Remove the [lib] section
-content = re.sub(r'\[lib\].*?(?=\[|$)', '', content, flags=re.DOTALL)
-with open('Cargo.toml', 'w') as f:
-    f.write(content)
-          "
+          # Remove the [lib] section and its content
+          awk '
+            BEGIN { in_lib = 0 }
+            /^\[lib\]/ { in_lib = 1; next }
+            /^\[/ && in_lib { in_lib = 0 }
+            !in_lib { print }
+          ' Cargo.toml.bak > Cargo.toml
           cargo build --release --target ${{ matrix.platform.target }} --bin cassette
           # Restore Cargo.toml
           mv Cargo.toml.bak Cargo.toml
