@@ -71,17 +71,19 @@ jobs:
           echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
 
       - name: Build binary
-        env:
-          CARGO_TARGET_DIR: target-release
         run: |
           cd cli
+          # Temporarily move lib.rs to prevent library build conflicts
+          mv src/lib.rs src/lib.rs.bak || true
           cargo build --release --target ${{ matrix.platform.target }} --bin cassette
+          # Restore lib.rs
+          mv src/lib.rs.bak src/lib.rs || true
           cd ..
           
       - name: Package as archive
         shell: bash
         run: |
-          cd cli/target-release/${{ matrix.platform.target }}/release
+          cd cli/target/${{ matrix.platform.target }}/release
           if [[ "${{ matrix.platform.archive }}" == "tar.gz" ]]; then
             tar czvf ../../../../cassette-${{ matrix.platform.name }}.tar.gz ${{ matrix.platform.bin }}
           else
