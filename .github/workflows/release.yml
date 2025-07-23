@@ -73,11 +73,21 @@ jobs:
       - name: Build binary
         run: |
           cd cli
-          # Temporarily move lib.rs to prevent library build conflicts
-          mv src/lib.rs src/lib.rs.bak || true
+          # Temporarily remove the library section from Cargo.toml
+          cp Cargo.toml Cargo.toml.bak
+          # Use Python for cross-platform file editing
+          python3 -c "
+import re
+with open('Cargo.toml', 'r') as f:
+    content = f.read()
+# Remove the [lib] section
+content = re.sub(r'\[lib\].*?(?=\[|$)', '', content, flags=re.DOTALL)
+with open('Cargo.toml', 'w') as f:
+    f.write(content)
+          "
           cargo build --release --target ${{ matrix.platform.target }} --bin cassette
-          # Restore lib.rs
-          mv src/lib.rs.bak src/lib.rs || true
+          # Restore Cargo.toml
+          mv Cargo.toml.bak Cargo.toml
           cd ..
           
       - name: Package as archive
