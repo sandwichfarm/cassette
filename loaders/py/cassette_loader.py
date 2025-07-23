@@ -353,7 +353,46 @@ class Cassette:
             self.memory_manager.deallocate_string(req_ptr)
             self.memory_manager.deallocate_string(result_ptr)
             
-            # Filter duplicate events if it's an EVENT response
+            # Handle newline-separated messages (like JavaScript loader)
+            if '\n' in result:
+                messages = result.strip().split('\n')
+                if self.debug:
+                    print(f"[Cassette] Processing {len(messages)} newline-separated messages")
+                
+                filtered_messages = []
+                for message in messages:
+                    try:
+                        parsed = json.loads(message)
+                        if not isinstance(parsed, list) or len(parsed) < 2:
+                            if self.debug:
+                                print(f"[Cassette] Invalid message format: {message[:100]}")
+                            continue
+                        
+                        # Validate message type
+                        if parsed[0] not in ["NOTICE", "EVENT", "EOSE"]:
+                            if self.debug:
+                                print(f"[Cassette] Unknown message type: {parsed[0]}")
+                            continue
+                        
+                        # Filter duplicate events
+                        if parsed[0] == "EVENT" and len(parsed) >= 3:
+                            event_id = parsed[2].get('id', '')
+                            if event_id in self.returned_events:
+                                if self.debug:
+                                    print(f"[Cassette] Filtering duplicate event: {event_id}")
+                                continue
+                            self.returned_events.add(event_id)
+                        
+                        filtered_messages.append(message)
+                    except Exception as e:
+                        if self.debug:
+                            print(f"[Cassette] Failed to parse message: {e}")
+                        continue
+                
+                # Return filtered messages as newline-separated string
+                return '\n'.join(filtered_messages) if filtered_messages else ""
+            
+            # Single message - filter as before
             try:
                 parsed = json.loads(result)
                 if isinstance(parsed, list) and parsed[0] == "EVENT" and len(parsed) >= 3:

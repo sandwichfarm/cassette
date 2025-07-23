@@ -1,0 +1,14 @@
+name: cassette_loader
+description: Dart loader for Cassette Nostr event cassettes
+version: 0.1.0
+homepage: https://github.com/cassette/loaders/dart
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  wasm: ^3.0.0
+
+dev_dependencies:
+  lints: ^3.0.0
+  test: ^1.24.0
