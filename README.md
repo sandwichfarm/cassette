@@ -6,7 +6,7 @@ Store Nostr events in portable WebAssembly modules. Query them like a relay.
 
 Download the latest binary from [releases](https://github.com/dskvr/cassette/releases/latest).
 
-### Create a cassette from Nostr events
+### Record a cassette
 
 ```bash
 # From a relay
@@ -18,7 +18,7 @@ cassette record events.json --name my-notes
 # Output: my-notes.wasm
 ```
 
-### Query a cassette
+### "Play" a cassette
 
 ```bash
 # Get all events
@@ -34,7 +34,7 @@ cassette play my-notes.wasm --authors npub1...
 cassette play my-notes.wasm --kinds 1 --kinds 7 --limit 10
 ```
 
-### Combine multiple cassettes
+### Dub a Mixtape
 
 ```bash
 # Merge cassettes
