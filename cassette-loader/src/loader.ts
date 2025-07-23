@@ -10,8 +10,10 @@ import {
   generateCassetteId,
   createLogger,
   isBrowser,
-  isNode
+  isNode,
+  createEventTracker
 } from './utils.js';
+import { WasmMemoryManager, createMemoryManager } from './memory.js';
 
 /**
  * Default options for loading cassettes
@@ -19,7 +21,8 @@ import {
 const DEFAULT_OPTIONS: CassetteLoaderOptions = {
   memoryInitialSize: 16,
   exposeExports: false,
-  debug: false
+  debug: false,
+  deduplicateEvents: true
 };
 
 /**
@@ -59,6 +62,415 @@ function findExportFunction(exports: WebAssembly.Exports, possibleNames: string[
 }
 
 /**
+ * Core interface for direct WebAssembly interactions without wasm-bindgen
+ */
+class CoreCassetteInterface {
+  private exports: WebAssembly.Exports;
+  private memory: WebAssembly.Memory;
+  private memoryManager: WasmMemoryManager;
+  private logger: ReturnType<typeof createLogger>;
+  private eventTracker = createEventTracker();
+  private currentSubscriptionId: string = '';
+  
+  constructor(instance: WebAssembly.Instance, debug = false) {
+    this.exports = instance.exports;
+    this.memory = this.exports.memory as WebAssembly.Memory;
+    this.memoryManager = createMemoryManager(instance, debug);
+    this.logger = createLogger(debug, 'CoreCassetteInterface');
+  }
+  
+  /**
+   * Helper to validate JSON structure before sending to WASM
+   * Returns either the original string if valid or a fixed version if possible
+   */
+  private validateJsonFormat(jsonStr: string): string {
+    try {
+      // Try to parse as JSON to check validity
+      const parsed = JSON.parse(jsonStr);
+      
+      // Handle the specific edge case for REQ format with invalid filter
+      if (Array.isArray(parsed) && parsed[0] === "REQ" && parsed.length >= 3) {
+        const filter = parsed[2];
+        
+        // Check if filter is misformatted (e.g., using numeric keys)
+        if (typeof filter === 'object' && filter !== null) {
+          // Create a new filter object with all keys properly stringified
+          const fixedFilter: Record<string, any> = {};
+          
+          // Copy all entries with string keys
+          for (const key in filter) {
+            fixedFilter[String(key)] = filter[key];
+          }
+          
+          // Replace the filter in the array and re-stringify
+          parsed[2] = fixedFilter;
+          
+          const fixed = JSON.stringify(parsed);
+          if (fixed !== jsonStr) {
+            this.logger.log(`Fixed JSON format issues: ${jsonStr} -> ${fixed}`);
+            return fixed;
+          }
+        }
+      }
+      
+      // No issues or fixes needed
+      return jsonStr;
+    } catch (error) {
+      // If parsing fails, return the original string
+      // The error will be properly reported elsewhere
+      this.logger.warn(`JSON validation failed: ${error}`);
+      return jsonStr;
+    }
+  }
+  
+  // Core cassette methods
+  describe(): string {
+    this.logger.log('Getting cassette description');
+    
+    // Try to use chunked method first
+    if (typeof this.exports.get_description_size === 'function' && 
+        typeof this.exports.get_description_chunk === 'function') {
+      this.logger.log('Using chunked description method');
+      const size = (this.exports.get_description_size as Function)();
+      let description = '';
+      
+      // Load in chunks of 1000 bytes
+      const chunkSize = 1000;
+      for (let i = 0; i < size; i += chunkSize) {
+        const ptr = (this.exports.get_description_chunk as Function)(i, chunkSize);
+        const chunkStr = this.memoryManager.readString(ptr);
+        description += chunkStr;
+        this.memoryManager.deallocateString(ptr);
+      }
+      
+      return description;
+    }
+    
+    // Fall back to direct describe method
+    this.logger.log('Using direct describe method');
+    return this.memoryManager.callStringFunction('describe');
+  }
+  
+  getSchema(): string {
+    this.logger.log('Getting cassette schema');
+    
+    // Try to use chunked method first for schema
+    if (typeof this.exports.get_schema_size === 'function' && 
+        typeof this.exports.get_schema_chunk === 'function') {
+      this.logger.log('Using chunked schema method');
+      const size = (this.exports.get_schema_size as Function)();
+      let schema = '';
+      
+      // Load in chunks of 1000 bytes
+      const chunkSize = 1000;
+      for (let i = 0; i < size; i += chunkSize) {
+        const ptr = (this.exports.get_schema_chunk as Function)(i, chunkSize);
+        const chunkStr = this.memoryManager.readString(ptr);
+        schema += chunkStr;
+        this.memoryManager.deallocateString(ptr);
+      }
+      
+      return schema;
+    }
+    
+    // Fall back to direct get_schema method
+    this.logger.log('Using direct get_schema method');
+    if (typeof this.exports.get_schema === 'function') {
+      return this.memoryManager.callStringFunction('get_schema');
+    }
+    
+    // Last resort - return empty schema
+    this.logger.log('No schema method found, returning empty schema');
+    return '{}';
+  }
+  
+  req(requestStr: string): string {
+    this.logger.log(`Processing request: ${requestStr.substring(0, 100)}${requestStr.length > 100 ? '...' : ''}`);
+    
+    if (typeof this.exports.req !== 'function') {
+      throw new Error('req function not implemented by cassette');
+    }
+    
+    // Parse the request to determine subscription ID
+    try {
+      this.logger.log(`Validating request JSON: ${requestStr}`);
+      const parsedReq = JSON.parse(requestStr);
+      
+      if (Array.isArray(parsedReq) && parsedReq.length >= 2 && parsedReq[0] === "REQ") {
+        const subscriptionId = parsedReq[1];
+        
+        // CRITICAL FIX: Always reset event tracker for EACH new REQ call
+        // This ensures events from previous REQ calls don't affect deduplication
+        if (this.eventTracker) {
+          this.logger.log(`New REQ call received, resetting event tracker`);
+          this.eventTracker.reset();
+          this.currentSubscriptionId = subscriptionId;
+        }
+      }
+    } catch (parseError) {
+      this.logger.warn(`Failed to parse request string: ${parseError}`);
+    }
+    
+    // Validate and potentially fix JSON format issues before sending to WASM
+    const validatedRequestStr = this.validateJsonFormat(requestStr);
+    
+    // Write request string to memory
+    let requestPtr = 0;
+    let resultPtr = 0;
+    let result = '';
+    
+    try {
+      // First allocate and write the request string to memory
+      try {
+        requestPtr = this.memoryManager.writeString(validatedRequestStr);
+        if (requestPtr === 0) {
+          this.logger.error("Failed to allocate memory for request string");
+          return JSON.stringify(["NOTICE", "Error: Failed to allocate memory for request"]);
+        }
+      } catch (allocError: any) {
+        this.logger.error(`Error allocating memory for request: ${allocError}`);
+        return JSON.stringify(["NOTICE", `Error: ${allocError.message}`]);
+      }
+    
+      // Call req function (which should return a pointer to the result)
+      try {
+        this.logger.log('Calling req function');
+        resultPtr = (this.exports.req as Function)(requestPtr, requestStr.length);
+        
+        if (resultPtr === 0) {
+          this.logger.warn('req function returned null pointer');
+          return JSON.stringify(["NOTICE", "Error: Empty response from cassette"]);
+        }
+      } catch (callError: any) {
+        this.logger.error(`Error calling req function: ${callError}`);
+        return JSON.stringify(["NOTICE", `Error: ${callError.message}`]);
+      }
+      
+      // Read result from memory
+      try {
+        result = this.memoryManager.readString(resultPtr);
+        if (!result || result.length === 0) {
+          this.logger.warn('Empty result from req function');
+          return JSON.stringify(["NOTICE", "Error: Empty response from cassette"]);
+        }
+        
+        this.logger.log(`Raw result from req: ${result.substring(0, 100)}${result.length > 100 ? '...' : ''}`);
+        
+        // Split result into individual messages if it contains newlines
+        if (result.includes('\n')) {
+          const messages = result.trim().split('\n');
+          this.logger.log(`Processing ${messages.length} newline-separated messages`);
+          
+          // Validate and filter messages
+          const filteredMessages = messages.filter(message => {
+            try {
+              const parsed = JSON.parse(message);
+              if (!Array.isArray(parsed) || parsed.length < 2) {
+                this.logger.warn(`Invalid message format: ${message.substring(0, 100)}`);
+                return false;
+              }
+              if (!["NOTICE", "EVENT", "EOSE"].includes(parsed[0])) {
+                this.logger.warn(`Unknown message type: ${parsed[0]}`);
+                return false;
+              }
+              
+              // For EVENT messages, check for duplicates
+              if (parsed[0] === "EVENT" && parsed.length >= 3 && this.eventTracker && 
+                  typeof parsed[2] === 'object' && parsed[2].id) {
+                const eventId = parsed[2].id;
+                if (!this.eventTracker.addAndCheck(eventId)) {
+                  this.logger.log(`Filtered duplicate event: ${eventId}`);
+                  return false;
+                }
+              }
+              return true;
+            } catch (parseError) {
+              this.logger.warn(`Failed to parse message: ${parseError}`);
+              return false;
+            }
+          });
+          
+          // Return filtered messages
+          return filteredMessages.join('\n');
+        }
+        
+        // If we get here, the result doesn't contain newlines
+        try {
+          const parsed = JSON.parse(result);
+          if (Array.isArray(parsed)) {
+            if (parsed[0] === "EVENT" && parsed.length >= 3 && 
+                this.eventTracker && typeof parsed[2] === 'object' && parsed[2].id) {
+              const eventId = parsed[2].id;
+              if (!this.eventTracker.addAndCheck(eventId)) {
+                this.logger.log(`Filtered duplicate event: ${eventId}`);
+                return ''; // Return empty string instead of NOTICE message
+              }
+            }
+            // Always return EOSE messages
+            if (parsed[0] === "EOSE") {
+              this.logger.log(`Received EOSE message for subscription ${parsed[1]}`);
+              return result;
+            }
+          }
+          return result;
+        } catch (parseError: any) {
+          this.logger.warn(`Failed to parse result: ${parseError.message}`);
+          return JSON.stringify(["NOTICE", `Error: ${parseError.message}`]);
+        }
+      } catch (readError: any) {
+        this.logger.error(`Error reading result from memory: ${readError}`);
+        return JSON.stringify(["NOTICE", `Error: ${readError.message}`]);
+      }
+    } catch (error: any) {
+      this.logger.error(`Error in req method: ${error}`);
+      return JSON.stringify(["NOTICE", `Error: ${error.message}`]);
+    } finally {
+      // Clean up memory (with proper error handling)
+      if (requestPtr) {
+        try {
+          this.memoryManager.deallocateString(requestPtr);
+        } catch (cleanupError) {
+          this.logger.error(`Error cleaning up request memory: ${cleanupError}`);
+        }
+      }
+      
+      if (resultPtr) {
+        try {
+          this.memoryManager.deallocateString(resultPtr);
+        } catch (cleanupError) {
+          this.logger.error(`Error cleaning up result memory: ${cleanupError}`);
+        }
+      }
+    }
+  }
+  
+  close(closeStr: string): string {
+    this.logger.log(`Processing close request: ${closeStr}`);
+    
+    if (typeof this.exports.close !== 'function') {
+      this.logger.log('Close function not implemented, returning default notice');
+      return JSON.stringify(["NOTICE", "Close not implemented"]);
+    }
+    
+    try {
+      const parsedClose = JSON.parse(closeStr);
+      if (Array.isArray(parsedClose) && parsedClose.length >= 2 && parsedClose[0] === "CLOSE") {
+        const subscriptionId = parsedClose[1];
+        
+        // Reset event tracker and subscription ID on CLOSE
+        if (subscriptionId === this.currentSubscriptionId) {
+          this.logger.log(`Closing subscription ${subscriptionId}, resetting event tracker`);
+          if (this.eventTracker) {
+            this.eventTracker.reset();
+          }
+          this.currentSubscriptionId = '';
+        }
+      }
+    } catch (parseError) {
+      this.logger.warn(`Failed to parse close string: ${parseError}`);
+    }
+    
+    // Write close string to memory
+    let closePtr = 0;
+    let resultPtr = 0;
+    let result = '';
+    
+    try {
+      // First allocate and write the close string to memory
+      try {
+        closePtr = this.memoryManager.writeString(closeStr);
+        if (closePtr === 0) {
+          this.logger.error("Failed to allocate memory for close string");
+          return JSON.stringify(["NOTICE", "Error: Failed to allocate memory for close request"]);
+        }
+      } catch (allocError: any) {
+        this.logger.error(`Error allocating memory for close request: ${allocError}`);
+        return JSON.stringify(["NOTICE", `Error: ${allocError.message}`]);
+      }
+    
+      // Call close function (which should return a pointer to the result)
+      try {
+        this.logger.log('Calling close function');
+        resultPtr = (this.exports.close as Function)(closePtr, closeStr.length);
+        
+        if (resultPtr === 0) {
+          this.logger.warn('close function returned null pointer');
+          return JSON.stringify(["NOTICE", "Error: Empty response from cassette"]);
+        }
+      } catch (callError: any) {
+        this.logger.error(`Error calling close function: ${callError}`);
+        return JSON.stringify(["NOTICE", `Error: ${callError.message}`]);
+      }
+      
+      // Read result from memory
+      try {
+        result = this.memoryManager.readString(resultPtr);
+        if (!result || result.length === 0) {
+          this.logger.warn('Empty result from close function');
+          return JSON.stringify(["NOTICE", "Error: Empty response from cassette"]);
+        }
+        
+        this.logger.log(`Raw result from close: ${result.substring(0, 100)}${result.length > 100 ? '...' : ''}`);
+      } catch (readError: any) {
+        this.logger.error(`Error reading result from memory: ${readError}`);
+        return JSON.stringify(["NOTICE", `Error: ${readError.message}`]);
+      }
+      
+      // Validate the result before returning
+      if (result.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(result);
+          if (Array.isArray(parsed) && parsed.length >= 2) {
+            // Handle standard NIP-01 message types
+            if (parsed[0] === "NOTICE") {
+              this.logger.log(`Received NOTICE: ${parsed[1]}`);
+              return result; // Return NOTICE as is
+            }
+          }
+          
+          // Return the result as is if it's already valid JSON
+          return result;
+        } catch (parseError: any) {
+          // Not valid JSON, but starts with '[', might be malformed
+          this.logger.warn(`Result starts with '[' but is not valid JSON: ${parseError.message}`);
+          return JSON.stringify(["NOTICE", `Error: Invalid response format: ${parseError.message}`]);
+        }
+      }
+      
+      // Not a well-formatted response, try to parse it anyway
+      try {
+        JSON.parse(result); // Just check if it's valid JSON
+        return result;
+      } catch (parseError: any) {
+        // Not valid JSON at all
+        this.logger.warn(`Result is not valid JSON: ${parseError.message}`);
+        return JSON.stringify(["NOTICE", `Error: Invalid response: ${result.substring(0, 50)}`]);
+      }
+    } catch (error: any) {
+      this.logger.error(`Error in close method: ${error}`);
+      return JSON.stringify(["NOTICE", `Error: ${error.message}`]);
+    } finally {
+      // Clean up memory (with proper error handling)
+      if (closePtr) {
+        try {
+          this.memoryManager.deallocateString(closePtr);
+        } catch (cleanupError) {
+          this.logger.error(`Error cleaning up close memory: ${cleanupError}`);
+        }
+      }
+      
+      if (resultPtr) {
+        try {
+          this.memoryManager.deallocateString(resultPtr);
+        } catch (cleanupError) {
+          this.logger.error(`Error cleaning up result memory: ${cleanupError}`);
+        }
+      }
+    }
+  }
+}
+
+/**
  * Load a cassette from various sources
  * @param source Source of the cassette (file, URL, or ArrayBuffer)
  * @param fileName Original file name of the cassette (optional, used for ID generation)
@@ -89,235 +501,202 @@ export async function loadCassette(
     logger.log(`Loading cassette ${fileName} (ID: ${cassetteId})`);
     
     // Convert source to ArrayBuffer
-    const arrayBuffer = await toArrayBuffer(source);
+    const buffer = await toArrayBuffer(source);
     
-    // Create a memory instance
-    const memory = new WebAssembly.Memory({ initial: opts.memoryInitialSize || 16 });
+    // Create memory for the WebAssembly module
+    const memory = new WebAssembly.Memory({ 
+      initial: opts.memoryInitialSize || 16, 
+      // maximum: 1024 // Uncomment to set a maximum memory size
+    });
     
-    // Standard import object that works with wasm-bindgen generated modules
-    const defaultImports: WebAssembly.Imports = {
+    // Create import object with memory
+    const baseImports: WebAssembly.Imports = {
       env: {
-        memory
-      },
-      // Add a standardized namespace for wasm-bindgen functions
-      __wbindgen_placeholder__: {
-        __wbindgen_string_new: function(ptr: number, len: number) {
-          const buf = new Uint8Array(memory.buffer).subarray(ptr, ptr + len);
-          return buf;
+        memory,
+        log: (...args: any[]) => {
+          logger.log('WASM log:', ...args);
         },
-        __wbindgen_throw: function(ptr: number, len: number) {
-          const buf = new Uint8Array(memory.buffer).subarray(ptr, ptr + len);
-          throw new Error(new TextDecoder('utf-8').decode(buf));
+        error: (...args: any[]) => {
+          logger.error('WASM error:', ...args);
+        },
+        warn: (...args: any[]) => {
+          logger.warn('WASM warn:', ...args);
+        },
+        abort: (...args: any[]) => {
+          logger.error('WASM abort:', ...args);
+          throw new Error('WASM aborted: ' + args.join(' '));
         }
       },
-      // Add standardized console bindings that many cassettes use
-      console: {
-        log: function(...args: any[]) {
-          console.log('[Cassette]', ...args);
-          return 0;
+      // Include wbindgen helpers for compatibility
+      __wbindgen_placeholder__: {
+        __wbindgen_string_new: (ptr: number, len: number) => {
+          const memory = new Uint8Array((baseImports.env.memory as WebAssembly.Memory).buffer);
+          const slice = memory.slice(ptr, ptr + len);
+          const text = new TextDecoder().decode(slice);
+          return text;
         },
-        error: function(...args: any[]) {
-          console.error('[Cassette Error]', ...args);
-          return 0;
+        __wbindgen_throw: (ptr: number, len: number) => {
+          const memory = new Uint8Array((baseImports.env.memory as WebAssembly.Memory).buffer);
+          const slice = memory.slice(ptr, ptr + len);
+          const text = new TextDecoder().decode(slice);
+          throw new Error(text);
         }
       }
     };
     
-    // Merge default imports with custom imports if provided
+    // Merge custom imports with base imports if provided
     const importObject = opts.customImports 
-      ? mergeImports(defaultImports, opts.customImports) 
-      : defaultImports;
+      ? mergeImports(baseImports, opts.customImports)
+      : baseImports;
     
-    // Compile the WebAssembly module
+    // Compile and instantiate the WebAssembly module
     logger.log('Compiling WebAssembly module...');
-    const module = await WebAssembly.compile(arrayBuffer);
+    const { instance, module } = await WebAssembly.instantiate(buffer, importObject);
+    logger.log('WebAssembly module compiled and instantiated');
     
-    // Add dynamic import stubs for any missing imports the module requires
+    // Get the module's imports to detect missing imports
     const requiredImports = WebAssembly.Module.imports(module);
+
+    // Check for any missing imports and add dynamic stubs
     addDynamicImports(importObject, requiredImports, logger);
     
-    // Instantiate the WebAssembly module
-    logger.log('Instantiating WebAssembly module...');
-    const instance = await WebAssembly.instantiate(module, importObject);
     const exports = instance.exports;
     
-    logger.log('WebAssembly module instantiated successfully');
-    logger.log('Exports:', Object.keys(exports));
+    // Create a memory manager for this instance
+    const memoryManager = createMemoryManager(instance, opts.debug);
     
-    // Look for the required functions
-    const describeFn = findExportFunction(exports, [
-      'describe', 'describe_wasm', 'DESCRIBE', 'getInfo', 'get_info', 
-      'getMetadata', 'get_metadata', 'metadata', 'info', 'getDetails', 
-      'get_details', 'getDescription', 'get_description', 'details',
-      'about', 'getAbout', 'get_about', 'manifest', 'getManifest'
-    ]);
+    // Create an instance of the core interface
+    const coreInterface = new CoreCassetteInterface(instance, opts.debug);
     
-    if (!describeFn) {
-      throw new CassetteLoadError('WebAssembly module missing required "describe" function');
-    }
-    
-    const reqFn = findExportFunction(exports, [
-      'req', 'req_wasm', 'REQ', 'request', 'process_request', 'processRequest',
-      'handleRequest', 'handle_request', 'handleReq', 'handle_req', 
-      'process', 'processReq', 'process_req', 'call', 'invoke', 
-      'execute', 'run', 'handle', 'event', 'processEvent', 'process_event',
-      'handleEvent', 'handle_event', 'emit', 'submit', 'send'
-    ]);
-    
-    if (!reqFn) {
-      throw new CassetteLoadError('WebAssembly module missing required "req" function');
-    }
-    
-    const closeFn = findExportFunction(exports, [
-      'close', 'close_wasm', 'CLOSE', 'closeSubscription', 'close_subscription', 
-      'unsubscribe', 'disconnect', 'end', 'finish', 'complete', 'terminate',
-      'destroy', 'cleanup', 'dispose'
-    ]);
-    
-    // Optional memory management functions
-    const allocFn = findExportFunction(exports, ['allocString', 'alloc_string', 'alloc', 'malloc', 'allocate']);
-    const deallocFn = findExportFunction(exports, ['deallocString', 'dealloc_string', 'dealloc', 'free', 'deallocate']);
-    
-    // Create wrapper methods for the cassette
-    logger.log('Creating cassette wrapper...');
-    
-    // Extract metadata from describe function
-    let metadata: any;
+    // Get description from the cassette
+    let description: string;
     try {
-      const describeResult = extractWasmResult(describeFn.call(null), memory, deallocFn);
-      logger.log('Describe result:', describeResult);
-      
-      // Parse the metadata JSON
-      metadata = JSON.parse(describeResult);
+      description = coreInterface.describe();
+      logger.log(`Cassette description: ${description}`);
     } catch (error) {
-      logger.error('Failed to parse metadata:', error);
+      logger.error('Failed to get description:', error);
+      description = JSON.stringify({
+        name: fileName.replace(/\.[^/.]+$/, ""),
+        description: "No description available",
+        version: "unknown"
+      });
+    }
+    
+    // Parse the description as JSON
+    let metadata;
+    try {
+      metadata = JSON.parse(description);
+    } catch (error) {
+      logger.error('Failed to parse description JSON:', error);
       metadata = {
-        name: fileName.replace('.wasm', ''),
-        description: 'Failed to parse metadata',
-        version: 'unknown'
+        name: fileName.replace(/\.[^/.]+$/, ""),
+        description: "Error parsing description",
+        version: "unknown"
       };
     }
     
-    // Create the cassette object
+    // Extract metadata fields
+    const name = metadata.name || metadata.metadata?.name || fileName.replace(/\.[^/.]+$/, "");
+    const desc = metadata.description || metadata.metadata?.description || "No description available";
+    const version = metadata.version || metadata.metadata?.version || "unknown";
+    
+    // Create a cassette object with methods
     const cassette: Cassette = {
       id: cassetteId,
       fileName,
-      name: metadata.name || metadata.metadata?.name || fileName.replace('.wasm', ''),
-      description: metadata.description || metadata.metadata?.description || 'No description available',
-      version: metadata.version || metadata.metadata?.version || 'unknown',
+      name,
+      description: desc,
+      version,
       methods: {
-        describe: () => {
-          try {
-            const result = describeFn.call(null);
-            return extractWasmResult(result, memory, deallocFn);
-          } catch (error: any) {
-            logger.error('Error in describe method:', error);
-            return JSON.stringify({
-              error: error.message || 'Unknown error',
-              name: cassette.name,
-              description: 'Error occurred during describe call',
-              version: cassette.version
-            });
-          }
-        },
-        req: (requestStr: string) => {
-          try {
-            logger.log('Processing request:', requestStr);
-            
-            // If we have alloc/dealloc functions, use them for passing strings
-            if (allocFn && deallocFn) {
-              logger.log('Using memory management functions for request');
-              
-              // Convert request string to bytes
-              const bytes = new TextEncoder().encode(requestStr);
-              // Allocate memory for the request
-              const ptr = allocFn.call(null, bytes.length);
-              
-              // Write the request to memory
-              const mem = new Uint8Array(memory.buffer);
-              for (let i = 0; i < bytes.length; i++) {
-                mem[ptr + i] = bytes[i];
-              }
-              mem[ptr + bytes.length] = 0; // Null terminator
-              
-              // Call the req function with the pointer
-              const result = reqFn.call(null, ptr);
-              
-              // Free the allocated memory
-              deallocFn.call(null, ptr, bytes.length);
-              
-              // Extract the result
-              return extractWasmResult(result, memory, deallocFn);
-            }
-            
-            // Otherwise, try passing the string directly
-            const result = reqFn.call(null, requestStr);
-            return extractWasmResult(result, memory, deallocFn);
-          } catch (error: any) {
-            logger.error('Error in req method:', error);
-            return JSON.stringify({
-              error: error.message || 'Unknown error',
-              notice: ["NOTICE", error.message || 'Unknown error']
-            });
-          }
-        }
+        describe: () => coreInterface.describe(),
+        req: (requestStr: string) => coreInterface.req(requestStr),
+        close: (closeStr: string) => coreInterface.close(closeStr),
+        getSchema: () => coreInterface.getSchema()
       },
-      memory
+      eventTracker: opts.deduplicateEvents !== false ? createEventTracker() : undefined,
+      // Add memory stats method
+      getMemoryStats: () => {
+        return {
+          allocatedPointers: memoryManager.getAllocatedPointers(),
+          allocationCount: memoryManager.getAllocationCount(),
+          memory: {
+            totalPages: memory.buffer.byteLength / (64 * 1024),
+            totalBytes: memory.buffer.byteLength,
+            usageEstimate: memoryManager.getAllocationCount() > 0 ? 'Potential memory leak detected' : 'No leaks detected'
+          }
+        };
+      },
+      // Add dispose method to clean up resources
+      dispose: () => {
+        logger.log(`Disposing cassette ${cassetteId}`);
+        
+        // Get all allocated pointers that haven't been freed
+        const allocatedPointers = memoryManager.getAllocatedPointers();
+        
+        if (allocatedPointers.length > 0) {
+          logger.warn(`Found ${allocatedPointers.length} leaked memory allocations, attempting cleanup`);
+          
+          // Attempt to free each pointer
+          for (const ptr of allocatedPointers) {
+            try {
+              memoryManager.deallocateString(ptr);
+            } catch (error) {
+              logger.error(`Failed to clean up memory at pointer ${ptr}:`, error);
+            }
+          }
+          
+          // Check if we've successfully cleaned up
+          const remainingAllocations = memoryManager.getAllocationCount();
+          if (remainingAllocations > 0) {
+            logger.error(`Failed to clean up ${remainingAllocations} memory allocations`);
+          } else {
+            logger.log('Successfully cleaned up all memory allocations');
+          }
+        } else {
+          logger.log('No memory leaks detected');
+        }
+        
+        // Additional cleanup could be added here (e.g., closing WebAssembly instance)
+        return { success: true, allocationsCleanedUp: allocatedPointers.length };
+      }
     };
     
-    // Add close method if available
-    if (closeFn) {
-      cassette.methods.close = (closeStr: string) => {
-        try {
-          logger.log('Processing close:', closeStr);
-          
-          // Similar approach as req method
-          if (allocFn && deallocFn) {
-            const bytes = new TextEncoder().encode(closeStr);
-            const ptr = allocFn.call(null, bytes.length);
-            
-            const mem = new Uint8Array(memory.buffer);
-            for (let i = 0; i < bytes.length; i++) {
-              mem[ptr + i] = bytes[i];
-            }
-            mem[ptr + bytes.length] = 0; // Null terminator
-            
-            const result = closeFn.call(null, ptr);
-            
-            deallocFn.call(null, ptr, bytes.length);
-            
-            return extractWasmResult(result, memory, deallocFn);
-          }
-          
-          const result = closeFn.call(null, closeStr);
-          return extractWasmResult(result, memory, deallocFn);
-        } catch (error: any) {
-          logger.error('Error in close method:', error);
-          return JSON.stringify({
-            error: error.message || 'Unknown error',
-            notice: ["NOTICE", error.message || 'Unknown error']
-          });
+    // If debug mode is enabled, periodically check for memory leaks
+    if (opts.debug) {
+      logger.log('Setting up memory leak detection');
+      
+      // Check memory status after a delay
+      setTimeout(() => {
+        const memoryStats = cassette.getMemoryStats();
+        if (memoryStats.allocationCount > 0) {
+          logger.warn(`⚠️ Potential memory leak detected: ${memoryStats.allocationCount} allocations have not been freed`);
+          logger.warn('To inspect memory stats, call cassette.getMemoryStats()');
+          logger.warn('To clean up resources, call cassette.dispose()');
         }
-      };
+      }, 10000); // Check after 10 seconds
     }
-    
-    // Optionally expose WebAssembly exports
+
+    // Expose exports if requested
     if (opts.exposeExports) {
-      cassette.exports = exports;
-      cassette.instance = instance;
+      (cassette as any).exports = exports;
+      (cassette as any).instance = instance;
+      (cassette as any).memory = memory;
     }
     
-    logger.log('Cassette loaded successfully:', cassette.name);
+    logger.log(`Cassette loaded successfully: ${name} (v${version})`);
     
     return {
       success: true,
-      cassette
+      cassette,
+      fileName,
+      memory,
+      instance
     };
   } catch (error: any) {
     logger.error('Failed to load cassette:', error);
     return {
       success: false,
-      error: error.message || 'Unknown error loading cassette'
+      error: `Failed to load cassette: ${error.message || error}`
     };
   }
 }

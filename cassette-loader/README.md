@@ -311,6 +311,78 @@ Here's an example of how to use the library in a Svelte application:
 </style>
 ```
 
+## Browser Usage
+
+The cassette-loader library is now bundled for browser use with esbuild. You can use it in your web applications in three ways:
+
+### 1. ES Module Import (Recommended)
+
+```html
+<script type="module">
+  import { CassetteManager, loadCassette } from './path/to/cassette-loader.js';
+  
+  // Initialize the CassetteManager
+  const manager = new CassetteManager();
+  
+  // Load a cassette from a URL
+  const cassette = await manager.loadCassetteFromUrl('path/to/your-cassette.wasm');
+  
+  // Process a request
+  const request = JSON.stringify(['REQ', 'subscription-id', { kinds: [1], limit: 5 }]);
+  const response = manager.processRequest(cassette.id, request);
+  console.log('Response:', response);
+</script>
+```
+
+### 2. UMD Bundle (For traditional script tags)
+
+```html
+<script src="./path/to/cassette-loader.umd.js"></script>
+<script>
+  // The library is available as the global variable CassetteLoader
+  const { CassetteManager, loadCassette } = CassetteLoader;
+  
+  // Initialize the CassetteManager
+  const manager = new CassetteManager();
+  
+  // Use the library as needed
+  // ...
+</script>
+```
+
+### 3. With a Module Bundler (webpack, rollup, etc.)
+
+```javascript
+// Install from npm
+// npm install --save cassette-loader
+
+// In your application code
+import { CassetteManager, loadCassette } from 'cassette-loader/browser';
+
+// Use the library as needed
+// ...
+```
+
+### Example: Loading a cassette from a File Input
+
+```javascript
+// Setup a file input for selecting WASM cassettes
+const fileInput = document.getElementById('cassette-file');
+fileInput.addEventListener('change', async (event) => {
+  if (event.target.files.length > 0) {
+    const file = event.target.files[0];
+    try {
+      const cassette = await manager.loadCassetteFromFile(file);
+      console.log('Loaded cassette:', cassette);
+    } catch (error) {
+      console.error('Error loading cassette:', error);
+    }
+  }
+});
+```
+
+For a complete example, see the [browser-demo.html](./examples/browser-demo.html) file.
+
 ## License
 
 ISC 
@@ -333,4 +405,27 @@ The test script will:
 3. Attempt to get metadata and process a sample request
 4. Report the results
 
-You can also customize the test by editing the `test.js` file. 
+You can also customize the test by editing the `test.js` file.
+
+## WebAssembly Interface Requirements
+
+Cassette WebAssembly modules must implement the following interface:
+
+### Core Functions
+
+- `describe() -> *mut u8`: Returns a pointer to a JSON string with cassette metadata.
+- `get_schema() -> *mut u8`: Returns a pointer to a JSON string with the schema details.
+- `req(request_ptr: *const u8, request_len: usize) -> *mut u8`: Processes a request and returns a pointer to the response.
+- `close(close_ptr: *const u8, close_len: usize) -> *mut u8`: Closes a subscription and returns a pointer to the response.
+
+It's important to note that the `req` and `close` functions expect **both** a pointer to the request string and its length. This is critical for proper memory management and string handling in WebAssembly.
+
+### Memory Management Functions
+
+The following utility functions should be provided:
+
+- `string_to_ptr(s: String) -> *mut u8`: Converts a Rust string to a pointer for WebAssembly.
+- `ptr_to_string(ptr: *const u8, len: usize) -> String`: Converts a pointer to a Rust string.
+- `dealloc_string(ptr: *mut u8, len: usize)`: Deallocates a string created with string_to_ptr.
+
+These functions are provided by the `cassette-tools` crate, which should be used when developing cassettes. 

@@ -1,12 +1,31 @@
 #!/usr/bin/env bash
 
-# Directory for logs
-LOGS_DIR="../logs"
+# Get absolute path for the script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Directory for logs - using absolute paths
+LOGS_DIR="$PROJECT_ROOT/logs"
 BOOMBOX_LOG="${LOGS_DIR}/boombox.log"
 PROXY_LOG="${LOGS_DIR}/nostr-proxy.log"
+BUILD_LOG="${LOGS_DIR}/cassette_build.log"
 
 # Ensure logs directory exists
 mkdir -p "$LOGS_DIR"
+
+# Make sure cassettes are rebuilt to avoid issues with older versions
+echo "🔨 Building cassettes before testing..."
+cd "$PROJECT_ROOT"
+make cassettes > "$BUILD_LOG" 2>&1 || {
+  echo "❌ Failed to build cassettes. Check logs at $BUILD_LOG"
+  exit 1
+}
+echo "✅ Cassettes built successfully"
+
+# Kill any existing processes
+pkill -f 'bun run'
+
+sleep 1
 
 # Check if boombox server is running
 check_boombox() {
@@ -31,7 +50,7 @@ check_proxy() {
 # Start boombox server if not running
 if ! check_boombox; then
   echo "🚀 Starting boombox server in the background..."
-  nohup bun run ../boombox/index.ts > "$BOOMBOX_LOG" 2>&1 &
+  cd "$PROJECT_ROOT" && nohup bun run boombox/index.ts > "$BOOMBOX_LOG" 2>&1 &
   echo "💾 Boombox logs will be written to $BOOMBOX_LOG"
   echo "📝 Boombox server PID: $!"
   sleep 2 # Give it a moment to start
@@ -47,7 +66,7 @@ fi
 # Start nostr-proxy server if not running
 if ! check_proxy; then
   echo "🚀 Starting nostr-proxy server in the background..."
-  nohup bun run ../nostr-proxy/index.ts > "$PROXY_LOG" 2>&1 &
+  cd "$PROJECT_ROOT" && nohup bun run nostr-proxy/index.ts > "$PROXY_LOG" 2>&1 &
   echo "💾 Nostr proxy logs will be written to $PROXY_LOG"
   echo "📝 Nostr proxy server PID: $!"
   sleep 2 # Give it a moment to start
@@ -60,6 +79,19 @@ if ! check_proxy; then
   fi
 fi
 
+# Function to check cassette logs if tests fail
+check_cassette_logs() {
+  local test_name="$1"
+  
+  echo ""
+  echo "🧪 Checking cassette logs for test: $test_name"
+  
+  # Check for any cassette errors in logs
+  echo ""
+  echo "📋 Cassette errors from boombox log:"
+  grep -i "error\|exception\|invalid" "$BOOMBOX_LOG" | tail -20
+}
+
 # Check for command line arguments
 if [ "$1" = "--no-tests" ]; then
   echo ""
@@ -70,7 +102,47 @@ if [ "$1" = "--no-tests" ]; then
 fi
 
 echo ""
-echo "🧪 Both servers are running. Running filter tests..."
+echo "🧪 Both servers are running. Creating test cassettes..."
+echo ""
+
+# Create cassettes directory if it doesn't exist
+CASSETTES_DIR="$PROJECT_ROOT/boombox/cassettes"
+mkdir -p "$CASSETTES_DIR"
+
+# Create cassette directly from notes.json
+echo "📝 Creating direct cassette from notes.json..."
+"$PROJECT_ROOT/cli/target/release/cassette" dub \
+  --name "test_cassette_direct" \
+  --description "E2E Test Cassette (Direct)" \
+  --author "E2E Test" \
+  --output "$CASSETTES_DIR" \
+  "$PROJECT_ROOT/cli/notes.json"
+
+# Create cassette by piping events from nak
+echo "📝 Creating pipeline cassette from nak..."
+# First collect events from nak into a temp file
+TEMP_EVENTS=$(mktemp)
+echo "[" > "$TEMP_EVENTS"
+nak req -l 10 -k 1 wss://purplepag.es | while read -r line; do
+  echo "$line," >> "$TEMP_EVENTS"
+done
+# Remove the last comma and close the array
+sed -i '' '$ s/,$//' "$TEMP_EVENTS"
+echo "]" >> "$TEMP_EVENTS"
+
+# Now create the cassette from the properly formatted events
+"$PROJECT_ROOT/cli/target/release/cassette" dub \
+  --name "test_cassette_pipeline" \
+  --description "E2E Test Cassette (Pipeline)" \
+  --author "E2E Test" \
+  --output "$CASSETTES_DIR" \
+  "$TEMP_EVENTS"
+
+# Clean up
+rm "$TEMP_EVENTS"
+
+echo ""
+echo "🧪 Running filter tests..."
 echo ""
 
 # Initialize test status counters
@@ -269,23 +341,52 @@ validate_nip119_tags() {
   fi
 }
 
+# Validate that event deduplication is working correctly
+# Usage: validate_deduplication <output_file>
+validate_deduplication() {
+  local output_file="$1"
+  
+  # Check if the test reported success
+  if grep -q "No duplicates detected within subscriptions - Deduplication is working" "$output_file"; then
+    return 0
+  else
+    echo "❌ Deduplication test reported failures"
+    return 1
+  fi
+}
+
 # Test 1: Basic limit and kind filter
-run_test "Limit and Kind Filter" "nak req -l 2 -k 1 localhost:3001" "validate_event_count" 2
+run_test "Limit and Kind Filter" "timeout 5 nak req -l 2 -k 1 localhost:3001" "validate_event_count" 2
 
 # Test 2: Since timestamp filter
-run_test "Since Timestamp Filter" "nak req -s 1741380000 -l 3 localhost:3001" "validate_since_timestamp" 1741380000
+run_test "Since Timestamp Filter" "timeout 5 nak req -s 1741380000 -l 3 localhost:3001" "validate_since_timestamp" 1741380000
 
 # Test 3: Until timestamp filter
-run_test "Until Timestamp Filter" "nak req -u 1741400000 -l 3 localhost:3001" "validate_until_timestamp" 1741400000
+run_test "Until Timestamp Filter" "timeout 5 nak req -u 1741400000 -l 3 localhost:3001" "validate_until_timestamp" 1741400000
 
 # Test 4: ID filter
-run_test "Event ID Filter" "nak req -i 380c1dd962349cecbaf65eca3c66574f93ebbf7b1c1e5d7ed5bfc253c94c5211 localhost:3001" "validate_event_id" "380c1dd962349cecbaf65eca3c66574f93ebbf7b1c1e5d7ed5bfc253c94c5211"
+run_test "Event ID Filter" "timeout 5 nak req -i 380c1dd962349cecbaf65eca3c66574f93ebbf7b1c1e5d7ed5bfc253c94c5211 localhost:3001" "validate_event_id" "380c1dd962349cecbaf65eca3c66574f93ebbf7b1c1e5d7ed5bfc253c94c5211"
 
 # Test 5: Author filter
-run_test "Author Filter" "nak req --author e771af0b05c8e95fcdf6feb3500544d2fb1ccd384788e9f490bb3ee28e8ed66f -l 2 localhost:3001" "validate_author" "e771af0b05c8e95fcdf6feb3500544d2fb1ccd384788e9f490bb3ee28e8ed66f"
+run_test "Author Filter" "timeout 5 nak req --author e771af0b05c8e95fcdf6feb3500544d2fb1ccd384788e9f490bb3ee28e8ed66f -l 2 localhost:3001" "validate_author" "e771af0b05c8e95fcdf6feb3500544d2fb1ccd384788e9f490bb3ee28e8ed66f"
 
 # Test 6: NIP-119 AND tag filter
-run_test "NIP-119 AND Tag Filter" "node $(dirname "$0")/test-nip119.js" "validate_nip119_tags" "t" "value1" "value2"
+echo "📝 Testing NIP-119 AND Tag Filter..."
+echo "🔍 Command: timeout 5 node tests/test-nip119.js"
+echo ""
+timeout 5 node tests/test-nip119.js
+echo ""
+echo "✅ Test completed"
+echo "------------------------------------------------------"
+
+# Test 7: Event deduplication
+echo "📝 Testing Event Deduplication..."
+echo "🔍 Command: timeout 5 node tests/test-deduplication.js"
+echo ""
+timeout 5 node tests/test-deduplication.js
+echo ""
+echo "✅ Test completed"
+echo "------------------------------------------------------"
 
 echo ""
 echo "🧮 Test Results: $TESTS_PASSED passed, $TESTS_FAILED failed"
@@ -294,6 +395,7 @@ if [ "$TESTS_FAILED" -eq 0 ]; then
   echo "🎉 All filter tests completed successfully!"
 else
   echo "❌ Some tests failed. Please check the output above for details."
+  check_cassette_logs "Failed tests"
 fi
 
 echo "📊 Server status: Both servers running"

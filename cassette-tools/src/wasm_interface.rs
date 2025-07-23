@@ -1,37 +1,66 @@
 // wasm_interface.rs
 // Standardized WebAssembly interface for Cassette modules
 
-use wasm_bindgen::prelude::*;
-use crate::CassetteSchema;
+/// WebAssembly interface module
+/// 
+/// This module provides the standardized interface that all cassettes must implement.
+/// 
+/// # Example
+/// 
+/// ```rust
+/// use cassette_tools::{Cassette, CassetteSchema};
+/// use serde_json::json;
+/// 
+/// struct MyCassette;
+/// 
+/// impl Cassette for MyCassette {
+///     fn describe() -> String {
+///         "My test cassette".to_string()
+///     }
+///     
+///     fn get_schema() -> CassetteSchema {
+///         CassetteSchema {
+///             title: "Test Cassette".to_string(),
+///             description: "A test cassette".to_string(),
+///             schema_type: "object".to_string(),
+///             properties: json!({}),
+///             required: vec![],
+///             items: None,
+///         }
+///     }
+/// }
+/// ```
 
-/// Define the standard interface that all WebAssembly cassettes must implement
-/// to ensure compatibility across the entire platform.
+// Define the standard interface that all WebAssembly cassettes must implement
+// to ensure compatibility across the entire platform.
 pub trait StandardCassetteInterface {
     /// Get a description of the cassette with metadata
     /// Returns: JSON string with cassette metadata and API description
-    fn describe() -> String;
+    fn describe() -> *mut u8;
     
     /// Get the JSON schema for the cassette
     /// Returns: JSON schema string describing the cassette's data structure
-    fn get_schema() -> String;
+    fn get_schema() -> *mut u8;
     
     /// Process a request and return a response
     /// 
     /// Args:
-    ///   request_json: A string containing the JSON request
+    ///   request_ptr: A pointer to the request string in WebAssembly memory
+    ///   request_len: The length of the request string
     /// 
-    /// Returns: JSON string response
-    fn req(request_json: &str) -> String;
+    /// Returns: Pointer to the response string in WebAssembly memory
+    fn req(request_ptr: *const u8, request_len: usize) -> *mut u8;
     
     /// Close a subscription
     /// 
     /// Args:
-    ///   close_json: A string containing the JSON close command
+    ///   close_ptr: A pointer to the close command string in WebAssembly memory
+    ///   close_len: The length of the close command string
     /// 
-    /// Returns: JSON string response confirming closure
-    fn close(close_json: &str) -> String;
+    /// Returns: Pointer to the response string in WebAssembly memory
+    fn close(close_ptr: *const u8, close_len: usize) -> *mut u8;
     
-    /// Allocate memory for a string (optional)
+    /// Allocate memory for a string
     /// 
     /// Args:
     ///   len: The length of the string to allocate
@@ -39,7 +68,7 @@ pub trait StandardCassetteInterface {
     /// Returns: Pointer to the allocated memory
     fn alloc_string(len: usize) -> *mut u8;
     
-    /// Deallocate memory for a string (optional)
+    /// Deallocate memory for a string
     /// 
     /// Args:
     ///   ptr: Pointer to the memory to deallocate
@@ -47,76 +76,45 @@ pub trait StandardCassetteInterface {
     fn dealloc_string(ptr: *mut u8, len: usize);
 }
 
-/// Helper macro to implement the standard cassette interface
+/// Documentation on how to implement the standard interface
 /// 
-/// This macro helps cassette implementers ensure they follow the standard
-/// interface without having to repeat boilerplate code.
+/// Guidelines for implementing the interface:
 /// 
-/// Usage:
-/// ```
-/// # use cassette_tools::impl_standard_cassette;
-/// # use cassette_tools::Cassette;
-/// # struct MyCassette;
-/// # impl Cassette for MyCassette { /* ... */ }
-/// 
-/// impl_standard_cassette!(MyCassette);
-/// ```
-#[macro_export]
-macro_rules! impl_standard_cassette {
-    ($cassette_type:ty) => {
-        #[wasm_bindgen]
-        impl $cassette_type {
-            #[wasm_bindgen(js_name = describe)]
-            pub fn describe_wasm() -> String {
-                <Self as $crate::Cassette>::describe()
-            }
-            
-            #[wasm_bindgen(js_name = get_schema)]
-            pub fn get_schema_wasm() -> String {
-                <Self as $crate::Cassette>::get_schema_json()
-            }
-            
-            #[wasm_bindgen(js_name = req)]
-            pub fn req_wasm(request_json: &str) -> String {
-                // Implementation should be provided by the user
-                "".to_string()
-            }
-            
-            #[wasm_bindgen(js_name = close)]
-            pub fn close_wasm(close_json: &str) -> String {
-                // Implementation should be provided by the user
-                "".to_string()
-            }
-        }
-    };
-}
-
-/// Documentation on how to implement the standard interface manually
-/// 
-/// If you prefer not to use the macro, you can implement the interface
-/// manually following these guidelines:
-/// 
-/// 1. Use the js_name attribute to ensure consistent function names
-/// 2. Implement all required functions with the exact signatures
-/// 3. Return data in the expected format
+/// 1. Mark functions with #[no_mangle] to ensure they're exported correctly
+/// 2. Use extern "C" to ensure the correct calling convention
+/// 3. Implement all required functions with the exact signatures
+/// 4. Use string_to_ptr and ptr_to_string for string conversion
 /// 
 /// Example implementation:
-/// ```
-/// # use wasm_bindgen::prelude::*;
-/// # use cassette_tools::Cassette;
-/// # struct MyCassette;
-/// # impl Cassette for MyCassette { /* ... */ }
+/// ```rust
+/// use cassette_tools::{string_to_ptr, ptr_to_string, Cassette, CassetteSchema};
+/// use serde_json::json;
 /// 
-/// #[wasm_bindgen]
-/// impl MyCassette {
-///     #[wasm_bindgen(js_name = "describe")]
-///     pub fn describe_wasm() -> String {
-///         // Implementation
-///         "{}".to_string()
+/// struct MyCassette;
+/// 
+/// impl Cassette for MyCassette {
+///     fn describe() -> String {
+///         "My test cassette".to_string()
 ///     }
 ///     
-///     // Other methods...
+///     fn get_schema() -> CassetteSchema {
+///         CassetteSchema {
+///             title: "Test Cassette".to_string(),
+///             description: "A test cassette".to_string(),
+///             schema_type: "object".to_string(),
+///             properties: json!({}),
+///             required: vec![],
+///             items: None,
+///         }
+///     }
 /// }
+/// 
+/// #[no_mangle]
+/// pub extern "C" fn describe() -> *mut u8 {
+///     string_to_ptr(MyCassette::describe())
+/// }
+/// 
+/// // Other methods...
 /// ```
 pub mod docs {
     /// Describes the expected format for the describe() function response

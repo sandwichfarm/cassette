@@ -11,6 +11,70 @@ export interface CassetteMetadata {
 }
 
 /**
+ * Interface for tracking unique events to avoid duplicates
+ */
+export interface EventTracker {
+  /**
+   * Set of event IDs to track unique events
+   */
+  eventIds: Set<string>;
+  
+  /**
+   * Reset the tracker
+   */
+  reset(): void;
+  
+  /**
+   * Add an event ID and check if it was already seen
+   * @param id Event ID to check
+   * @returns true if event is new, false if duplicate
+   */
+  addAndCheck(id: string): boolean;
+  
+  /**
+   * Filter an array of events to remove duplicates
+   * @param events Array of events to filter
+   * @returns Array with duplicates removed
+   */
+  filterDuplicates(events: any[]): any[];
+}
+
+/**
+ * Memory statistics for a cassette
+ */
+export interface CassetteMemoryStats {
+  /**
+   * Array of currently allocated memory pointers
+   */
+  allocatedPointers: number[];
+  
+  /**
+   * Number of currently allocated memory blocks
+   */
+  allocationCount: number;
+  
+  /**
+   * Memory information
+   */
+  memory: {
+    /**
+     * Total number of WebAssembly memory pages
+     */
+    totalPages: number;
+    
+    /**
+     * Total bytes in WebAssembly memory
+     */
+    totalBytes: number;
+    
+    /**
+     * Estimate of memory usage status
+     */
+    usageEstimate: string;
+  };
+}
+
+/**
  * Interface for a loaded Cassette with its methods
  */
 export interface Cassette {
@@ -22,7 +86,7 @@ export interface Cassette {
   /**
    * Original file name of the cassette
    */
-  fileName: string;
+  fileName?: string;
   
   /**
    * Cassette name from metadata
@@ -44,21 +108,24 @@ export interface Cassette {
    */
   methods: {
     /**
-     * Get cassette metadata
+     * Get description and metadata for the cassette
      */
     describe: () => string;
     
     /**
-     * Process a request with the cassette
-     * @param requestStr Request string in JSON format
+     * Process a request and return a response
      */
     req: (requestStr: string) => string;
     
     /**
-     * Close a subscription with the cassette
-     * @param closeStr Close string in JSON format
+     * Process a close command (optional)
      */
     close?: (closeStr: string) => string;
+    
+    /**
+     * Get JSON schema for the cassette (optional)
+     */
+    getSchema?: () => string;
   };
   
   /**
@@ -75,6 +142,23 @@ export interface Cassette {
    * WebAssembly memory
    */
   memory?: WebAssembly.Memory;
+  
+  /**
+   * Event tracker for deduplication
+   */
+  eventTracker?: EventTracker;
+  
+  /**
+   * Get memory statistics for the cassette
+   * Used to detect memory leaks
+   */
+  getMemoryStats: () => CassetteMemoryStats;
+  
+  /**
+   * Dispose of the cassette and clean up resources
+   * Returns information about the cleanup operation
+   */
+  dispose: () => { success: boolean; allocationsCleanedUp: number };
 }
 
 /**
@@ -100,6 +184,21 @@ export interface CassetteLoaderOptions {
    * Debug mode (enables extra logging)
    */
   debug?: boolean;
+  
+  /**
+   * Whether to enable event deduplication
+   */
+  deduplicateEvents?: boolean;
+
+  /**
+   * Explicitly use browser memory management
+   */
+  useBrowserMemory?: boolean;
+
+  /**
+   * Force Node.js environment for memory management
+   */
+  forceNodeEnvironment?: boolean;
 }
 
 /**
@@ -107,19 +206,34 @@ export interface CassetteLoaderOptions {
  */
 export interface CassetteLoadResult {
   /**
-   * Whether the cassette was loaded successfully
+   * Whether the load was successful
    */
   success: boolean;
   
   /**
-   * The loaded cassette (if success is true)
+   * Error message if load failed
+   */
+  error?: string;
+  
+  /**
+   * The loaded cassette, if successful
    */
   cassette?: Cassette;
   
   /**
-   * Error message (if success is false)
+   * Original filename of the cassette
    */
-  error?: string;
+  fileName?: string;
+  
+  /**
+   * WebAssembly memory
+   */
+  memory?: WebAssembly.Memory;
+  
+  /**
+   * WebAssembly instance
+   */
+  instance?: WebAssembly.Instance;
 }
 
 /**
@@ -135,4 +249,21 @@ export class CassetteLoadError extends Error {
     super(message);
     this.name = 'CassetteLoadError';
   }
+}
+
+/**
+ * Object containing available methods for interacting with a cassette
+ */
+export interface CassetteMethods {
+  /** Get metadata about the cassette */
+  describe: () => string;
+  
+  /** Process a request and return a response */
+  req: (requestStr: string) => string;
+  
+  /** Close a subscription (optional) */
+  close?: (closeStr: string) => string;
+  
+  /** Get JSON schema for the cassette (optional) */
+  getSchema?: () => string;
 } 

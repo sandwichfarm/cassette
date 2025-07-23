@@ -12,7 +12,8 @@ import {
   CassetteLoadError,
   CassetteLoadResult,
   CassetteMetadata,
-  CassetteSource
+  CassetteSource,
+  EventTracker
 } from './types.js';
 
 // Export error classes
@@ -26,7 +27,8 @@ export {
   isBrowser,
   isNode,
   generateCassetteId,
-  createLogger
+  createLogger,
+  createEventTracker
 } from './utils.js';
 
 // Re-export types for consumers
@@ -35,13 +37,14 @@ export type {
   CassetteLoaderOptions,
   CassetteLoadResult,
   CassetteMetadata,
-  CassetteSource
+  CassetteSource,
+  EventTracker
 };
 
 /**
  * Version of the cassette-loader package
  */
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 
 /**
  * Check if WebAssembly is supported in the current environment

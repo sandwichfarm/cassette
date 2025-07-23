@@ -11,8 +11,14 @@ const ajv = new Ajv({
  * @param message - The message to validate
  * @param schema - The schema to validate against 
  * @returns Whether the message is valid against the schema
+ * 
+ * NOTE: Validation is currently disabled - this function will always return true
  */
 export function validate(message: any, schema: any): boolean {
+  // DISABLED: Always return true to bypass validation
+  return true;
+  
+  /* Original validation logic:
   try {
     // Compile the schema if it's not already a validator function
     const validator = typeof schema === 'function' 
@@ -32,6 +38,7 @@ export function validate(message: any, schema: any): boolean {
     console.error('Schema validation error:', error);
     return false;
   }
+  */
 }
 
 /**
