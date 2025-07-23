@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        type: string
+        required: true
+        default: 'v0.1.0'
+        description: 'Tag for the release'
+        
 
 env:
   CARGO_TERM_COLOR: always
@@ -70,10 +78,10 @@ jobs:
           echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
 
-      - name: Build binary
+      - name: Prepare Cargo.toml (non-Windows)
+        if: runner.os != 'Windows'
         run: |
           cd cli
-          # Temporarily remove the library section from Cargo.toml
           cp Cargo.toml Cargo.toml.bak
           # Remove the [lib] section and its content
           awk '
@@ -82,14 +90,47 @@ jobs:
             /^\[/ && in_lib { in_lib = 0 }
             !in_lib { print }
           ' Cargo.toml.bak > Cargo.toml
+
+      - name: Prepare Cargo.toml (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd cli
+          Copy-Item Cargo.toml Cargo.toml.bak
+          # Remove the [lib] section using PowerShell
+          $content = Get-Content Cargo.toml.bak
+          $output = @()
+          $inLib = $false
+          foreach ($line in $content) {
+            if ($line -match '^\[lib\]') {
+              $inLib = $true
+            } elseif ($line -match '^\[' -and $inLib) {
+              $inLib = $false
+              $output += $line
+            } elseif (-not $inLib) {
+              $output += $line
+            }
+          }
+          $output | Set-Content Cargo.toml
+
+      - name: Build binary
+        run: |
+          cd cli
           cargo build --release --target ${{ matrix.platform.target }} --bin cassette
-          # Restore Cargo.toml (force overwrite on all platforms)
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            Move-Item -Path Cargo.toml.bak -Destination Cargo.toml -Force
-          else
-            mv -f Cargo.toml.bak Cargo.toml
-          fi
           cd ..
+
+      - name: Restore Cargo.toml (non-Windows)
+        if: runner.os != 'Windows'
+        run: |
+          cd cli
+          mv -f Cargo.toml.bak Cargo.toml
+
+      - name: Restore Cargo.toml (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd cli
+          Move-Item -Path Cargo.toml.bak -Destination Cargo.toml -Force
           
       - name: Package as archive
         shell: bash
