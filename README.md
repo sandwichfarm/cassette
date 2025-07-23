@@ -141,8 +141,9 @@ cargo build --release
 cassette/
 ├── cli/                    # Command-line interface
 ├── cassette-tools/         # Core WASM functionality
-├── cassette-loader/        # JavaScript loader for cassettes
-├── cassette-loader-py/     # Python loader for cassettes
+├── loaders/                # Language-specific cassette loaders
+│   ├── js/                 # JavaScript/TypeScript loader
+│   └── py/                 # Python loader
 ├── boombox/               # WebSocket relay server for cassettes
 └── gui/                   # Web interface for testing
 ```

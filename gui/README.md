@@ -82,13 +82,13 @@ Open http://localhost:8080 in your browser.
 
 ## Architecture
 
-The GUI uses the `cassette-loader` library to:
+The GUI uses the JavaScript loader library to:
 1. Load WebAssembly modules in the browser
 2. Handle memory management between JavaScript and WASM
 3. Provide a consistent interface for cassette communication
 
 ```javascript
-import { CassetteLoader } from './lib/cassette-loader/index.js';
+import { CassetteLoader } from '../loaders/js/dist/browser/cassette-loader.js';
 
 // Load a cassette
 const loader = new CassetteLoader();
@@ -175,4 +175,4 @@ Tested on:
 
 - **CLI**: Command-line interface for cassette operations
 - **Boombox**: WebSocket server for serving cassettes as relays
-- **cassette-loader**: JavaScript library for loading cassettes
+- **loaders/js**: JavaScript library for loading cassettes

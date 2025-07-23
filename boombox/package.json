@@ -17,7 +17,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@cassette/loader": "file:../cassette-loader",
+    "@cassette/loader": "file:../loaders/js",
     "ajv": "^8.11.0"
   }
 }

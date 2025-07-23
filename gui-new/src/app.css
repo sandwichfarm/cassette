@@ -1,0 +1,40 @@
+@import 'tailwindcss/base';
+@import 'tailwindcss/components';
+@import 'tailwindcss/utilities';
+
+@layer base {
+  body {
+    @apply bg-gray-900 text-gray-100;
+  }
+}
+
+@layer components {
+  .cassette-button {
+    @apply px-4 py-2 bg-cassette-silver text-cassette-black font-bold rounded-sm 
+           shadow-lg transform transition-all duration-75
+           hover:scale-105 active:scale-95 active:shadow-md;
+  }
+
+  .cassette-display {
+    @apply bg-black border-2 border-cassette-silver rounded-sm p-4 
+           font-mono text-green-400 shadow-inner;
+  }
+
+  .tape-reel {
+    @apply w-20 h-20 bg-gray-800 rounded-full border-4 border-gray-700
+           flex items-center justify-center;
+  }
+
+  .tape-reel-inner {
+    @apply w-12 h-12 bg-tape-brown rounded-full border-2 border-gray-900;
+  }
+
+  .vu-meter {
+    @apply h-2 bg-gray-800 rounded-full overflow-hidden;
+  }
+
+  .vu-meter-bar {
+    @apply h-full bg-gradient-to-r from-green-400 via-yellow-400 to-red-500 
+           transition-all duration-100;
+  }
+}

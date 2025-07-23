@@ -8,7 +8,7 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
-    "cassette-loader": "file:../cassette-loader",
+    "cassette-loader": "file:../loaders/js",
     "express": "^4.18.2"
   },
   "devDependencies": {

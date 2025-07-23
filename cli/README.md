@@ -163,7 +163,7 @@ cassette dub archives-*.wasm all-articles.wasm \
 Cassettes can be:
 - Loaded by the Boombox server to serve as Nostr relays
 - Queried directly via CLI for offline access
-- Imported by JavaScript/Python applications using cassette-loader
+- Imported by JavaScript/Python applications using the respective loaders
 - Tested in the browser using the GUI interface
 
 ## Development

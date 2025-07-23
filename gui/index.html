@@ -277,10 +277,10 @@
     }
     
     // Try loading from various paths - add more relative paths and absolute paths
-    loadScript('../cassette-loader/dist/browser/cassette-loader.umd.js')
-      .catch(() => loadScript('../../cassette-loader/dist/browser/cassette-loader.umd.js'))
+    loadScript('../loaders/js/dist/browser/cassette-loader.umd.js')
+      .catch(() => loadScript('../../loaders/js/dist/browser/cassette-loader.umd.js'))
       .catch(() => loadScript('./node_modules/cassette-loader/dist/browser/cassette-loader.umd.js'))
-      .catch(() => loadScript('/cassette-loader/dist/browser/cassette-loader.umd.js'))
+      .catch(() => loadScript('/loaders/js/dist/browser/cassette-loader.umd.js'))
       // Add these new paths
       .catch(() => loadScript('/node_modules/cassette-loader/dist/browser/cassette-loader.umd.js'))
       .catch(() => loadScript('../node_modules/@cassette-loader/dist/browser/cassette-loader.umd.js'))
@@ -303,10 +303,10 @@
         addLogEntryDirect('Using CassetteManager from UMD bundle', 'receive');
       } else {
         // Try different import paths based on our findings
-        const module = await import('../../cassette-loader/dist/browser/cassette-loader.js')
+        const module = await import('../../loaders/js/dist/browser/cassette-loader.js')
           .catch(error => {
             console.error('First import path failed:', error);
-            return import('../cassette-loader/dist/browser/cassette-loader.js');
+            return import('../loaders/js/dist/browser/cassette-loader.js');
           })
           .catch(error => {
             console.error('Second import path failed:', error);

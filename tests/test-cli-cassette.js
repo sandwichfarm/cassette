@@ -1,5 +1,5 @@
 // Test script for CLI-generated cassette
-import { loadCassette } from '../cassette-loader/dist/src/index.js';
+import { loadCassette } from '../loaders/js/dist/src/index.js';
 import fs from 'fs';
 import path from 'path';
 

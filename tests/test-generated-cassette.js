@@ -3,7 +3,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { loadCassette } from '../cassette-loader/dist/src/index.js';
+import { loadCassette } from '../loaders/js/dist/src/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

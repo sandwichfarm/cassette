@@ -52,8 +52,8 @@ Tests that connect to the Boombox server:
 # Install dependencies
 npm install
 
-# Build cassette-loader
-cd ../cassette-loader && npm run build
+# Build JavaScript loader
+cd ../loaders/js && npm run build
 
 # Ensure test cassettes exist
 cd ../cli && cargo run record ../tests/test-events.json --name test-cassette
@@ -96,7 +96,7 @@ The `cassettes/` subdirectory contains test cassette files used by various tests
 ### Direct Cassette Test Template
 
 ```javascript
-import { loadCassette } from '../cassette-loader/dist/src/index.js';
+import { loadCassette } from '../loaders/js/dist/src/index.js';
 
 async function test() {
   const cassette = await loadCassette('../cassettes/test.wasm');
@@ -142,7 +142,7 @@ ws.on('message', (data) => {
 1. **Memory Issues**: Use `test-cassette-memory.js` with verbose logging
 2. **Protocol Issues**: Check server logs in `../logs/boombox.log`
 3. **WebSocket Issues**: Use browser DevTools or `wscat` for manual testing
-4. **WASM Loading**: Enable debug mode in cassette-loader
+4. **WASM Loading**: Enable debug mode in the JavaScript loader
 
 ## Common Issues
 
