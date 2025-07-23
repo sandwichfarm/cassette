@@ -337,44 +337,82 @@ fn process_req_command(
     
     // Allocate memory for the request string
     let req_bytes = req_string.as_bytes();
-    let req_ptr = alloc_func.call(&mut store, req_bytes.len() as i32)?;
+    // Collect all events in a loop
+    let mut all_events = Vec::new();
     
-    if req_ptr == 0 {
-        return Err(anyhow!("Failed to allocate memory for request"));
-    }
-    
-    // Write request to memory
-    memory.write(&mut store, req_ptr as usize, req_bytes)?;
-    
-    // Call the req function
-    let result_ptr = req_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
-    
-    // Deallocate request memory
-    dealloc_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
-    
-    if result_ptr == 0 {
-        return Err(anyhow!("req function returned null pointer"));
-    }
-    
-    // Read the result
-    let result = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
-    
-    // Parse and output the result
-    let parsed_result: Value = serde_json::from_str(&result)?;
-    
-    match output_format {
-        "ndjson" => {
-            // For NDJSON, output each event on its own line
-            if let Some(arr) = parsed_result.as_array() {
-                if arr.len() >= 3 && arr[0].as_str() == Some("EVENT") {
-                    // Single EVENT response
-                    println!("{}", serde_json::to_string(&arr[2])?);
+    loop {
+        // Allocate memory for the request string for each call
+        let req_ptr = alloc_func.call(&mut store, req_bytes.len() as i32)?;
+        
+        if req_ptr == 0 {
+            return Err(anyhow!("Failed to allocate memory for request"));
+        }
+        
+        // Write request to memory
+        memory.write(&mut store, req_ptr as usize, req_bytes)?;
+        
+        // Call the req function
+        let result_ptr = req_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
+        
+        // Deallocate request memory immediately after use
+        dealloc_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
+        
+        if result_ptr == 0 {
+            break; // No more events
+        }
+        
+        // Read the result
+        let result = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
+        
+        // Try to deallocate the result pointer
+        if let Ok(get_size_func) = instance.get_typed_func::<i32, i32>(&mut store, "get_allocation_size") {
+            let size = get_size_func.call(&mut store, result_ptr)?;
+            if size > 0 && dealloc_func.call(&mut store, (result_ptr, size)).is_ok() {
+                // Successfully deallocated result
+            }
+        }
+        
+        // Parse the result
+        let parsed_result: Value = serde_json::from_str(&result)?;
+        
+        if let Some(arr) = parsed_result.as_array() {
+            if arr.len() >= 2 {
+                match arr[0].as_str() {
+                    Some("EVENT") => {
+                        if arr.len() >= 3 {
+                            all_events.push(arr[2].clone());
+                        }
+                    }
+                    Some("EOSE") => {
+                        break; // End of events
+                    }
+                    Some("NOTICE") => {
+                        // Check for "No more events" message
+                        if result.contains("No more events") {
+                            break;
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
+    }
+    
+    // Output all collected events based on format
+    match output_format {
+        "ndjson" => {
+            // For NDJSON, output each event on its own line
+            for event in &all_events {
+                println!("{}", serde_json::to_string(&event)?);
+            }
+        }
         _ => {
-            // Default JSON output
-            println!("{}", serde_json::to_string_pretty(&parsed_result)?);
+            // Default JSON output - output as array
+            if all_events.len() == 1 {
+                println!("{}", serde_json::to_string_pretty(&all_events[0])?);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&all_events)?);
+            }
         }
     }
     
@@ -818,7 +856,7 @@ enum Commands {
     },
     
     /// Send a REQ message to a cassette and get events
-    Req {
+    Play {
         /// Path to the cassette WASM file
         cassette: PathBuf,
         
@@ -952,7 +990,7 @@ fn main() -> Result<()> {
                 *until,
             )
         }
-        Commands::Req {
+        Commands::Play {
             cassette,
             subscription,
             filter,

@@ -1,4 +1,10 @@
 {
+  "scripts": {
+    "gui:dev": "cd gui-new && npm run dev",
+    "gui:build": "cd gui-new && npm run build",
+    "gui:preview": "cd gui-new && npm run preview",
+    "gui:install": "cd gui-new && npm install"
+  },
   "dependencies": {
     "ws": "^8.18.1"
   }

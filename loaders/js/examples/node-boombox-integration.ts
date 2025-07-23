@@ -10,7 +10,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { URL } from 'url';
 
 // Import the cassette-loader
-import { loadCassette, Cassette, isWebAssemblySupported, ENV_INFO } from '../src/index.js';
+import { loadCassette, Cassette, isWebAssemblySupported, ENV_INFO } from '../../loaders/js/src/index.js';
 
 // Get the current directory
 const __filename = fileURLToPath(import.meta.url);

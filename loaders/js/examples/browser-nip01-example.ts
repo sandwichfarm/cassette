@@ -8,7 +8,7 @@ import {
   loadCassetteFromArrayBuffer,
   subscribeToEvents,
   Cassette
-} from '../src/browser.js';
+} from '../../loaders/js/src/browser.js';
 
 /**
  * Example 1: Using the CassetteManager class

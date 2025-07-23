@@ -22,16 +22,16 @@ cassette record events.json --name my-notes
 
 ```bash
 # Get all events
-cassette req my-notes.wasm
+cassette play my-notes.wasm
 
 # Filter by kind
-cassette req my-notes.wasm --kinds 1
+cassette play my-notes.wasm --kinds 1
 
 # Filter by author
-cassette req my-notes.wasm --authors npub1...
+cassette play my-notes.wasm --authors npub1...
 
 # Multiple filters
-cassette req my-notes.wasm --kinds 1 --kinds 7 --limit 10
+cassette play my-notes.wasm --kinds 1 --kinds 7 --limit 10
 ```
 
 ### Combine multiple cassettes
@@ -78,7 +78,7 @@ cassette record my-events.json --name "my-backup"
 ### `req` - Query cassettes
 
 ```bash
-cassette req [OPTIONS] <CASSETTE>
+cassette play [OPTIONS] <CASSETTE>
 
 # Options:
 #   -s, --subscription  Subscription ID (default: sub1)
@@ -91,9 +91,9 @@ cassette req [OPTIONS] <CASSETTE>
 #   -o, --output       Output format: json or ndjson
 
 # Examples:
-cassette req my-notes.wasm --kinds 1 --limit 50
-cassette req archive.wasm --filter '{"#t": ["bitcoin", "lightning"]}'
-cassette req events.wasm --output ndjson | grep "pattern"
+cassette play my-notes.wasm --kinds 1 --limit 50
+cassette play archive.wasm --filter '{"#t": ["bitcoin", "lightning"]}'
+cassette play events.wasm --output ndjson | grep "pattern"
 ```
 
 ### `dub` - Combine cassettes
