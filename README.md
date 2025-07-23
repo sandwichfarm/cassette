@@ -1,367 +1,213 @@
-# SandwichsFavs Cassette
+# Cassette
 
-A WASM-based Nostr relay implementation for the Cassette platform. This project demonstrates how to implement NIP-01 and NIP-119 compliant Nostr relay functionality using WebAssembly.
+Store Nostr events in portable WebAssembly modules. Query them like a relay.
 
-## Project Overview
+## Quick Start
 
-The project consists of:
+Download the latest binary from [releases](https://github.com/dskvr/cassette/releases/latest).
 
-- **sandwichs-favs**: A Rust implementation of a Nostr relay that gets compiled to WebAssembly
-- **boombox**: A TypeScript server that loads and interacts with the WebAssembly module
-- **nostr-proxy**: A WebSocket proxy for testing Nostr clients
-- **cassettes**: Directory containing all WebAssembly cassette modules and their bindings
-- **cassette-tools**: Rust library for building standardized WebAssembly cassettes
-- **cli**: Command-line tool for creating and managing cassettes
+### Create a cassette from Nostr events
 
-## Directory Structure
+```bash
+# From a relay
+nak req -k 1 -l 100 wss://nos.lol | cassette record --name my-notes
 
-- `cassettes/`: Contains all WebAssembly (.wasm) files and their JavaScript bindings
-- `boombox/`: WebSocket server that loads and runs cassettes
-- `cli/`: Command-line tool for creating cassettes from events or templates
-- `cassette-tools/`: Shared Rust library for implementing the standardized interface
-- `gui/`: Web interface for testing and managing cassettes
-- `test-standardized-interface/`: Example implementation of the standardized interface
+# From a file
+cassette record events.json --name my-notes
 
-## Build Instructions
+# Output: my-notes.wasm
+```
+
+### Query a cassette
+
+```bash
+# Get all events
+cassette req my-notes.wasm
+
+# Filter by kind
+cassette req my-notes.wasm --kinds 1
+
+# Filter by author
+cassette req my-notes.wasm --authors npub1...
+
+# Multiple filters
+cassette req my-notes.wasm --kinds 1 --kinds 7 --limit 10
+```
+
+### Combine multiple cassettes
+
+```bash
+# Merge cassettes
+cassette dub alice.wasm bob.wasm combined.wasm
+
+# Merge with filters
+cassette dub *.wasm filtered.wasm --kinds 1 --since 1700000000
+```
+
+## What is a Cassette?
+
+A cassette is a WebAssembly module containing Nostr events that implements the NIP-01 relay protocol. Think of it as a portable, queryable database that runs anywhere WebAssembly does - browsers, servers, edge workers, or CLI tools.
+
+### Use Cases
+
+- **Archival**: Store important events in a portable format
+- **Testing**: Create deterministic test fixtures for Nostr clients
+- **Offline**: Query events without network access
+- **Distribution**: Share curated event collections
+- **Privacy**: Keep events local while maintaining relay compatibility
+
+## CLI Commands
+
+### `record` - Create cassettes from events
+
+```bash
+cassette record [OPTIONS] [INPUT_FILE]
+
+# Options:
+#   -n, --name         Name for the cassette
+#   -d, --description  Description of contents
+#   -a, --author       Author/curator name
+#   -o, --output       Output directory (default: ./cassettes)
+#   --no-bindings      Skip JavaScript bindings, WASM only
+
+# Examples:
+nak req -k 30023 wss://relay.nostr.band | cassette record -n "long-form"
+cassette record my-events.json --name "my-backup"
+```
+
+### `req` - Query cassettes
+
+```bash
+cassette req [OPTIONS] <CASSETTE>
+
+# Options:
+#   -s, --subscription  Subscription ID (default: sub1)
+#   -f, --filter       Custom filter JSON
+#   -k, --kinds        Event kinds to return
+#   -a, --authors      Filter by authors
+#   -l, --limit        Maximum events to return
+#   --since            Events after timestamp
+#   --until            Events before timestamp
+#   -o, --output       Output format: json or ndjson
+
+# Examples:
+cassette req my-notes.wasm --kinds 1 --limit 50
+cassette req archive.wasm --filter '{"#t": ["bitcoin", "lightning"]}'
+cassette req events.wasm --output ndjson | grep "pattern"
+```
+
+### `dub` - Combine cassettes
+
+```bash
+cassette dub [OPTIONS] <CASSETTES...> <OUTPUT>
+
+# Options:
+#   -n, --name         Name for output cassette
+#   -d, --description  Description
+#   -a, --author       Author/curator
+#   -f, --filter       Apply filters when combining
+#   -k, --kinds        Include only these kinds
+#   --authors          Include only these authors
+#   -l, --limit        Limit total events
+#   --since            Events after timestamp
+#   --until            Events before timestamp
+
+# Examples:
+cassette dub cassette1.wasm cassette2.wasm combined.wasm
+cassette dub *.wasm all-events.wasm --name "Complete Archive"
+cassette dub raw/*.wasm clean.wasm --kinds 1 --kinds 30023
+```
+
+## Building from Source
 
 ### Prerequisites
 
 - Rust and Cargo
-- [Bun](https://bun.sh/) for running TypeScript code and scripts
-- [nak](https://github.com/fiatjaf/nak) (recommended for testing)
+- wasm32-unknown-unknown target: `rustup target add wasm32-unknown-unknown`
 
-### Building the WASM Module
-
-You can build the WebAssembly module using the Makefile:
+### Build
 
 ```bash
-make build-wasm
-```
+git clone https://github.com/dskvr/cassette.git
+cd cassette
+cargo build --release
 
-This will:
-1. Navigate to the `sandwichs-favs` directory and build the Rust project targeting WebAssembly
-2. Process the WASM file to generate JavaScript bindings and place them in the `cassettes` directory
-
-If you prefer to do this manually:
-
-1. Navigate to the `sandwichs-favs` directory and build the Rust project targeting WebAssembly:
-   ```bash
-   cd sandwichs-favs
-   cargo build --target wasm32-unknown-unknown
-   ```
-
-2. Process the WASM file to generate JavaScript bindings in the cassettes directory:
-   ```bash
-   cd ..
-   bun boombox/scripts/process-wasm.js
-   ```
-
-### Building Custom Cassettes
-
-To build a custom cassette and place it in the cassettes directory:
-
-1. Create a new cassette project or use an existing one:
-   ```bash
-   cd test-standardized-interface
-   cargo build --target wasm32-unknown-unknown --release
-   ```
-
-2. Copy the WebAssembly file to the cassettes directory:
-   ```bash
-   cp target/wasm32-unknown-unknown/release/test_standardized_interface.wasm ../cassettes/
-   ```
-
-3. Generate JavaScript bindings:
-   ```bash
-   cd ..
-   wasm-bindgen cassettes/test_standardized_interface.wasm --out-dir cassettes --target web
-   ```
-
-### Running the Integration Tests
-
-The project includes several Makefile commands to simplify testing:
-
-```bash
-# Run all integration tests (starts services if needed)
-make test
-
-# Only start the boombox and nostr-proxy services without running tests
-make start-services
-
-# Run just the filter tests (assumes services are already running)
-make test-filters
-
-# Display all available commands
-make help
-```
-
-After the servers are running, you can manually test the Nostr relay functionality with various commands:
-
-```bash
-# Request 5 notes of kind 1
-nak req -l 5 -k 1 localhost:3001
-
-# Request notes with timestamps after a specific time
-nak req -s 1741380000 localhost:3001
-
-# Request notes with timestamps before a specific time
-nak req -u 1741400000 localhost:3001
-
-# Request notes by a specific ID
-nak req -i 380c1dd962349cecbaf65eca3c66574f93ebbf7b1c1e5d7ed5bfc253c94c5211 localhost:3001
-
-# Request notes with NIP-119 AND tag filtering (notes that have both 'value1' AND 'value2' t-tags)
-make test-filters
-```
-
-### Logs and Debugging
-
-Logs are stored in the `logs` directory:
-
-```bash
-# View boombox logs
-tail -f ./logs/boombox.log
-
-# View nostr-proxy logs
-tail -f ./logs/nostr-proxy.log
-```
-
-To stop all servers and clean up logs:
-
-```bash
-make clean
-```
-
-## Nostr Protocol Implementation
-
-The WebAssembly module implements the following NIP specifications:
-
-### NIP-01: Basic Protocol
-
-1. **REQ**: For requesting notes with various filters:
-   - `kinds`: Filter by event kind
-   - `authors`: Filter by author public key
-   - `ids`: Filter by specific event IDs
-   - `since`: Filter by timestamps after a specific time
-   - `until`: Filter by timestamps before a specific time
-   - `limit`: Limit the number of results
-   - `#e`, `#p`, etc.: Filter by tags
-
-2. **EVENT**: For sending events from the relay to clients
-
-3. **CLOSE**: For closing subscriptions
-
-### NIP-119: AND Tag Queries
-
-This implementation supports AND conditions for tag filtering using the '&' prefix:
-
-- `&t`: Match events with ALL specified 't' tag values
-- `&e`: Match events with ALL specified 'e' tag values
-- etc.
-
-This allows for more precise filtering by requiring that all specified values for a given tag type must be present, rather than just any one of them.
-
-Example usage in a test script:
-```javascript
-// Request events that have both 'value1' AND 'value2' as 't' tags
-const reqMsg = ['REQ', '1:', {'&t': ['value1', 'value2']}];
+# Binary will be at: target/release/cassette
 ```
 
 ## Project Structure
 
-- `sandwichs-favs/`: The Rust WebAssembly implementation
-  - `src/lib.rs`: The core Rust implementation of NIP-01 functionality
-  - `notes.json`: Sample note data used by the relay
-
-- `boombox/`: The TypeScript server that loads the WebAssembly module
-  - `index.ts`: The main server implementation
-  - `wasm/`: Directory for processed WebAssembly files
-  - `scripts/process-wasm.js`: Script for processing the WASM file
-
-- `nostr-proxy/`: A WebSocket proxy for testing
-  - `index.ts`: The proxy server implementation
-
-- `tests/`: Integration tests
-  - `integration-test.sh`: Main integration test script
-  - `test-nip119.js`: Tests NIP-119 AND tag filtering
-
-## Advanced Customization
-
-### Adding New Methods to the WebAssembly Module
-
-1. Add the method to the Rust code in `sandwichs-favs/src/lib.rs`
-2. Rebuild the WebAssembly module with `make build-wasm`
-3. Update the bindings (if needed) with:
-   ```bash
-   echo "method1,method2" | bun scripts/update-wasm-bindings.js
-   ```
-
-For more details on the WebAssembly binding structure and common issues, see the `WASM-QUICKSTART.md` file.
-
-# Cassette Project
-
-This project provides a framework for creating and testing Nostr relay cassettes - WebAssembly modules that can simulate relay behavior for testing client applications.
-
-## Directory Structure
-
-- **cli/** - Command-line interface for generating and managing cassettes
-- **cassette-tools/** - Core library for cassette development
-- **boombox/** - Node.js/Bun runtime for running cassettes in a server environment
-- **gui/** - Web interface for testing cassettes directly in the browser
-
-## Standardized WebAssembly Interface
-
-The Cassette Project uses a standardized WebAssembly interface, which allows cassettes to be distributed as standalone `.wasm` files without requiring JavaScript bindings.
-
-### Key Benefits
-
-- **Simplified Distribution**: Only the `.wasm` file is required for distribution
-- **No Binding Files**: No need to generate or distribute JavaScript binding files for each cassette
-- **Consistent Interface**: All cassettes implement the same interface, making them easily interchangeable
-- **More Efficient**: Smaller download size, simpler loading process
-
-### Standard Interface Functions
-
-All cassettes implement these standard functions, which are accessed directly by the framework:
-
-- **describe()** - Returns JSON metadata about the cassette
-- **getSchema()** - Returns JSON schema for the cassette
-- **req(requestJson)** - Processes requests and returns responses
-- **close(closeJson)** - Handles subscription closures
-- **allocString(len)** and **deallocString(ptr, len)** - Optional memory management helpers
-
-### Loading WebAssembly Cassettes
-
-Both the Boombox server and the GUI interface can load WebAssembly cassettes directly:
-
-```javascript
-// Create a standardized import object
-const importObject = {
-  env: { memory: new WebAssembly.Memory({ initial: 16 }) },
-  // Minimal required helpers
-  __wbindgen_placeholder__: {
-    __wbindgen_string_new: (ptr, len) => { /* String helper */ },
-    __wbindgen_throw: (ptr, len) => { /* Error helper */ }
-  }
-};
-
-// Instantiate the WebAssembly module
-const result = await WebAssembly.instantiate(wasmArrayBuffer, importObject);
-const exports = result.instance.exports;
-
-// Access the standardized interface
-const metadata = exports.describe();
-const response = exports.req(requestJson);
+```
+cassette/
+├── cli/                    # Command-line interface
+├── cassette-tools/         # Core WASM functionality
+├── cassette-loader/        # JavaScript loader for cassettes
+├── cassette-loader-py/     # Python loader for cassettes
+├── boombox/               # WebSocket relay server for cassettes
+└── gui/                   # Web interface for testing
 ```
 
-### Building Cassettes
+### Components
 
-When building cassettes with the CLI, you can use the `--no-bindings` flag to skip JavaScript binding generation:
+- **CLI**: Command-line tool for creating and querying cassettes
+- **Cassette Tools**: Rust library providing memory management and NIP-01 implementation helpers
+- **Loaders**: Language-specific libraries for loading and executing cassettes
+- **Boombox**: WebSocket server that serves cassettes as Nostr relays
+- **GUI**: Web interface for testing cassettes in the browser
 
-```bash
-cassette dub --no-bindings -n "My Cassette" -d "Description" -a "Author" input.json
+## WebAssembly Interface
+
+Cassettes implement a standardized WebAssembly interface:
+
+```rust
+// Required exports
+fn describe() -> String      // Metadata about the cassette
+fn req(ptr, len) -> ptr     // Handle REQ messages
+fn close(ptr, len) -> ptr   // Handle CLOSE messages
+
+// Memory management
+fn alloc_buffer(size) -> ptr
+fn dealloc_string(ptr, len)
+fn get_allocation_size(ptr) -> size
 ```
 
-This will generate just the `.wasm` file, which can be directly loaded by the Boombox server or GUI interface.
+This allows cassettes to be loaded by any compatible runtime without language-specific bindings.
 
-For more details, see the [WASM-QUICKSTART.md](WASM-QUICKSTART.md) guide.
+## Advanced Usage
 
-## Usage
+### Running Cassettes as Relays
 
-- To create a new cassette, use the CLI: `cassette dub <events.json>`
-- To test cassettes in the browser, use the GUI: http://localhost:8002/
-- To run cassettes in a Node.js environment, use Boombox
-
-## Development
-
-See each subdirectory for specific development instructions.
-
-### Running the Boombox Server
-
-To run the Boombox server:
+Using the Boombox server, cassettes can be served as WebSocket endpoints:
 
 ```bash
 cd boombox
+bun install
 bun index.ts
+
+# Cassettes in ./cassettes directory are now available at ws://localhost:3001
 ```
 
-The server will start on port 3001 and load all WebAssembly modules from the `cassettes` directory. The server will automatically detect and load any `.wasm` files in this directory that implement the standardized interface.
+### Creating Custom Cassettes
 
-You should see output like:
+Beyond recording existing events, you can create cassettes programmatically using `cassette-tools`:
+
+```rust
+use cassette_tools::{string_to_ptr, ptr_to_string};
+
+#[no_mangle]
+pub extern "C" fn req(ptr: *const u8, len: usize) -> *mut u8 {
+    let request = ptr_to_string(ptr, len);
+    // Process request, return response
+    string_to_ptr(response)
+}
 ```
-Loading cassettes from: /path/to/cassettes
-Loading cassette from WASM file: custom_cassette.wasm
-Loading cassette from WASM file: test_standardized_interface.wasm
-Successfully loaded cassette: custom_cassette
-Successfully loaded cassette: test_standardized_interface
-Loaded 2 cassettes
-Boombox server running on port 3001
-```
 
-## Pure WebAssembly Interface
+See `cassette-tools/` for the full API.
 
-The project now supports a pure WebAssembly interface for cassettes that doesn't depend on wasm-bindgen. This provides better cross-platform compatibility and simplifies the development process.
+## Contributing
 
-### Building a Cassette with the Pure Interface
+Contributions are welcome! Please feel free to submit a Pull Request.
 
-1. Add the `cassette-core` dependency to your `Cargo.toml`:
-   ```toml
-   [dependencies]
-   cassette-core = { path = "../cassette-core" }
-   serde_json = "1.0"
-   ```
+## License
 
-2. Implement the `Cassette` trait in your library:
-   ```rust
-   use cassette_core::{Cassette, CassetteSchema, implement_cassette_exports};
-   use serde_json::json;
-
-   pub struct MyCassette;
-
-   impl Cassette for MyCassette {
-       fn describe() -> String {
-           json!({
-               "metadata": {
-                   "name": "My Cassette",
-                   "description": "A cool cassette",
-                   "version": "1.0.0"
-               }
-           }).to_string()
-       }
-       
-       fn get_schema() -> CassetteSchema {
-           CassetteSchema {
-               title: "My Schema".to_string(),
-               description: "Schema for my cassette".to_string(),
-               schema_type: "object".to_string(),
-               properties: json!({}),
-               required: vec![],
-               items: None,
-           }
-       }
-   }
-
-   // Implement the standard WebAssembly exports
-   implement_cassette_exports!(MyCassette);
-
-   // Implement the request handler function
-   #[no_mangle]
-   pub extern "C" fn req(ptr: *const u8, length: usize) -> *mut u8 {
-       // Implement your request handling logic here
-       // Use cassette_core::ptr_to_string and cassette_core::string_to_ptr for memory management
-   }
-   ```
-
-3. Build your cassette targeting WebAssembly:
-   ```bash
-   cargo build --target wasm32-unknown-unknown --release
-   ```
-
-4. That's it! No wasm-bindgen required. The resulting WebAssembly module will be compatible with all cassette consumers.
-
-### Benefits of the Pure Interface
-
-- **Simpler Build Process**: No need for wasm-bindgen or additional post-processing steps
-- **Cross-Platform Compatibility**: Works in both Node.js and browser environments without issues
-- **Memory-Safe**: Built-in memory management functions handle large data safely
-- **Backward Compatibility**: The loader still supports wasm-bindgen modules for backward compatibility 
+MIT
