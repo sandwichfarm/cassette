@@ -25,7 +25,7 @@ anyhow = "1.0"
 clap = { version = "4.0", features = ["derive"] }
 tempfile = "3.8"
 handlebars = "4.3"
-wasmtime = "15.0"
+wasmtime = "24.0"
 
 [dev-dependencies]
 # Add any test-specific dependencies here if needed
