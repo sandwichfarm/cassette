@@ -1,6 +1,6 @@
 # Cassette
 
-Store Nostr events in portable WebAssembly modules. Query them like a relay.
+Store Nostr events in NIP-01 compatible (read-only) portable WebAssembly relays.
 
 ## Quick Start
 
