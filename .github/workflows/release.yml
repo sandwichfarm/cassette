@@ -71,13 +71,17 @@ jobs:
           echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
 
       - name: Build binary
+        env:
+          CARGO_TARGET_DIR: target-release
         run: |
-          cargo build --release --target ${{ matrix.platform.target }} --manifest-path cli/Cargo.toml --bin cassette
+          cd cli
+          cargo build --release --target ${{ matrix.platform.target }} --bin cassette
+          cd ..
           
       - name: Package as archive
         shell: bash
         run: |
-          cd cli/target/${{ matrix.platform.target }}/release
+          cd cli/target-release/${{ matrix.platform.target }}/release
           if [[ "${{ matrix.platform.archive }}" == "tar.gz" ]]; then
             tar czvf ../../../../cassette-${{ matrix.platform.name }}.tar.gz ${{ matrix.platform.bin }}
           else
