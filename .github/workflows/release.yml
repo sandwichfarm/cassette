@@ -63,9 +63,16 @@ jobs:
           sudo apt update
           sudo apt install -y gcc-aarch64-linux-gnu
 
+      - name: Set up cross-compilation environment
+        if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
+
       - name: Build binary
         run: |
-          cargo build --release --target ${{ matrix.platform.target }} --manifest-path cli/Cargo.toml
+          cargo build --release --target ${{ matrix.platform.target }} --manifest-path cli/Cargo.toml --bin cassette
           
       - name: Package as archive
         shell: bash
