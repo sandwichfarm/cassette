@@ -1,110 +1,176 @@
 # Cassette CLI
 
-A command-line tool for creating and managing Cassette platform WebAssembly modules.
+Command-line tool for creating, querying, and managing Nostr event cassettes.
 
 ## Overview
 
-Cassette CLI allows users to create WebAssembly cassettes from Nostr events. The CLI provides subcommands for different operations, with the first being `dub` which takes an events.json file or piped input and generates a WASM module for use with the Boombox server.
+The Cassette CLI provides tools to:
+- **Record** Nostr events from files or streams into portable WebAssembly modules
+- **Query** cassettes using NIP-01 filters
+- **Combine** multiple cassettes into new ones
 
 ## Installation
 
-### Prerequisites
-
-- Rust toolchain with `wasm32-unknown-unknown` target
-- `wasm-bindgen-cli` (optional, for generating JavaScript bindings)
-
-To install the prerequisites:
+Download pre-built binaries from [releases](https://github.com/dskvr/cassette/releases/latest) or build from source:
 
 ```bash
-# Install Rust if you don't have it already
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Add the wasm32-unknown-unknown target
+# Prerequisites
 rustup target add wasm32-unknown-unknown
 
-# Install wasm-bindgen-cli (optional)
-cargo install wasm-bindgen-cli
-```
-
-### Building from Source
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/cassette-platform.git
-cd cassette-platform/cli
-
-# Build the CLI
+# Build
 cargo build --release
 
-# Install the CLI (optional)
+# Install
 cargo install --path .
 ```
 
-## Usage
+## Commands
 
-### Creating a Cassette from an Events File
+### `record` - Create cassettes from events
 
-```bash
-cassette dub events.json --name my-cassette --description "My custom Nostr cassette" --author "Your Name"
-```
-
-### Creating a Cassette from Piped Input
-
-You can pipe events from another source, such as the Nostr Army Knife (nak):
+Record Nostr events into a WebAssembly cassette:
 
 ```bash
-nak req -l 5 -t t=value1 -t t=value2 localhost:3001 | cassette dub --name piped-cassette
+# From file
+cassette record events.json --name my-cassette
+
+# From stdin (e.g., piped from nak)
+nak req -k 1 -l 100 wss://relay.nostr.band | cassette record --name notes
+
+# With metadata
+cassette record events.json \
+  --name "my-archive" \
+  --description "Personal notes backup" \
+  --author "Alice"
 ```
 
-### Command Line Options
+Options:
+- `-n, --name` - Name for the cassette
+- `-d, --description` - Description of contents
+- `-a, --author` - Author/curator name
+- `-o, --output` - Output directory (default: ./cassettes)
+- `--no-bindings` - Skip JavaScript bindings generation
 
+### `req` - Query cassettes
+
+Query events from a cassette using NIP-01 filters:
+
+```bash
+# Get all events
+cassette req my-cassette.wasm
+
+# Filter by event kind
+cassette req my-cassette.wasm --kinds 1
+
+# Multiple filters
+cassette req my-cassette.wasm \
+  --kinds 1 --kinds 7 \
+  --authors npub1... \
+  --limit 50
+
+# Custom filter JSON
+cassette req my-cassette.wasm \
+  --filter '{"#t": ["bitcoin", "nostr"]}'
+
+# Output as NDJSON for piping
+cassette req my-cassette.wasm --output ndjson | grep "pattern"
 ```
-USAGE:
-    cassette dub [OPTIONS] [INPUT_FILE]
 
-ARGS:
-    <INPUT_FILE>  Path to input events.json file (if not provided, reads from stdin)
+Options:
+- `-s, --subscription` - Subscription ID (default: sub1)
+- `-f, --filter` - Custom filter JSON
+- `-k, --kinds` - Filter by event kinds
+- `-a, --authors` - Filter by author pubkeys
+- `-l, --limit` - Maximum events to return
+- `--since` - Events after timestamp
+- `--until` - Events before timestamp
+- `-o, --output` - Output format: json or ndjson
 
-OPTIONS:
-    -n, --name <NAME>               Name for the generated cassette
-    -d, --description <DESCRIPTION> Description for the generated cassette
-    -a, --author <AUTHOR>           Author of the cassette
-    -o, --output <OUTPUT>           Output directory for the generated WASM module
-    --generate                      Whether to actually generate the WASM module (default: true)
-    -h, --help                      Print help information
+### `dub` - Combine cassettes
+
+Merge multiple cassettes into a new one, optionally applying filters:
+
+```bash
+# Simple merge
+cassette dub cassette1.wasm cassette2.wasm combined.wasm
+
+# Merge with filters
+cassette dub *.wasm filtered.wasm \
+  --kinds 1 --kinds 30023 \
+  --since 1700000000
+
+# Named output with metadata
+cassette dub alice.wasm bob.wasm carol.wasm team.wasm \
+  --name "team-notes" \
+  --description "Combined team cassettes" \
+  --author "Team Lead"
 ```
 
-## Generated Files
+Options:
+- `-n, --name` - Name for output cassette
+- `-d, --description` - Description
+- `-a, --author` - Author/curator
+- `-f, --filter` - Apply filters when combining
+- `-k, --kinds` - Include only these event kinds
+- `--authors` - Include only these authors
+- `-l, --limit` - Limit total events
+- `--since` - Events after timestamp
+- `--until` - Events before timestamp
 
-When you run the `dub` command, it generates the following files:
+## Output Format
 
-- `<NAME>.wasm` - The main WebAssembly module
-- `<NAME>.js` - JavaScript bindings for the module
-- `<NAME>.d.ts` - TypeScript type definitions
-- `<NAME>_bg.wasm` - Background WebAssembly module
-- `<NAME>_bg.wasm.d.ts` - TypeScript type definitions for the background module
+### Cassette Files
 
-## Using the Generated Cassette
+The `record` and `dub` commands generate:
+- `<name>.wasm` - The WebAssembly module containing events and query logic
+- JavaScript bindings (unless `--no-bindings` is used)
 
-The generated WebAssembly module can be loaded into the Boombox server. To use the cassette:
+### Query Output
 
-1. Copy the generated `.wasm` and JavaScript files to the `boombox/wasm` directory
-2. Update the Boombox server configuration to load your custom cassette
-3. Start the Boombox server
+The `req` command outputs:
+- JSON format (default): Pretty-printed Nostr protocol messages
+- NDJSON format: One event per line for piping to other tools
+
+## Examples
+
+### Archive Personal Notes
+```bash
+# Get your notes from a relay
+nak req -k 1 -a <your-pubkey> wss://relay.damus.io | \
+  cassette record --name "my-notes-$(date +%Y%m%d)"
+```
+
+### Create Test Fixtures
+```bash
+# Record specific events for testing
+cassette record test-events.json --name "test-fixture"
+
+# Query to verify
+cassette req test-fixture.wasm --kinds 1
+```
+
+### Combine and Filter Archives
+```bash
+# Merge yearly archives into one, keeping only articles
+cassette dub archives-*.wasm all-articles.wasm \
+  --kinds 30023 \
+  --name "all-articles" \
+  --description "All long-form articles"
+```
+
+## Integration
+
+Cassettes can be:
+- Loaded by the Boombox server to serve as Nostr relays
+- Queried directly via CLI for offline access
+- Imported by JavaScript/Python applications using cassette-loader
+- Tested in the browser using the GUI interface
 
 ## Development
 
-### Project Structure
-
+The CLI is part of the Cassette monorepo. Key directories:
 - `src/main.rs` - CLI implementation
-- `src/templates/` - Templates for generating Rust code
-- `src/templates/cassette_template.rs` - Template for cassette Rust code
-- `src/templates/Cargo.toml` - Template for cassette project configuration
+- `src/generator.rs` - Cassette generation logic
+- `src/templates/` - Rust code templates for cassettes
 
-### Adding New Subcommands
-
-To add new subcommands to the CLI, modify the `Commands` enum in `src/main.rs` and add handlers for the new commands.
-
----
-
-This project is part of the Cassette platform, a framework for building and deploying Nostr relays with WebAssembly modules. 
+To add new commands, extend the `Commands` enum in `main.rs`.
