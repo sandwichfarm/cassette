@@ -487,8 +487,9 @@ fn process_req_command(
         use crossterm::event::{self, Event, KeyCode};
         loop {
             if let Ok(Event::Key(key)) = event::read() {
-                if matches!(key.code, KeyCode::Char(_) | KeyCode::Enter | KeyCode::Esc) {
-                    break;
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    _ => {}
                 }
             }
         }
