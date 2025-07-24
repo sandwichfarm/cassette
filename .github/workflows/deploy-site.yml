@@ -1,0 +1,64 @@
+name: Deploy Site
+
+on:
+  push:
+    branches: 
+      - main
+    paths:
+      - site
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18' 
+          cache: 'npm'
+          
+      - name: Install dependencies
+        working-directory: site
+        run: npm ci
+        
+      - name: Build project
+        working-directory: site
+        run: npm run build
+        
+      - name: Deploy to Bunny
+        uses: R-J-dev/bunny-deploy@v2.0.3
+        with:
+          access-key: ${{ secrets.BUNNY_ACCESS_KEY }}
+          directory-to-upload: "./site/dist"
+          storage-endpoint: "https://storage.bunnycdn.com"
+          storage-zone-name: ${{ secrets.BUNNY_STORAGE_ZONE_NAME }}
+          storage-zone-password: ${{ secrets.BUNNY_STORAGE_PASSWORD }}
+
+    #   - name: deploy nsite
+    #     uses: sandwichfarm/nsite-action@multi-tool-support
+    #     id: nsite_deploy
+    #     timeout-minutes: 15
+    #     with:
+    #       directory: "./site/dist"
+    #       nbunksec: ${{ secrets.NSITE_NBUNKSEC }}
+    #       fallback: "/index.html"
+    #       version: "v0.20.0"
+    #       relays: |
+    #         wss://relay.nostr.band
+    #         wss://relay.damus.io
+    #         wss://nos.lol
+    #         wss://relay.nsite.lol
+    #       servers: |
+    #         https://cdn.hzrd149.com/
+    #         https://cdn.sovbit.host
+    #         https://nosto.re
+    #       publish_server_list: "false"
+    #       publish_relay_list: "true"
+    #       publish_profile: "true"
+    #       purge: false
+    #       concurrency: "50"

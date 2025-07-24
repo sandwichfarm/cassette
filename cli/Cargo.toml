@@ -29,7 +29,7 @@ wasmtime = "15.0"
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = { version = "0.20", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
-crossterm = "0.27"
+crossterm = { version = "0.27", features = ["event-stream"] }
 sha2 = "0.10"
 hex = "0.4"
 secp256k1 = { version = "0.27", features = ["global-context", "rand-std"] }

@@ -14,6 +14,17 @@ use futures_util::{StreamExt, SinkExt};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+mod ui;
+
+// Macro for debug output that only prints in verbose mode
+macro_rules! debugln {
+    ($verbose:expr, $($arg:tt)*) => {
+        if $verbose {
+            println!($($arg)*);
+        }
+    };
+}
+
 // Module for cassette generation
 mod generator {
     use std::fs::{self, File};
@@ -24,6 +35,16 @@ mod generator {
     use handlebars::Handlebars;
     use serde_json::json;
     use std::process::Command;
+    
+    // Local macro for debug output
+    macro_rules! debugln {
+        ($verbose:expr, $($arg:tt)*) => {
+            if $verbose {
+                println!($($arg)*);
+            }
+        };
+    }
+    
 
     // Load template files
     const TEMPLATE_RS: &str = include_str!("templates/cassette_template.rs");
@@ -34,6 +55,7 @@ mod generator {
         name: String,
         project_dir: PathBuf,
         template_vars: HashMap<String, String>,
+        verbose: bool,
     }
 
     impl CassetteGenerator {
@@ -47,14 +69,26 @@ mod generator {
                 name: name.to_string(),
                 project_dir: project_dir.to_path_buf(),
                 template_vars: HashMap::new(),
+                verbose: false,
             }
         }
 
         pub fn set_var(&mut self, key: &str, value: &str) {
             self.template_vars.insert(key.to_string(), value.to_string());
         }
+        
+        pub fn set_verbose(&mut self, verbose: bool) {
+            self.verbose = verbose;
+        }
 
         pub fn generate(&self) -> Result<PathBuf> {
+            self.generate_with_callback(None::<fn() -> Result<()>>)
+        }
+        
+        pub fn generate_with_callback<F>(&self, progress_callback: Option<F>) -> Result<PathBuf> 
+        where 
+            F: FnMut() -> Result<()>
+        {
             // Create src directory if it doesn't exist
             let src_dir = self.project_dir.join("src");
             fs::create_dir_all(&src_dir).context("Failed to create src directory")?;
@@ -62,8 +96,8 @@ mod generator {
             // Create the lib.rs file from template
             self.create_project_files(&src_dir)?;
 
-            // Build the WASM module
-            let output_path = self.build_wasm(&self.project_dir)?;
+            // Build the WASM module with progress callback
+            let output_path = self.build_wasm(&self.project_dir, progress_callback)?;
 
             // Copy the output to the destination
             let dest_path = self.copy_output(output_path)?;
@@ -90,7 +124,7 @@ mod generator {
             obj.insert("sanitized_name".to_string(), json!(sanitized_name));
             
             // Debug: Print template data
-            println!("Debug: Template data: {}", serde_json::to_string_pretty(&template_data).unwrap_or_default());
+            debugln!(self.verbose, "Debug: Template data: {}", serde_json::to_string_pretty(&template_data).unwrap_or_default());
             
             // Render the lib.rs template
             let lib_rs_content = handlebars.render_template(TEMPLATE_RS, &template_data)
@@ -101,7 +135,7 @@ mod generator {
             fs::create_dir_all(&log_dir).ok(); // Ignore errors
             let log_path = log_dir.join("template_debug.rs");
             let _ = fs::write(&log_path, &lib_rs_content); // Ignore errors
-            println!("Debug: Rendered template saved to {:?}", log_path);
+            debugln!(self.verbose, "Debug: Rendered template saved to {:?}", log_path);
 
             // Write the lib.rs file
             let lib_rs_path = src_dir.join("lib.rs");
@@ -167,28 +201,50 @@ mod generator {
             Ok(tools_path)
         }
 
-        fn build_wasm(&self, project_dir: &Path) -> Result<PathBuf> {
+        fn build_wasm<F>(&self, project_dir: &Path, mut progress_callback: Option<F>) -> Result<PathBuf> 
+        where 
+            F: FnMut() -> Result<()>
+        {
             // Change to the project directory
             let current_dir = std::env::current_dir()?;
             std::env::set_current_dir(project_dir)?;
 
             // Print the generated Cargo.toml for debugging
-            println!("  Using project directory: {}", project_dir.display());
+            debugln!(self.verbose, "  Using project directory: {}", project_dir.display());
             if let Ok(cargo_content) = fs::read_to_string(project_dir.join("Cargo.toml")) {
-                println!("  Generated Cargo.toml:\n{}", cargo_content);
+                debugln!(self.verbose, "  Generated Cargo.toml:\n{}", cargo_content);
             }
 
             // Run cargo build --target wasm32-unknown-unknown
-            println!("  Running cargo build...");
-            let status = Command::new("cargo")
+            debugln!(self.verbose, "  Running cargo build...");
+            
+            // Start the build process
+            let mut child = Command::new("cargo")
                 .args(&["build", "--target", "wasm32-unknown-unknown", "--release"])
-                .status()
+                .spawn()
                 .context("Failed to run cargo build. Make sure Rust and the wasm32-unknown-unknown target are installed.")?;
+            
+            // Update UI while waiting for compilation
+            if let Some(ref mut callback) = progress_callback {
+                loop {
+                    match child.try_wait()? {
+                        Some(_) => break, // Process finished
+                        None => {
+                            callback()?;
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                    }
+                }
+            }
+            
+            // Wait for the process to complete
+            let output = child.wait_with_output()?;
 
             // Change back to the original directory
             std::env::set_current_dir(current_dir)?;
 
-            if !status.success() {
+            if !output.status.success() {
+                debugln!(self.verbose, "Cargo build stderr: {}", String::from_utf8_lossy(&output.stderr));
                 return Err(anyhow!("Failed to build WASM module. Cargo build returned error code."));
             }
 
@@ -205,7 +261,7 @@ mod generator {
 
         fn copy_output(&self, wasm_path: PathBuf) -> Result<PathBuf> {
             // Create the output directory if it doesn't exist
-            println!("  Creating output directory: {:?}", self.output_dir);
+            debugln!(self.verbose, "  Creating output directory: {:?}", self.output_dir);
             fs::create_dir_all(&self.output_dir)
                 .context("Failed to create output directory")?;
 
@@ -213,8 +269,8 @@ mod generator {
             let dest_path = self.output_dir.join(format!("{}.wasm", self.name));
             
             // Debug output to diagnose any issues
-            println!("  Copying from: {:?}", wasm_path);
-            println!("  Copying to: {:?}", dest_path);
+            debugln!(self.verbose, "  Copying from: {:?}", wasm_path);
+            debugln!(self.verbose, "  Copying to: {:?}", dest_path);
             
             // Check if source file exists
             if !wasm_path.exists() {
@@ -228,18 +284,18 @@ mod generator {
             
             if let Ok(status) = status {
                 if !status.success() {
-                    println!("  ⚠️ Warning: Failed to ensure wasm32-unknown-unknown target is installed");
+                    debugln!(self.verbose, "  ⚠️ Warning: Failed to ensure wasm32-unknown-unknown target is installed");
                 }
             }
             
             // Try to copy the file with more robust error handling
             match fs::copy(&wasm_path, &dest_path) {
                 Ok(_) => {
-                    println!("  ✅ Successfully copied WASM file to {:?}", dest_path);
+                    debugln!(self.verbose, "  ✅ Successfully copied WASM file to {:?}", dest_path);
                     Ok(dest_path)
                 },
                 Err(e) => {
-                    println!("  ❌ Copy failed with error: {:?}", e);
+                    debugln!(self.verbose, "  ❌ Copy failed with error: {:?}", e);
                     
                     // As a fallback, try to use the 'cp' command
                     let status = Command::new("cp")
@@ -249,7 +305,7 @@ mod generator {
                         
                     match status {
                         Ok(exit) if exit.success() => {
-                            println!("  ✅ Successfully copied WASM file using cp command");
+                            debugln!(self.verbose, "  ✅ Successfully copied WASM file using cp command");
                             Ok(dest_path)
                         },
                         _ => Err(anyhow!("Failed to copy WASM file to output directory: {}", e))
@@ -271,7 +327,19 @@ fn process_req_command(
     since: Option<i64>,
     until: Option<i64>,
     output_format: &str,
+    interactive: bool,
+    verbose: bool,
 ) -> Result<()> {
+    // Initialize interactive UI if enabled
+    let mut play_ui = if interactive {
+        let ui = ui::play::PlayUI::new();
+        ui.init()?;
+        ui.show_loading(&cassette_path.display().to_string())?;
+        Some(ui)
+    } else {
+        None
+    };
+
     // Read the WASM file
     let wasm_bytes = fs::read(cassette_path)
         .context("Failed to read cassette WASM file")?;
@@ -343,6 +411,7 @@ fn process_req_command(
     let req_bytes = req_string.as_bytes();
     // Collect all events in a loop
     let mut all_events = Vec::new();
+    let mut event_count = 0u64;
     
     loop {
         // Allocate memory for the request string for each call
@@ -384,7 +453,14 @@ fn process_req_command(
                 match arr[0].as_str() {
                     Some("EVENT") => {
                         if arr.len() >= 3 {
+                            event_count += 1;
                             all_events.push(arr[2].clone());
+                            
+                            // Update interactive UI
+                            if let Some(ref mut ui) = play_ui {
+                                ui.update_playback(all_events.len() as u64, event_count, Some(&arr[2]))?;
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            }
                         }
                     }
                     Some("EOSE") => {
@@ -402,20 +478,36 @@ fn process_req_command(
         }
     }
     
-    // Output all collected events based on format
-    match output_format {
-        "ndjson" => {
-            // For NDJSON, output each event on its own line
-            for event in &all_events {
-                println!("{}", serde_json::to_string(&event)?);
+    // Handle completion and output
+    if let Some(ui) = play_ui {
+        // Interactive mode - show completion screen
+        ui.show_completion(all_events.len() as u64)?;
+        
+        // Wait for user input
+        use crossterm::event::{self, Event, KeyCode};
+        loop {
+            if let Ok(Event::Key(key)) = event::read() {
+                if matches!(key.code, KeyCode::Char(_) | KeyCode::Enter | KeyCode::Esc) {
+                    break;
+                }
             }
         }
-        _ => {
-            // Default JSON output - output as array
-            if all_events.len() == 1 {
-                println!("{}", serde_json::to_string_pretty(&all_events[0])?);
-            } else {
-                println!("{}", serde_json::to_string_pretty(&all_events)?);
+        
+        ui.cleanup()?;
+    } else {
+        // Non-interactive mode - just output results
+        match output_format {
+            "ndjson" => {
+                for event in &all_events {
+                    println!("{}", serde_json::to_string(&event)?);
+                }
+            }
+            _ => {
+                if all_events.len() == 1 {
+                    println!("{}", serde_json::to_string_pretty(&all_events[0])?);
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&all_events)?);
+                }
             }
         }
     }
@@ -436,19 +528,38 @@ fn process_dub_command(
     limit: Option<usize>,
     since: Option<i64>,
     until: Option<i64>,
+    interactive: bool,
+    verbose: bool,
 ) -> Result<()> {
     if cassette_paths.is_empty() {
         return Err(anyhow!("No input cassettes specified"));
     }
     
-    println!("=== Cassette CLI - Dub Command ===");
-    println!("Combining {} cassettes...", cassette_paths.len());
+    // Initialize interactive UI if enabled
+    let mut dub_ui = if interactive {
+        let cassette_names: Vec<String> = cassette_paths.iter()
+            .map(|p| p.file_stem()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string())
+            .collect();
+        let ui = ui::dub::DubUI::new(cassette_paths.len(), cassette_names);
+        ui.init()?;
+        ui.show_loading()?;
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        Some(ui)
+    } else {
+        None
+    };
+    
+    debugln!(verbose, "=== Cassette CLI - Dub Command ===");
+    debugln!(verbose, "Combining {} cassettes...", cassette_paths.len());
     
     // Collect all events from all cassettes
     let mut all_events = Vec::new();
     
     for (idx, cassette_path) in cassette_paths.iter().enumerate() {
-        println!("\n📼 Processing cassette {}/{}: {}", 
+        debugln!(verbose, "\n📼 Processing cassette {}/{}: {}", 
             idx + 1, 
             cassette_paths.len(), 
             cassette_path.display()
@@ -544,6 +655,12 @@ fn process_dub_command(
                         Some("EVENT") => {
                             if arr.len() >= 3 {
                                 cassette_events.push(arr[2].clone());
+                                
+                                // Update interactive UI
+                                if let Some(ref mut ui) = dub_ui {
+                                    ui.update_processing(idx, cassette_events.len() as u64, all_events.len() as u64 + cassette_events.len() as u64)?;
+                                    std::thread::sleep(std::time::Duration::from_millis(30));
+                                }
                             }
                         }
                         Some("EOSE") => {
@@ -561,15 +678,20 @@ fn process_dub_command(
             }
         }
         
-        println!("  Found {} events", cassette_events.len());
+        debugln!(verbose, "  Found {} events", cassette_events.len());
         all_events.extend(cassette_events);
     }
     
-    println!("\n📊 Total events collected: {}", all_events.len());
+    debugln!(verbose, "\n📊 Total events collected: {}", all_events.len());
+    
+    // Show mixing phase in interactive mode
+    if let Some(ref ui) = dub_ui {
+        ui.show_mixing(all_events.len() as u64)?;
+    }
     
     // Apply filters if specified
     if !kinds.is_empty() || !authors.is_empty() || !filter_args.is_empty() || since.is_some() || until.is_some() {
-        println!("\n🔍 Applying filters...");
+        debugln!(verbose, "\n🔍 Applying filters...");
         
         let mut filtered_events = Vec::new();
         
@@ -610,22 +732,22 @@ fn process_dub_command(
             }
         }
         
-        println!("  Events after filtering: {}", filtered_events.len());
+        debugln!(verbose, "  Events after filtering: {}", filtered_events.len());
         all_events = filtered_events;
     }
     
     // Apply limit if specified and not already applied via filter
     if let Some(l) = limit {
         if all_events.len() > l {
-            println!("  Applying limit of {} events", l);
+            debugln!(verbose, "  Applying limit of {} events", l);
             all_events.truncate(l);
         }
     }
     
     // Preprocess events to handle replaceable events
-    println!("\n🔍 Preprocessing events according to NIP-01...");
+    debugln!(verbose, "\n🔍 Preprocessing events according to NIP-01...");
     let processed_events = preprocess_events(all_events);
-    println!("  Final event count: {}", processed_events.len());
+    debugln!(verbose, "  Final event count: {}", processed_events.len());
     
     // Generate the new cassette
     let cassette_name = name.unwrap_or("dubbed_cassette");
@@ -652,7 +774,9 @@ fn process_dub_command(
         cassette_desc,
         cassette_author,
         &output_dir,
-        false // no_bindings
+        false, // no_bindings
+        false, // interactive
+        false // verbose
     )?;
     
     // Rename the generated file to the specified output name if needed
@@ -660,7 +784,26 @@ fn process_dub_command(
     if generated_path != *output_path {
         fs::rename(&generated_path, output_path)
             .context("Failed to rename output file")?;
-        println!("\n✅ Dubbed cassette saved to: {}", output_path.display());
+    }
+    
+    // Handle completion
+    if let Some(ui) = dub_ui {
+        // Interactive mode - show completion screen
+        ui.show_completion(&output_path.display().to_string(), processed_events.len() as u64)?;
+        
+        // Wait for user input
+        use crossterm::event::{self, Event, KeyCode};
+        loop {
+            if let Ok(Event::Key(key)) = event::read() {
+                if matches!(key.code, KeyCode::Char(_) | KeyCode::Enter | KeyCode::Esc) {
+                    break;
+                }
+            }
+        }
+        
+        ui.cleanup()?;
+    } else {
+        debugln!(verbose, "\n✅ Dubbed cassette saved to: {}", output_path.display());
     }
     
     Ok(())
@@ -812,6 +955,12 @@ enum Commands {
             action = clap::ArgAction::SetTrue
         )]
         no_bindings: bool,
+        /// Enable interactive mode with visual feedback
+        #[arg(short = 'i', long)]
+        interactive: bool,
+        /// Show verbose output including compilation details
+        #[arg(short, long)]
+        verbose: bool,
     },
     
     /// Combine multiple cassettes into a new cassette (dubbing/mixing)
@@ -857,6 +1006,12 @@ enum Commands {
         /// Until timestamp
         #[arg(long)]
         until: Option<i64>,
+        /// Enable interactive mode with visual feedback
+        #[arg(short = 'i', long)]
+        interactive: bool,
+        /// Show verbose output including compilation details
+        #[arg(short, long)]
+        verbose: bool,
     },
     
     /// Send a REQ message to a cassette and get events
@@ -895,6 +1050,12 @@ enum Commands {
         /// Output format: json (default) or ndjson
         #[arg(short, long, default_value = "json")]
         output: String,
+        /// Enable interactive mode with visual feedback
+        #[arg(short = 'i', long)]
+        interactive: bool,
+        /// Show verbose output including compilation details
+        #[arg(short, long)]
+        verbose: bool,
     },
     
     /// Cast events from cassettes to Nostr relays
@@ -921,6 +1082,12 @@ enum Commands {
         /// Dry run - show what would be sent without actually sending
         #[arg(long)]
         dry_run: bool,
+        /// Enable interactive mode with visual feedback
+        #[arg(short = 'i', long)]
+        interactive: bool,
+        /// Show verbose output including compilation details
+        #[arg(short, long)]
+        verbose: bool,
     },
 }
 
@@ -935,7 +1102,9 @@ fn main() -> Result<()> {
             author, 
             output,
             generate: _,
-            no_bindings
+            no_bindings,
+            interactive,
+            verbose
         } => {
             // Set default values if not provided
             let name_value = name.clone().unwrap_or_else(|| "cassette".to_string());
@@ -955,7 +1124,9 @@ fn main() -> Result<()> {
                     &desc_value,
                     &author_value,
                     &output_value,
-                    *no_bindings
+                    *no_bindings,
+                    *interactive,
+                    *verbose
                 )?;
             } else {
                 // No input file, read from stdin
@@ -991,7 +1162,9 @@ fn main() -> Result<()> {
                     &desc_value,
                     &author_value,
                     &output_value,
-                    *no_bindings
+                    *no_bindings,
+                    *interactive,
+                    *verbose
                 )?;
                 
                 // The temp directory will be cleaned up when it goes out of scope
@@ -1011,6 +1184,8 @@ fn main() -> Result<()> {
             limit,
             since,
             until,
+            interactive,
+            verbose,
         } => {
             process_dub_command(
                 cassettes,
@@ -1024,6 +1199,8 @@ fn main() -> Result<()> {
                 *limit,
                 *since,
                 *until,
+                *interactive,
+                *verbose,
             )
         }
         Commands::Play {
@@ -1036,6 +1213,8 @@ fn main() -> Result<()> {
             since,
             until,
             output,
+            interactive,
+            verbose,
         } => {
             process_req_command(
                 cassette,
@@ -1047,6 +1226,8 @@ fn main() -> Result<()> {
                 *since,
                 *until,
                 output,
+                *interactive,
+                *verbose,
             )
         }
         Commands::Cast {
@@ -1056,6 +1237,8 @@ fn main() -> Result<()> {
             throttle,
             timeout,
             dry_run,
+            interactive: _,
+            verbose: _,
         } => {
             // Use tokio runtime for async operations
             let runtime = tokio::runtime::Runtime::new()?;
@@ -1229,17 +1412,28 @@ pub fn process_events(
     description: &str,
     author: &str,
     output_dir: &PathBuf,
-    _no_bindings: bool
+    _no_bindings: bool,
+    interactive: bool,
+    verbose: bool
 ) -> Result<()> {
+    // Initialize interactive UI if enabled
+    let mut record_ui = if interactive {
+        let ui = ui::record::RecordUI::new();
+        ui.init()?;
+        Some(ui)
+    } else {
+        None
+    };
+
     // Parse input file (supports both JSON array and NDJSON)
     let original_events = parse_events_from_file(input_file)?;
     
-    // Display statistics
-    println!("=== Cassette CLI - Record Command ===");
-    println!("Processing events for cassette creation...");
+    // Display statistics (only in verbose mode)
+    debugln!(verbose, "=== Cassette CLI - Record Command ===");
+    debugln!(verbose, "Processing events for cassette creation...");
     
-    println!("\n📊 Initial Event Summary:");
-    println!("  Total events: {}", original_events.len());
+    debugln!(verbose, "\n📊 Initial Event Summary:");
+    debugln!(verbose, "  Total events: {}", original_events.len());
     
     // Count the number of events by kind
     let mut kind_counts = std::collections::HashMap::new();
@@ -1250,23 +1444,34 @@ pub fn process_events(
     }
     
     // Display kind statistics
-    if !kind_counts.is_empty() {
+    if verbose && !kind_counts.is_empty() {
         println!("\n📋 Event Kinds:");
         for (kind, count) in kind_counts.iter() {
             println!("  Kind {}: {} events", kind, count);
         }
     }
     
+    // Update interactive UI with initial stats
+    if let Some(ref mut ui) = record_ui {
+        for (i, event) in original_events.iter().enumerate() {
+            if let Some(kind) = event.get("kind").and_then(|k| k.as_u64()) {
+                ui.update(i as u64 + 1, Some(kind))?;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+    
     // Preprocess events to handle replaceable and addressable events
-    println!("\n🔍 Preprocessing events according to NIP-01...");
+    debugln!(verbose, "\n🔍 Preprocessing events according to NIP-01...");
     let processed_events = preprocess_events(original_events);
     
-    println!("\n📊 Final Event Summary:");
-    println!("  Total events after preprocessing: {}", processed_events.len());
+    debugln!(verbose, "\n📊 Final Event Summary:");
+    debugln!(verbose, "  Total events after preprocessing: {}", processed_events.len());
     
     // Sample of events
-    println!("\n📝 Sample Events:");
-    for (i, event) in processed_events.iter().take(2).enumerate() {
+    if verbose {
+        println!("\n📝 Sample Events:");
+        for (i, event) in processed_events.iter().take(2).enumerate() {
         if let (Some(id), Some(kind), Some(pubkey)) = (
             event.get("id").and_then(|id| id.as_str()),
             event.get("kind").and_then(|k| k.as_i64()),
@@ -1281,28 +1486,28 @@ pub fn process_events(
         }
     }
     
-    if processed_events.len() > 2 {
-        println!("  ... and {} more events", processed_events.len() - 2);
+        if processed_events.len() > 2 {
+            println!("  ... and {} more events", processed_events.len() - 2);
+        }
     }
 
     // Generate metadata
     let cassette_created = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let event_count = processed_events.len();
     
-    println!("\n📦 Cassette Information:");
-    println!("  Name: {}", name);
-    println!("  Description: {}", description);
-    println!("  Author: {}", author);
-    println!("  Created: {}", cassette_created);
+    debugln!(verbose, "\n📦 Cassette Information:");
+    debugln!(verbose, "  Name: {}", name);
+    debugln!(verbose, "  Description: {}", description);
+    debugln!(verbose, "  Author: {}", author);
+    debugln!(verbose, "  Created: {}", cassette_created);
 
     // Create a temporary directory for building
     let temp_dir = tempdir()?;
     let project_dir = temp_dir.path().to_path_buf();
-    println!("Using project directory: {}", project_dir.display());
 
-    println!("\n🔨 Generating WASM Module:");
-    println!("  Creating Rust project from template...");
-    println!("  Using project directory: {}", project_dir.display());
+    debugln!(verbose, "\n🔨 Generating WASM Module:");
+    debugln!(verbose, "  Creating Rust project from template...");
+    debugln!(verbose, "  Using project directory: {}", project_dir.display());
 
     // Write events to the src directory
     let src_dir = project_dir.join("src");
@@ -1331,16 +1536,41 @@ pub fn process_events(
     // Note: We're not double-escaping anymore, just using the raw JSON
     generator.set_var("events_json", &events_json_string);
 
-    // Generate the cassette
-    match generator.generate() {
+    // Set verbose mode on generator
+    generator.set_verbose(verbose);
+    
+    // Generate the cassette with compilation progress
+    let result = if let Some(ref ui) = record_ui {
+        // Interactive mode - show compilation progress
+        let total_events = processed_events.len() as u64;
+        generator.generate_with_callback(Some(|| {
+            ui.show_compilation(total_events)?;
+            Ok(())
+        }))
+    } else {
+        // Non-interactive mode
+        generator.generate()
+    };
+    
+    match result {
         Ok(wasm_path) => {
-            println!("  ✅ WASM module generated successfully!");
-            println!("  Output: {}", wasm_path.display());
-            println!("\n✅ Cassette creation complete!");
-            println!("  You can now load this WebAssembly module into the Boombox server.");
+            if let Some(ui) = record_ui {
+                // Show completion screen in interactive mode
+                ui.show_completion(processed_events.len() as u64, &wasm_path.display().to_string())?;
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                ui.cleanup()?;
+            } else {
+                debugln!(verbose, "  ✅ WASM module generated successfully!");
+                debugln!(verbose, "  Output: {}", wasm_path.display());
+                debugln!(verbose, "\n✅ Cassette creation complete!");
+                debugln!(verbose, "  You can now load this WebAssembly module into the Boombox server.");
+            }
             Ok(())
         },
         Err(e) => {
+            if let Some(ui) = record_ui {
+                ui.cleanup()?;
+            }
             println!("  ❌ Failed to generate WASM module: {}", e);
             Err(anyhow!("Failed to generate WASM module: {}", e))
         }

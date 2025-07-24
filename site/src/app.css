@@ -8,6 +8,121 @@
   }
   
   body {
-    @apply antialiased;
+    @apply antialiased bg-cassette-black;
+    font-family: 'Inter', 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
   }
+  
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    background: #1e1b4b;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    background: linear-gradient(45deg, #f97316, #fbbf24);
+    border-radius: 4px;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(45deg, #fbbf24, #f97316);
+  }
+}
+
+@layer components {
+  /* Retro glow effect for interactive elements */
+  .retro-glow {
+    box-shadow: 
+      0 0 10px rgba(249, 115, 22, 0.3),
+      0 0 20px rgba(249, 115, 22, 0.2),
+      0 0 30px rgba(249, 115, 22, 0.1);
+    transition: all 0.3s ease;
+  }
+  
+  .retro-glow:hover {
+    box-shadow: 
+      0 0 15px rgba(249, 115, 22, 0.5),
+      0 0 30px rgba(249, 115, 22, 0.3),
+      0 0 45px rgba(249, 115, 22, 0.2);
+  }
+  
+  /* Cassette-style buttons */
+  .cassette-btn {
+    @apply relative overflow-hidden;
+    background: linear-gradient(145deg, #94a3b8, #64748b);
+    border: 2px solid #475569;
+    box-shadow: 
+      inset 2px 2px 4px rgba(255, 255, 255, 0.1),
+      inset -2px -2px 4px rgba(0, 0, 0, 0.2),
+      0 4px 8px rgba(0, 0, 0, 0.3);
+    transition: all 0.2s ease;
+  }
+  
+  .cassette-btn:active {
+    transform: translateY(2px);
+    box-shadow: 
+      inset 2px 2px 4px rgba(0, 0, 0, 0.2),
+      inset -2px -2px 4px rgba(255, 255, 255, 0.05),
+      0 2px 4px rgba(0, 0, 0, 0.2);
+  }
+  
+  /* Retro text selection */
+  ::selection {
+    background: rgba(249, 115, 22, 0.3);
+    color: #fbbf24;
+  }
+  
+  /* Glitch effect for special text */
+  .glitch {
+    position: relative;
+    animation: glitch 2s infinite;
+  }
+  
+  .glitch::before,
+  .glitch::after {
+    content: attr(data-text);
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+  }
+  
+  .glitch::before {
+    animation: glitch-2 2s infinite;
+    color: #f97316;
+    z-index: -1;
+  }
+  
+  .glitch::after {
+    animation: glitch-3 2s infinite;
+    color: #3b82f6;
+    z-index: -2;
+  }
+}
+
+@keyframes glitch {
+  0%, 100% { transform: translate(0); }
+  20% { transform: translate(-2px, 2px); }
+  40% { transform: translate(-2px, -2px); }
+  60% { transform: translate(2px, 2px); }
+  80% { transform: translate(2px, -2px); }
+}
+
+@keyframes glitch-2 {
+  0%, 100% { transform: translate(0); }
+  20% { transform: translate(2px, -2px); }
+  40% { transform: translate(2px, 2px); }
+  60% { transform: translate(-2px, -2px); }
+  80% { transform: translate(-2px, 2px); }
+}
+
+@keyframes glitch-3 {
+  0%, 100% { transform: translate(0); }
+  20% { transform: translate(-2px, -2px); }
+  40% { transform: translate(-2px, 2px); }
+  60% { transform: translate(2px, 2px); }
+  80% { transform: translate(2px, -2px); }
 }
