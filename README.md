@@ -2,6 +2,13 @@
 
 Modular NIP-compatible, portable WebAssembly read-only relays with support for NIP-01, NIP-11, NIP-42, and NIP-45
 
+## NIP Implementation Status
+
+- [x] **NIP-01** - Basic Relay Protocol (REQ/EVENT/EOSE/CLOSE)
+- [x] **NIP-11** - Relay Information Document (relay metadata and capabilities)
+- [ ] **NIP-42** - Authentication (framework implemented, functionality planned)
+- [x] **NIP-45** - Event Counts (COUNT queries for efficient event counting)
+
 ## Quick Start
 
 Download the latest `cli` binary from [releases](https://github.com/dskvr/cassette/releases/latest).
