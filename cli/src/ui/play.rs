@@ -245,8 +245,9 @@ impl PlayUI {
             }
 
             if let Some(content) = event.get("content").and_then(|c| c.as_str()) {
-                let preview = if content.len() > 50 {
-                    format!("{}...", &content[..47])
+                let preview = if content.chars().count() > 50 {
+                    let truncated: String = content.chars().take(47).collect();
+                    format!("{}...", truncated)
                 } else {
                     content.to_string()
                 };
