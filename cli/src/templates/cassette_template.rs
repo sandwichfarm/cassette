@@ -1,9 +1,13 @@
 // Import consistent memory management functions from cassette_tools
 extern crate cassette_tools;
-use cassette_tools::{string_to_ptr, ptr_to_string};
+use cassette_tools::{string_to_ptr, ptr_to_string, implement_info};
 use serde::{Serialize, Deserialize};
 use serde_json::{json, Value};
 use std::cell::RefCell;
+
+// NIP-11 info function is provided by cassette-tools
+// When NIP-11 is enabled, it provides the full implementation
+// When NIP-11 is not enabled, it provides a stub implementation
 
 // Import the req and close functions from the lib crate
 // extern crate cassette_cli;
@@ -109,11 +113,11 @@ pub extern "C" fn req(ptr: *const u8, len: usize) -> *mut u8 {
     // Add debug log
     DEBUG_MSGS.with(|msgs| {
         let mut msgs = msgs.borrow_mut();
-        msgs.push(format!("REQ received: {}", request_str));
+        msgs.push(format!("Request received: {}", request_str));
     });
     
-    // Parse REQ message
-    let req = match serde_json::from_str::<Value>(&request_str) {
+    // Parse the message to check if it's COUNT or REQ
+    let msg = match serde_json::from_str::<Value>(&request_str) {
         Ok(v) => v,
         Err(e) => {
             // Log parsing error
@@ -125,30 +129,87 @@ pub extern "C" fn req(ptr: *const u8, len: usize) -> *mut u8 {
         }
     };
 
-    // Validate REQ format
-    if !req.is_array() {
+    // Validate message format
+    if !msg.is_array() {
         DEBUG_MSGS.with(|msgs| {
             let mut msgs = msgs.borrow_mut();
-            msgs.push(format!("REQ is not an array: {}", req));
+            msgs.push(format!("Message is not an array: {}", msg));
         });
-        return string_to_ptr(json!(["NOTICE", "REQ message must be an array"]).to_string());
+        return string_to_ptr(json!(["NOTICE", "Message must be an array"]).to_string());
     }
     
-    let arr = req.as_array().unwrap();
+    let arr = msg.as_array().unwrap();
+    if arr.is_empty() {
+        return string_to_ptr(json!(["NOTICE", "Empty message array"]).to_string());
+    }
+    
+    // Check command type
+    let command = arr[0].as_str().unwrap_or("");
+    match command {
+        "COUNT" => handle_count_command(&arr),
+        "REQ" => handle_req_command(&arr),
+        _ => {
+            DEBUG_MSGS.with(|msgs| {
+                let mut msgs = msgs.borrow_mut();
+                msgs.push(format!("Unknown command: {}", command));
+            });
+            string_to_ptr(json!(["NOTICE", format!("Unknown command: {}", command)]).to_string())
+        }
+    }
+}
+
+// Handle COUNT command
+fn handle_count_command(arr: &[Value]) -> *mut u8 {
     if arr.len() < 3 {
-        DEBUG_MSGS.with(|msgs| {
-            let mut msgs = msgs.borrow_mut();
-            msgs.push(format!("REQ array too short: {}", req));
-        });
-        return string_to_ptr(json!(["NOTICE", "REQ must contain at least command, id, and filter"]).to_string());
+        return string_to_ptr(json!(["NOTICE", "COUNT must contain at least command, id, and filter"]).to_string());
     }
     
-    if arr[0].as_str().unwrap_or("") != "REQ" {
-        DEBUG_MSGS.with(|msgs| {
-            let mut msgs = msgs.borrow_mut();
-            msgs.push(format!("First element is not 'REQ': {}", arr[0]));
-        });
-        return string_to_ptr(json!(["NOTICE", "First element must be REQ"]).to_string());
+    let subscription_id = arr[1].as_str().unwrap_or("").to_string();
+    if subscription_id.is_empty() {
+        return string_to_ptr(json!(["NOTICE", "Invalid subscription ID"]).to_string());
+    }
+    
+    // Parse filters
+    let mut filters = Vec::new();
+    for f in &arr[2..] {
+        match serde_json::from_value::<Filter>(f.clone()) {
+            Ok(filter) => filters.push(filter),
+            Err(e) => {
+                DEBUG_MSGS.with(|msgs| {
+                    let mut msgs = msgs.borrow_mut();
+                    msgs.push(format!("Filter parse error in COUNT: {} in: {}", e, f));
+                });
+            }
+        }
+    }
+    
+    // Load and parse events
+    let events: Vec<Note> = match serde_json::from_str(EVENTS) {
+        Ok(notes) => notes,
+        Err(_) => Vec::new(),
+    };
+    
+    // Count matching events
+    let mut count = 0usize;
+    'count_loop: for event in &events {
+        for filter in &filters {
+            if matches_filter(event, filter) {
+                count += 1;
+                continue 'count_loop;
+            }
+        }
+    }
+    
+    // Return COUNT response according to NIP-45
+    string_to_ptr(json!(["COUNT", subscription_id, {
+        "count": count
+    }]).to_string())
+}
+
+// Handle REQ command  
+fn handle_req_command(arr: &[Value]) -> *mut u8 {
+    if arr.len() < 3 {
+        return string_to_ptr(json!(["NOTICE", "REQ must contain at least command, id, and filter"]).to_string());
     }
     
     let subscription_id = arr[1].as_str().unwrap_or("").to_string();

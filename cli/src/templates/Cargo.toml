@@ -8,6 +8,6 @@ description = "{{description}}"
 crate-type = ["cdylib"]
 
 [dependencies]
-cassette-tools = { path = "{{cassette_tools_path}}" }
+cassette-tools = { path = "{{cassette_tools_path}}", features = {{{features_array}}} }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0" 

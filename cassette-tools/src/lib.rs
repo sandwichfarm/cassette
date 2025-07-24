@@ -299,6 +299,9 @@ pub struct CassetteSchema {
 /// Include the standardized WebAssembly interface module
 pub mod wasm_interface;
 
+/// Modular NIP support
+pub mod nips;
+
 // The macro is automatically exported at crate root due to #[macro_export]
 // No need to re-export it
 
@@ -797,6 +800,25 @@ impl RelayHandler for EventBasedHandler {
             }
         }
     }
+}
+
+/// Macro to re-export NIP-11 info function from cassette-tools
+/// This is now just a simple re-export since relay info is set dynamically
+#[macro_export]
+macro_rules! implement_info {
+    () => {
+        // Deprecated: This macro is no longer needed.
+        // The info function is now provided directly by cassette-tools
+    };
+}
+
+// Always provide info function - basic info with supported_nips is always available
+#[cfg(not(feature = "nip11"))]
+#[no_mangle]
+pub extern "C" fn info() -> *mut u8 {
+    let nips = crate::nips::build_supported_nips();
+    let info_obj = serde_json::json!({"supported_nips": nips});
+    crate::string_to_ptr(info_obj.to_string())
 }
 
 /// CassetteMacros provides macros to make implementation easier
