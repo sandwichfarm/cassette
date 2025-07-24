@@ -8,6 +8,9 @@ Download the latest `cli` binary from [releases](https://github.com/dskvr/casset
 
 _**Knowledge is power:** The `cli` includes an ability to both `record` and `play` cassettes (create/read). Cassettes respond to `REQ` messages to `stdin` with `EVENT`, `NOTICE` and `EOSE` messages to `stdout`._
 
+### Prerequisites
+- [Rust and Cargo](https://www.rust-lang.org/)
+
 ### Record a cassette
 
 _Pipe the events or provide the path to a json file with events._
