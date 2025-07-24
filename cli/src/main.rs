@@ -146,13 +146,15 @@ mod generator {
 
             // Get the relative path to cassette-tools
             let cassette_tools_path = self.get_relative_cassette_tools_path()?;
+            debugln!(self.verbose, "  Cassette tools path: {}", cassette_tools_path);
 
             // Create the Cargo.toml file from template
             let cargo_data = json!({
                 "crate_name": self.name,
                 "version": "0.1.0",
                 "description": self.template_vars.get("cassette_description").unwrap_or(&"Generated Cassette".to_string()),
-                "cassette_tools_path": cassette_tools_path
+                "cassette_tools_path": cassette_tools_path,
+                "features_array": self.template_vars.get("features_array").unwrap_or(&"[\"default\"]".to_string())
             });
 
             // Render the Cargo.toml template
@@ -173,6 +175,7 @@ mod generator {
             // Use an absolute path for cassette-tools
             // We'll determine this from the current working directory
             let current_dir = std::env::current_dir()?;
+            debugln!(self.verbose, "  Current directory: {}", current_dir.display());
             
             // Find the project root by traversing up until we find a marker file
             let mut project_root = current_dir.clone();
@@ -180,6 +183,7 @@ mod generator {
                 if project_root.join("cassette-tools").exists() {
                     // Found the project root
                     let tools_path = project_root.join("cassette-tools").display().to_string();
+                    debugln!(self.verbose, "  Found cassette-tools at: {}", tools_path);
                     return Ok(tools_path);
                 }
                 
@@ -316,6 +320,52 @@ mod generator {
     }
 }
 
+/// Process the info command - get NIP-11 relay information
+fn process_info_command(
+    cassette_path: &PathBuf,
+    nip11_args: &Nip11Args,
+) -> Result<()> {
+    // Read the WASM file
+    let wasm_bytes = fs::read(cassette_path)
+        .context("Failed to read cassette WASM file")?;
+    
+    // Initialize wasmtime
+    let mut store = Store::default();
+    let module = Module::from_binary(store.engine(), &wasm_bytes)?;
+    let instance = Instance::new(&mut store, &module, &[])?;
+    
+    // Set NIP-11 info if provided
+    load_cassette_with_nip11(&mut store, &instance, nip11_args)?;
+    
+    // Check if the cassette exports an info function
+    if let Ok(info_func) = instance.get_typed_func::<(), i32>(&mut store, "info") {
+        // Call the info function
+        let info_ptr = info_func.call(&mut store, ())?;
+        
+        if info_ptr != 0 {
+            // Get memory first
+            let memory = instance.get_memory(&mut store, "memory")
+                .ok_or_else(|| anyhow!("Memory export not found"))?;
+            
+            // Read the info string
+            let info_str = read_string_from_memory(&mut store, &instance, &memory, info_ptr)?;
+            
+            // Pretty print the JSON
+            if let Ok(info_json) = serde_json::from_str::<Value>(&info_str) {
+                println!("{}", serde_json::to_string_pretty(&info_json)?);
+            } else {
+                println!("{}", info_str);
+            }
+        } else {
+            println!("{{}}");
+        }
+    } else {
+        eprintln!("This cassette does not support NIP-11 (no info function found)");
+    }
+    
+    Ok(())
+}
+
 /// Process the REQ command - send requests to a cassette and get events
 fn process_req_command(
     cassette_path: &PathBuf,
@@ -329,6 +379,7 @@ fn process_req_command(
     output_format: &str,
     interactive: bool,
     verbose: bool,
+    nip11_args: &Nip11Args,
 ) -> Result<()> {
     // Initialize interactive UI if enabled
     let mut play_ui = if interactive {
@@ -385,6 +436,9 @@ fn process_req_command(
     let mut store = Store::default();
     let module = Module::from_binary(store.engine(), &wasm_bytes)?;
     let instance = Instance::new(&mut store, &module, &[])?;
+    
+    // Set NIP-11 info if provided
+    load_cassette_with_nip11(&mut store, &instance, nip11_args)?;
     
     // Get memory export
     let memory = instance
@@ -487,8 +541,9 @@ fn process_req_command(
         use crossterm::event::{self, Event, KeyCode};
         loop {
             if let Ok(Event::Key(key)) = event::read() {
-                if matches!(key.code, KeyCode::Char(_) | KeyCode::Enter | KeyCode::Esc) {
-                    break;
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    _ => {}
                 }
             }
         }
@@ -515,6 +570,149 @@ fn process_req_command(
     Ok(())
 }
 
+/// Process the COUNT command - send COUNT requests to a cassette and get event counts
+fn process_count_command(
+    cassette_path: &PathBuf,
+    subscription: &str,
+    filter_args: &[String],
+    kinds: &[i64],
+    authors: &[String],
+    limit: Option<usize>,
+    since: Option<i64>,
+    until: Option<i64>,
+    verbose: bool,
+    nip11_args: &Nip11Args,
+) -> Result<()> {
+    // Read the WASM file
+    let wasm_bytes = fs::read(cassette_path)
+        .context("Failed to read cassette WASM file")?;
+    
+    // Create a filter object
+    let mut filter = serde_json::Map::new();
+    
+    // Add kinds if specified
+    if !kinds.is_empty() {
+        filter.insert("kinds".to_string(), json!(kinds));
+    }
+    
+    // Add authors if specified
+    if !authors.is_empty() {
+        filter.insert("authors".to_string(), json!(authors));
+    }
+    
+    // Add limit if specified
+    if let Some(l) = limit {
+        filter.insert("limit".to_string(), json!(l));
+    }
+    
+    // Add time filters if specified
+    if let Some(s) = since {
+        filter.insert("since".to_string(), json!(s));
+    }
+    if let Some(u) = until {
+        filter.insert("until".to_string(), json!(u));
+    }
+    
+    // Parse any custom filter JSON arguments
+    for filter_json in filter_args {
+        let parsed: serde_json::Map<String, Value> = serde_json::from_str(filter_json)
+            .context("Failed to parse filter JSON")?;
+        filter.extend(parsed);
+    }
+    
+    // Create the COUNT message
+    let count_message = json!(["COUNT", subscription, filter]);
+    let count_string = count_message.to_string();
+    
+    debugln!(verbose, "Sending COUNT request: {}", count_string);
+    
+    // Initialize wasmtime
+    let mut store = Store::default();
+    let module = Module::from_binary(store.engine(), &wasm_bytes)?;
+    let instance = Instance::new(&mut store, &module, &[])?;
+    
+    // Set NIP-11 info if provided
+    load_cassette_with_nip11(&mut store, &instance, nip11_args)?;
+    
+    // Get memory export
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .ok_or_else(|| anyhow!("Memory export not found"))?;
+    
+    // Get the req function (COUNT also uses the req function)
+    let req_func = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "req")
+        .context("Failed to get req function")?;
+    
+    // Get allocation function
+    let alloc_func = instance
+        .get_typed_func::<i32, i32>(&mut store, "alloc_buffer")
+        .or_else(|_| instance.get_typed_func::<i32, i32>(&mut store, "alloc_string"))
+        .context("Failed to get allocation function")?;
+    
+    // Get deallocation function
+    let dealloc_func = instance
+        .get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string")
+        .context("Failed to get deallocation function")?;
+    
+    // Allocate memory for the COUNT request
+    let count_bytes = count_string.as_bytes();
+    let count_ptr = alloc_func.call(&mut store, count_bytes.len() as i32)?;
+    
+    if count_ptr == 0 {
+        return Err(anyhow!("Failed to allocate memory for COUNT request"));
+    }
+    
+    // Write COUNT request to memory
+    memory.write(&mut store, count_ptr as usize, count_bytes)?;
+    
+    // Call the req function with COUNT message
+    let result_ptr = req_func.call(&mut store, (count_ptr, count_bytes.len() as i32))?;
+    
+    // Deallocate request memory
+    dealloc_func.call(&mut store, (count_ptr, count_bytes.len() as i32))?;
+    
+    if result_ptr == 0 {
+        return Err(anyhow!("No response from COUNT request"));
+    }
+    
+    // Read the result
+    let result = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
+    
+    // Try to deallocate the result pointer
+    if let Ok(get_size_func) = instance.get_typed_func::<i32, i32>(&mut store, "get_allocation_size") {
+        let size = get_size_func.call(&mut store, result_ptr)?;
+        if size > 0 && dealloc_func.call(&mut store, (result_ptr, size)).is_ok() {
+            // Successfully deallocated result
+        }
+    }
+    
+    debugln!(verbose, "COUNT response: {}", result);
+    
+    // Parse and pretty print the result
+    let parsed_result: Value = serde_json::from_str(&result)
+        .context("Failed to parse COUNT response")?;
+    
+    // Verify it's a COUNT response
+    if let Some(arr) = parsed_result.as_array() {
+        if arr.len() >= 3 && arr[0].as_str() == Some("COUNT") {
+            // Print the count object (third element)
+            if let Some(count_obj) = arr.get(2) {
+                println!("{}", serde_json::to_string_pretty(count_obj)?);
+            } else {
+                println!("{{\"count\": 0}}");
+            }
+        } else {
+            // Unexpected response format, print as-is
+            println!("{}", serde_json::to_string_pretty(&parsed_result)?);
+        }
+    } else {
+        return Err(anyhow!("Invalid COUNT response format"));
+    }
+    
+    Ok(())
+}
+
 /// Process the DUB command - combine multiple cassettes into a new one
 fn process_dub_command(
     cassette_paths: &[PathBuf],
@@ -530,6 +728,7 @@ fn process_dub_command(
     until: Option<i64>,
     interactive: bool,
     verbose: bool,
+    nip11_args: &Nip11Args,
 ) -> Result<()> {
     if cassette_paths.is_empty() {
         return Err(anyhow!("No input cassettes specified"));
@@ -577,6 +776,9 @@ fn process_dub_command(
         let mut store = Store::default();
         let module = Module::from_binary(store.engine(), &wasm_bytes)?;
         let instance = Instance::new(&mut store, &module, &[])?;
+        
+        // Set NIP-11 info if provided
+        load_cassette_with_nip11(&mut store, &instance, nip11_args)?;
         
         // Get memory export
         let memory = instance
@@ -776,7 +978,10 @@ fn process_dub_command(
         &output_dir,
         false, // no_bindings
         false, // interactive
-        false // verbose
+        false, // verbose
+        false, // nip_11
+        false, // nip_42
+        false  // nip_45
     )?;
     
     // Rename the generated file to the specified output name if needed
@@ -921,6 +1126,26 @@ struct Cli {
     command: Commands,
 }
 
+/// Common NIP-11 arguments for commands that load cassettes
+#[derive(clap::Args, Clone)]
+struct Nip11Args {
+    /// Relay name for NIP-11
+    #[arg(long = "relay-name")]
+    relay_name: Option<String>,
+    
+    /// Relay description for NIP-11
+    #[arg(long = "relay-description")]
+    relay_description: Option<String>,
+    
+    /// Relay owner pubkey for NIP-11
+    #[arg(long = "relay-pubkey")]
+    relay_pubkey: Option<String>,
+    
+    /// Relay contact for NIP-11
+    #[arg(long = "relay-contact")]
+    relay_contact: Option<String>,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Record Nostr events from a file or piped input to create a cassette
@@ -961,6 +1186,21 @@ enum Commands {
         /// Show verbose output including compilation details
         #[arg(short, long)]
         verbose: bool,
+        
+        /// Enable NIP-11 (Relay Information Document)
+        #[arg(long)]
+        nip_11: bool,
+        
+        /// Enable NIP-42 (Authentication)
+        #[arg(long)]
+        nip_42: bool,
+        
+        /// Enable NIP-45 (Event Counts)
+        #[arg(long)]
+        nip_45: bool,
+        
+        #[command(flatten)]
+        nip11: Nip11Args,
     },
     
     /// Combine multiple cassettes into a new cassette (dubbing/mixing)
@@ -1012,6 +1252,9 @@ enum Commands {
         /// Show verbose output including compilation details
         #[arg(short, long)]
         verbose: bool,
+        
+        #[command(flatten)]
+        nip11: Nip11Args,
     },
     
     /// Send a REQ message to a cassette and get events
@@ -1056,6 +1299,17 @@ enum Commands {
         /// Show verbose output including compilation details
         #[arg(short, long)]
         verbose: bool,
+        
+        /// Show NIP-11 relay information instead of playing events
+        #[arg(long)]
+        info: bool,
+        
+        /// Perform COUNT query instead of REQ (NIP-45)
+        #[arg(long)]
+        count: bool,
+        
+        #[command(flatten)]
+        nip11: Nip11Args,
     },
     
     /// Cast events from cassettes to Nostr relays
@@ -1088,7 +1342,76 @@ enum Commands {
         /// Show verbose output including compilation details
         #[arg(short, long)]
         verbose: bool,
+        
+        #[command(flatten)]
+        nip11: Nip11Args,
     },
+}
+
+/// Helper function to load a cassette and set its NIP-11 info if available
+fn load_cassette_with_nip11(
+    store: &mut Store<()>,
+    instance: &Instance,
+    nip11_args: &Nip11Args,
+) -> Result<()> {
+    // Check if the cassette exports set_relay_info function
+    if let Ok(set_relay_info) = instance.get_typed_func::<(i32, i32), i32>(&mut *store, "set_relay_info") {
+        // Build RelayInfo from CLI arguments
+        let mut relay_info = serde_json::Map::new();
+        
+        // Add supported NIPs - this will be populated by cassette-tools
+        relay_info.insert("supported_nips".to_string(), json!([]));
+        
+        // Add optional fields if provided
+        if let Some(name) = &nip11_args.relay_name {
+            relay_info.insert("name".to_string(), json!(name));
+        }
+        if let Some(desc) = &nip11_args.relay_description {
+            relay_info.insert("description".to_string(), json!(desc));
+        }
+        if let Some(pubkey) = &nip11_args.relay_pubkey {
+            relay_info.insert("pubkey".to_string(), json!(pubkey));
+        }
+        if let Some(contact) = &nip11_args.relay_contact {
+            relay_info.insert("contact".to_string(), json!(contact));
+        }
+        
+        // Serialize to JSON
+        let json_str = serde_json::to_string(&relay_info)?;
+        let json_bytes = json_str.as_bytes();
+        
+        // Get memory and allocation function
+        let memory = instance
+            .get_memory(&mut *store, "memory")
+            .ok_or_else(|| anyhow!("Memory export not found"))?;
+        
+        let alloc_func = instance
+            .get_typed_func::<i32, i32>(&mut *store, "alloc_buffer")
+            .or_else(|_| instance.get_typed_func::<i32, i32>(&mut *store, "alloc_string"))?;
+        
+        // Allocate memory for the JSON string
+        let json_ptr = alloc_func.call(&mut *store, json_bytes.len() as i32)?;
+        if json_ptr == 0 {
+            return Err(anyhow!("Failed to allocate memory for NIP-11 info"));
+        }
+        
+        // Write JSON to memory
+        memory.write(&mut *store, json_ptr as usize, json_bytes)?;
+        
+        // Call set_relay_info
+        let result = set_relay_info.call(&mut *store, (json_ptr, json_bytes.len() as i32))?;
+        
+        // Clean up allocated memory
+        if let Ok(dealloc_func) = instance.get_typed_func::<(i32, i32), ()>(&mut *store, "dealloc_string") {
+            dealloc_func.call(&mut *store, (json_ptr, json_bytes.len() as i32))?;
+        }
+        
+        if result != 0 {
+            eprintln!("Warning: Failed to set NIP-11 info (error code: {})", result);
+        }
+    }
+    
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -1104,7 +1427,11 @@ fn main() -> Result<()> {
             generate: _,
             no_bindings,
             interactive,
-            verbose
+            verbose,
+            nip_11,
+            nip_42,
+            nip_45,
+            nip11
         } => {
             // Set default values if not provided
             let name_value = name.clone().unwrap_or_else(|| "cassette".to_string());
@@ -1126,7 +1453,10 @@ fn main() -> Result<()> {
                     &output_value,
                     *no_bindings,
                     *interactive,
-                    *verbose
+                    *verbose,
+                    *nip_11,
+                    *nip_42,
+                    *nip_45
                 )?;
             } else {
                 // No input file, read from stdin
@@ -1164,7 +1494,10 @@ fn main() -> Result<()> {
                     &output_value,
                     *no_bindings,
                     *interactive,
-                    *verbose
+                    *verbose,
+                    *nip_11,
+                    *nip_42,
+                    *nip_45
                 )?;
                 
                 // The temp directory will be cleaned up when it goes out of scope
@@ -1186,6 +1519,7 @@ fn main() -> Result<()> {
             until,
             interactive,
             verbose,
+            nip11,
         } => {
             process_dub_command(
                 cassettes,
@@ -1201,6 +1535,7 @@ fn main() -> Result<()> {
                 *until,
                 *interactive,
                 *verbose,
+                nip11,
             )
         }
         Commands::Play {
@@ -1215,20 +1550,43 @@ fn main() -> Result<()> {
             output,
             interactive,
             verbose,
+            info,
+            count,
+            nip11,
         } => {
-            process_req_command(
-                cassette,
-                subscription,
-                filter,
-                kinds,
-                authors,
-                *limit,
-                *since,
-                *until,
-                output,
-                *interactive,
-                *verbose,
-            )
+            if *info {
+                // Just show NIP-11 info
+                process_info_command(cassette, nip11)
+            } else if *count {
+                // Perform COUNT query
+                process_count_command(
+                    cassette,
+                    subscription,
+                    filter,
+                    kinds,
+                    authors,
+                    *limit,
+                    *since,
+                    *until,
+                    *verbose,
+                    nip11,
+                )
+            } else {
+                process_req_command(
+                    cassette,
+                    subscription,
+                    filter,
+                    kinds,
+                    authors,
+                    *limit,
+                    *since,
+                    *until,
+                    output,
+                    *interactive,
+                    *verbose,
+                    nip11,
+                )
+            }
         }
         Commands::Cast {
             cassettes,
@@ -1239,6 +1597,7 @@ fn main() -> Result<()> {
             dry_run,
             interactive: _,
             verbose: _,
+            nip11,
         } => {
             // Use tokio runtime for async operations
             let runtime = tokio::runtime::Runtime::new()?;
@@ -1249,6 +1608,7 @@ fn main() -> Result<()> {
                 *throttle,
                 *timeout,
                 *dry_run,
+                nip11,
             ))
         }
     }
@@ -1414,7 +1774,10 @@ pub fn process_events(
     output_dir: &PathBuf,
     _no_bindings: bool,
     interactive: bool,
-    verbose: bool
+    verbose: bool,
+    nip_11: bool,
+    nip_42: bool,
+    nip_45: bool
 ) -> Result<()> {
     // Initialize interactive UI if enabled
     let mut record_ui = if interactive {
@@ -1535,6 +1898,20 @@ pub fn process_events(
     // Properly escape the JSON for template insertion
     // Note: We're not double-escaping anymore, just using the raw JSON
     generator.set_var("events_json", &events_json_string);
+    
+    // Build features array based on NIP flags
+    // Always include nip11 since info function should always be available
+    let mut features = vec!["default".to_string(), "nip11".to_string()];
+    if nip_42 {
+        features.push("nip42".to_string());
+    }
+    if nip_45 {
+        features.push("nip45".to_string());
+    }
+    
+    // Convert features vector to JSON array format for template
+    let features_json = serde_json::to_string(&features)?;
+    generator.set_var("features_array", &features_json);
 
     // Set verbose mode on generator
     generator.set_verbose(verbose);
@@ -1594,6 +1971,7 @@ async fn process_cast_command(
     throttle_ms: u64,
     timeout_secs: u64,
     dry_run: bool,
+    nip11_args: &Nip11Args,
 ) -> Result<()> {
     if cassette_paths.is_empty() {
         return Err(anyhow!("No cassettes specified"));
@@ -1622,7 +2000,7 @@ async fn process_cast_command(
             continue;
         }
         
-        let events = extract_all_events_from_cassette(cassette_path)?;
+        let events = extract_all_events_from_cassette(cassette_path, nip11_args)?;
         let initial_count = events.len();
         let mut added = 0;
         
@@ -1738,13 +2116,16 @@ async fn process_cast_command(
 }
 
 /// Extract all events from a cassette
-fn extract_all_events_from_cassette(cassette_path: &std::path::PathBuf) -> Result<Vec<Value>> {
+fn extract_all_events_from_cassette(cassette_path: &std::path::PathBuf, nip11_args: &Nip11Args) -> Result<Vec<Value>> {
     use wasmtime::{Store, Module, Instance};
     
     let engine = wasmtime::Engine::default();
     let module = Module::from_file(&engine, cassette_path)?;
     let mut store = Store::new(&engine, ());
     let instance = Instance::new(&mut store, &module, &[])?;
+    
+    // Set NIP-11 info if provided
+    load_cassette_with_nip11(&mut store, &instance, nip11_args)?;
     
     let memory = instance.get_memory(&mut store, "memory")
         .ok_or_else(|| anyhow!("No memory export found"))?;

@@ -1,8 +1,11 @@
-use cassette_tools::{Cassette, CassetteSchema, RelayHandler, RelayResult};
+use cassette_tools::{Cassette, CassetteSchema, RelayHandler, RelayResult, implement_info};
 use cassette_tools::nip01::{ClientReq, RelayEvent, RelayNotice};
 use wasm_bindgen::prelude::*;
 use serde_json::{json, Value, from_str, to_string};
 use chrono::{Utc, DateTime};
+
+// Implement NIP-11 info function (relay info will be set dynamically by CLI)
+implement_info!();
 
 #[wasm_bindgen]
 pub struct CustomCassette {
