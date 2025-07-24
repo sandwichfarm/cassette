@@ -35,6 +35,22 @@ impl Counter {
         
         result
     }
+
+    pub fn render_value(&self, value: u64, color: Color) -> String {
+        let formatted = format!("{:0width$}", value, width = self.max_digits);
+        let mut result = String::new();
+        
+        for digit in formatted.chars() {
+            result.push_str(&format!(
+                "{}",
+                digit.to_string()
+                    .with(color)
+                    .on(Color::Rgb { r: 30, g: 30, b: 30 })
+            ));
+        }
+        
+        result
+    }
 }
 
 pub struct ProgressBar {

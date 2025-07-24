@@ -82,6 +82,13 @@ mod generator {
         }
 
         pub fn generate(&self) -> Result<PathBuf> {
+            self.generate_with_callback(None::<fn() -> Result<()>>)
+        }
+        
+        pub fn generate_with_callback<F>(&self, progress_callback: Option<F>) -> Result<PathBuf> 
+        where 
+            F: FnMut() -> Result<()>
+        {
             // Create src directory if it doesn't exist
             let src_dir = self.project_dir.join("src");
             fs::create_dir_all(&src_dir).context("Failed to create src directory")?;
@@ -89,8 +96,8 @@ mod generator {
             // Create the lib.rs file from template
             self.create_project_files(&src_dir)?;
 
-            // Build the WASM module
-            let output_path = self.build_wasm(&self.project_dir)?;
+            // Build the WASM module with progress callback
+            let output_path = self.build_wasm(&self.project_dir, progress_callback)?;
 
             // Copy the output to the destination
             let dest_path = self.copy_output(output_path)?;
@@ -194,7 +201,10 @@ mod generator {
             Ok(tools_path)
         }
 
-        fn build_wasm(&self, project_dir: &Path) -> Result<PathBuf> {
+        fn build_wasm<F>(&self, project_dir: &Path, mut progress_callback: Option<F>) -> Result<PathBuf> 
+        where 
+            F: FnMut() -> Result<()>
+        {
             // Change to the project directory
             let current_dir = std::env::current_dir()?;
             std::env::set_current_dir(project_dir)?;
@@ -207,10 +217,28 @@ mod generator {
 
             // Run cargo build --target wasm32-unknown-unknown
             debugln!(self.verbose, "  Running cargo build...");
-            let output = Command::new("cargo")
+            
+            // Start the build process
+            let mut child = Command::new("cargo")
                 .args(&["build", "--target", "wasm32-unknown-unknown", "--release"])
-                .output()
+                .spawn()
                 .context("Failed to run cargo build. Make sure Rust and the wasm32-unknown-unknown target are installed.")?;
+            
+            // Update UI while waiting for compilation
+            if let Some(ref mut callback) = progress_callback {
+                loop {
+                    match child.try_wait()? {
+                        Some(_) => break, // Process finished
+                        None => {
+                            callback()?;
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                    }
+                }
+            }
+            
+            // Wait for the process to complete
+            let output = child.wait_with_output()?;
 
             // Change back to the original directory
             std::env::set_current_dir(current_dir)?;
@@ -1422,8 +1450,20 @@ pub fn process_events(
     // Set verbose mode on generator
     generator.set_verbose(verbose);
     
-    // Generate the cassette
-    match generator.generate() {
+    // Generate the cassette with compilation progress
+    let result = if let Some(ref ui) = record_ui {
+        // Interactive mode - show compilation progress
+        let total_events = processed_events.len() as u64;
+        generator.generate_with_callback(Some(|| {
+            ui.show_compilation(total_events)?;
+            Ok(())
+        }))
+    } else {
+        // Non-interactive mode
+        generator.generate()
+    };
+    
+    match result {
         Ok(wasm_path) => {
             if let Some(ui) = record_ui {
                 // Show completion screen in interactive mode
