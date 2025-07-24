@@ -1,6 +1,6 @@
 # Cassette
 
-NIP-01 compatible, portable WebAssembly read-only relays
+Modular NIP-compatible, portable WebAssembly read-only relays with support for NIP-01, NIP-11, NIP-42, and NIP-45
 
 ## Quick Start
 
@@ -16,11 +16,18 @@ _**Knowledge is power:** The `cli` includes an ability to both `record` and `pla
 _Pipe the events or provide the path to a json file with events._
 
 ```bash
-# From a relay
+# Basic cassette (NIP-01 only)
 nak req -k 1 -l 100 wss://nos.lol | cassette record --name my-notes
 
 # From a file
 cassette record events.json --name my-notes
+
+# With COUNT support (NIP-45)
+cassette record events.json --name my-notes --nip-45
+
+# Full-featured with relay info (NIP-11 + NIP-45)
+cassette record events.json --name my-relay --nip-11 --nip-45 \
+  --relay-name "My Archive" --relay-description "Personal event archive"
 
 # Output: my-notes.wasm
 ```
@@ -41,6 +48,16 @@ cassette play my-notes.wasm --authors npub1...
 
 # Multiple filters
 cassette play my-notes.wasm --kinds 1 --kinds 7 --limit 10
+
+# Get relay information (NIP-11)
+cassette play my-notes.wasm --info
+
+# COUNT events (NIP-45)
+cassette play my-notes.wasm --count --kinds 1
+
+# COUNT with custom relay info
+cassette play my-notes.wasm --count --kinds 1 \
+  --relay-name "Archive" --relay-description "Event archive"
 ```
 
 ### Dub a Mixtape
@@ -68,7 +85,7 @@ cassette cast archive.wasm --relays ws://localhost:7000 --dry-run
 
 ## What is a Cassette?
 
-A cassette is a WebAssembly module containing Nostr events that implements the NIP-01 relay protocol. Think of it as a portable, queryable database that runs anywhere WebAssembly does - browsers, servers, edge workers, or CLI tools.
+A cassette is a WebAssembly module containing Nostr events that implements the Nostr relay protocol. Cassettes support modular NIP implementations including NIP-01 (basic relay protocol), NIP-11 (relay information document), NIP-42 (authentication), and NIP-45 (event counts). Think of it as a portable, queryable database that runs anywhere WebAssembly does - browsers, servers, edge workers, or CLI tools.
 
 ### Use Cases
 
@@ -91,10 +108,17 @@ cassette record [OPTIONS] [INPUT_FILE]
 #   -a, --author       Author/curator name
 #   -o, --output       Output directory (default: ./cassettes)
 #   --no-bindings      Skip JavaScript bindings, WASM only
+#   --nip-11           Enable NIP-11 (Relay Information Document)
+#   --nip-42           Enable NIP-42 (Authentication)
+#   --nip-45           Enable NIP-45 (Event Counts)
+#   --relay-name       Relay name for NIP-11
+#   --relay-description Relay description for NIP-11
 
 # Examples:
 nak req -k 30023 wss://relay.nostr.band | cassette record -n "long-form"
 cassette record my-events.json --name "my-backup"
+cassette record events.json --nip-45 --name "countable" # With COUNT support
+cassette record events.json --nip-11 --nip-45 --relay-name "Archive"
 ```
 
 ### `play` - Play cassettes (send a `req`)
@@ -111,6 +135,9 @@ cassette play [OPTIONS] <CASSETTE>
 #   --since            Events after timestamp
 #   --until            Events before timestamp
 #   -o, --output       Output format: json or ndjson
+#   --info             Show NIP-11 relay information
+#   --count            Perform COUNT query (NIP-45)
+#   --relay-name       Set relay name for dynamic info
 
 # Examples:
 cassette play my-notes.wasm --kinds 1 --limit 50
@@ -158,6 +185,116 @@ cassette cast *.wasm --relays wss://nos.lol wss://relay.nostr.band
 cassette cast archive.wasm --relays ws://localhost:7000 --dry-run
 ```
 
+## Advanced Configuration
+
+### Modular NIP Support
+
+Cassettes support modular NIP (Nostr Implementation Possibilities) implementation, allowing you to build cassettes with exactly the features you need:
+
+#### NIP-01 (Basic Relay Protocol)
+Always included. Provides REQ/EVENT/EOSE/CLOSE message handling.
+
+```bash
+# Basic cassette with only NIP-01
+cassette record events.json --name basic-relay
+```
+
+#### NIP-11 (Relay Information Document)
+Always available for basic info. Enables dynamic relay metadata and capability discovery.
+
+```bash
+# With static relay information
+cassette record events.json --name my-relay --nip-11 \
+  --relay-name "Personal Archive" \
+  --relay-description "My curated event collection" \
+  --relay-contact "npub1abc..."
+
+# View relay information
+cassette play my-relay.wasm --info
+
+# Dynamic relay info at runtime
+cassette play any-cassette.wasm --info \
+  --relay-name "Custom Name" \
+  --relay-description "Runtime description"
+```
+
+#### NIP-45 (Event Counts)
+Adds COUNT query support for efficient event counting without retrieving full events.
+
+```bash
+# Record with COUNT support
+cassette record events.json --name countable --nip-45
+
+# Query event counts
+cassette play countable.wasm --count --kinds 1        # Count kind 1 events
+cassette play countable.wasm --count --authors npub1...  # Count by author
+cassette play countable.wasm --count --since 1700000000 # Count recent events
+```
+
+#### NIP-42 (Authentication)
+Framework for authentication support (currently placeholder for future implementation).
+
+```bash
+# Record with auth framework
+cassette record events.json --name secure --nip-42
+```
+
+### Combining NIPs
+
+You can combine multiple NIPs for full-featured cassettes:
+
+```bash
+# Full-featured cassette
+cassette record events.json --name full-relay \
+  --nip-11 --nip-42 --nip-45 \
+  --relay-name "Complete Archive" \
+  --relay-description "Full-featured Nostr archive" \
+  --relay-contact "contact@example.com"
+
+# Test all features
+cassette play full-relay.wasm --info                    # Show relay info
+cassette play full-relay.wasm --count --kinds 1         # Count events
+cassette play full-relay.wasm --kinds 1 --limit 10      # Get events
+```
+
+### Filtering and Querying
+
+Cassettes support comprehensive NIP-01 filtering:
+
+```bash
+# By event kind
+cassette play relay.wasm --kinds 1 --kinds 30023
+
+# By author (accepts npub, hex, or partial)
+cassette play relay.wasm --authors npub1abc... --authors npub1def...
+
+# Time-based filtering
+cassette play relay.wasm --since 1700000000 --until 1700100000
+
+# Combination filters
+cassette play relay.wasm --kinds 1 --authors npub1abc... --limit 50
+
+# Custom JSON filters (advanced)
+cassette play relay.wasm --filter '{"#t": ["bitcoin"], "#p": ["npub1..."]}'
+
+# Output formats
+cassette play relay.wasm --kinds 1 --output ndjson | jq .
+```
+
+### Performance and Size Optimization
+
+Different NIP combinations affect cassette size and capabilities:
+
+- **NIP-01 only**: Smallest size, basic querying
+- **+ NIP-11**: Adds ~2KB, relay metadata support  
+- **+ NIP-45**: Adds ~5KB, efficient event counting
+- **+ NIP-42**: Adds ~3KB, authentication framework
+
+Choose NIPs based on your use case:
+- **Archival**: NIP-01 + NIP-11 for basic archive with metadata
+- **Analytics**: NIP-01 + NIP-11 + NIP-45 for counting and analysis
+- **Full-featured**: All NIPs for maximum compatibility
+
 ## Building from Source
 
 ### Prerequisites
@@ -180,7 +317,7 @@ cargo build --release
 ```
 cassette/
 ├── cli/                    # Command-line interface
-├── cassette-tools/         # Core WASM functionality
+├── cassette-tools/         # Core WASM functionality and modular NIP support
 ├── loaders/                # Language-specific cassette loaders
 │   ├── js/                 # JavaScript/TypeScript loader
 │   └── py/                 # Python loader
@@ -191,7 +328,7 @@ cassette/
 ### Components
 
 - **CLI**: Command-line tool for creating and querying cassettes
-- **Cassette Tools**: Rust library providing memory management and NIP-01 implementation helpers
+- **Cassette Tools**: Rust library providing memory management and modular NIP implementations (NIP-01, NIP-11, NIP-42, NIP-45)
 - **Loaders**: Language-specific libraries for loading and executing cassettes
 - **Boombox**: WebSocket server that serves cassettes as Nostr relays
 - **GUI**: Web interface for testing cassettes in the browser
@@ -202,9 +339,15 @@ Cassettes implement a standardized WebAssembly interface:
 
 ```rust
 // Required exports
-fn describe() -> String      // Metadata about the cassette
-fn req(ptr, len) -> ptr     // Handle REQ messages
-fn close(ptr, len) -> ptr   // Handle CLOSE messages
+fn describe() -> String         // Metadata about the cassette
+fn req(ptr, len) -> ptr        // Handle REQ and COUNT messages  
+fn close(ptr, len) -> ptr      // Handle CLOSE messages
+
+// NIP-11 support (always available)
+fn info() -> ptr               // Relay information document
+
+// NIP-11 dynamic configuration (when nip11 feature enabled)
+fn set_relay_info(ptr, len) -> i32  // Set relay metadata
 
 // Memory management
 fn alloc_buffer(size) -> ptr
