@@ -327,7 +327,19 @@ fn process_req_command(
     since: Option<i64>,
     until: Option<i64>,
     output_format: &str,
+    interactive: bool,
+    verbose: bool,
 ) -> Result<()> {
+    // Initialize interactive UI if enabled
+    let mut play_ui = if interactive {
+        let ui = ui::play::PlayUI::new();
+        ui.init()?;
+        ui.show_loading(&cassette_path.display().to_string())?;
+        Some(ui)
+    } else {
+        None
+    };
+
     // Read the WASM file
     let wasm_bytes = fs::read(cassette_path)
         .context("Failed to read cassette WASM file")?;
@@ -399,6 +411,7 @@ fn process_req_command(
     let req_bytes = req_string.as_bytes();
     // Collect all events in a loop
     let mut all_events = Vec::new();
+    let mut event_count = 0u64;
     
     loop {
         // Allocate memory for the request string for each call
@@ -440,7 +453,14 @@ fn process_req_command(
                 match arr[0].as_str() {
                     Some("EVENT") => {
                         if arr.len() >= 3 {
+                            event_count += 1;
                             all_events.push(arr[2].clone());
+                            
+                            // Update interactive UI
+                            if let Some(ref mut ui) = play_ui {
+                                ui.update_playback(all_events.len() as u64, event_count, Some(&arr[2]))?;
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            }
                         }
                     }
                     Some("EOSE") => {
@@ -458,20 +478,36 @@ fn process_req_command(
         }
     }
     
-    // Output all collected events based on format
-    match output_format {
-        "ndjson" => {
-            // For NDJSON, output each event on its own line
-            for event in &all_events {
-                println!("{}", serde_json::to_string(&event)?);
+    // Handle completion and output
+    if let Some(ui) = play_ui {
+        // Interactive mode - show completion screen
+        ui.show_completion(all_events.len() as u64)?;
+        
+        // Wait for user input
+        use crossterm::event::{self, Event, KeyCode};
+        loop {
+            if let Ok(Event::Key(key)) = event::read() {
+                if matches!(key.code, KeyCode::Char(_) | KeyCode::Enter | KeyCode::Esc) {
+                    break;
+                }
             }
         }
-        _ => {
-            // Default JSON output - output as array
-            if all_events.len() == 1 {
-                println!("{}", serde_json::to_string_pretty(&all_events[0])?);
-            } else {
-                println!("{}", serde_json::to_string_pretty(&all_events)?);
+        
+        ui.cleanup()?;
+    } else {
+        // Non-interactive mode - just output results
+        match output_format {
+            "ndjson" => {
+                for event in &all_events {
+                    println!("{}", serde_json::to_string(&event)?);
+                }
+            }
+            _ => {
+                if all_events.len() == 1 {
+                    println!("{}", serde_json::to_string_pretty(&all_events[0])?);
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&all_events)?);
+                }
             }
         }
     }
@@ -492,19 +528,38 @@ fn process_dub_command(
     limit: Option<usize>,
     since: Option<i64>,
     until: Option<i64>,
+    interactive: bool,
+    verbose: bool,
 ) -> Result<()> {
     if cassette_paths.is_empty() {
         return Err(anyhow!("No input cassettes specified"));
     }
     
-    println!("=== Cassette CLI - Dub Command ===");
-    println!("Combining {} cassettes...", cassette_paths.len());
+    // Initialize interactive UI if enabled
+    let mut dub_ui = if interactive {
+        let cassette_names: Vec<String> = cassette_paths.iter()
+            .map(|p| p.file_stem()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string())
+            .collect();
+        let ui = ui::dub::DubUI::new(cassette_paths.len(), cassette_names);
+        ui.init()?;
+        ui.show_loading()?;
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        Some(ui)
+    } else {
+        None
+    };
+    
+    debugln!(verbose, "=== Cassette CLI - Dub Command ===");
+    debugln!(verbose, "Combining {} cassettes...", cassette_paths.len());
     
     // Collect all events from all cassettes
     let mut all_events = Vec::new();
     
     for (idx, cassette_path) in cassette_paths.iter().enumerate() {
-        println!("\n📼 Processing cassette {}/{}: {}", 
+        debugln!(verbose, "\n📼 Processing cassette {}/{}: {}", 
             idx + 1, 
             cassette_paths.len(), 
             cassette_path.display()
@@ -600,6 +655,12 @@ fn process_dub_command(
                         Some("EVENT") => {
                             if arr.len() >= 3 {
                                 cassette_events.push(arr[2].clone());
+                                
+                                // Update interactive UI
+                                if let Some(ref mut ui) = dub_ui {
+                                    ui.update_processing(idx, cassette_events.len() as u64, all_events.len() as u64 + cassette_events.len() as u64)?;
+                                    std::thread::sleep(std::time::Duration::from_millis(30));
+                                }
                             }
                         }
                         Some("EOSE") => {
@@ -617,15 +678,20 @@ fn process_dub_command(
             }
         }
         
-        println!("  Found {} events", cassette_events.len());
+        debugln!(verbose, "  Found {} events", cassette_events.len());
         all_events.extend(cassette_events);
     }
     
-    println!("\n📊 Total events collected: {}", all_events.len());
+    debugln!(verbose, "\n📊 Total events collected: {}", all_events.len());
+    
+    // Show mixing phase in interactive mode
+    if let Some(ref ui) = dub_ui {
+        ui.show_mixing(all_events.len() as u64)?;
+    }
     
     // Apply filters if specified
     if !kinds.is_empty() || !authors.is_empty() || !filter_args.is_empty() || since.is_some() || until.is_some() {
-        println!("\n🔍 Applying filters...");
+        debugln!(verbose, "\n🔍 Applying filters...");
         
         let mut filtered_events = Vec::new();
         
@@ -666,22 +732,22 @@ fn process_dub_command(
             }
         }
         
-        println!("  Events after filtering: {}", filtered_events.len());
+        debugln!(verbose, "  Events after filtering: {}", filtered_events.len());
         all_events = filtered_events;
     }
     
     // Apply limit if specified and not already applied via filter
     if let Some(l) = limit {
         if all_events.len() > l {
-            println!("  Applying limit of {} events", l);
+            debugln!(verbose, "  Applying limit of {} events", l);
             all_events.truncate(l);
         }
     }
     
     // Preprocess events to handle replaceable events
-    println!("\n🔍 Preprocessing events according to NIP-01...");
+    debugln!(verbose, "\n🔍 Preprocessing events according to NIP-01...");
     let processed_events = preprocess_events(all_events);
-    println!("  Final event count: {}", processed_events.len());
+    debugln!(verbose, "  Final event count: {}", processed_events.len());
     
     // Generate the new cassette
     let cassette_name = name.unwrap_or("dubbed_cassette");
@@ -718,7 +784,26 @@ fn process_dub_command(
     if generated_path != *output_path {
         fs::rename(&generated_path, output_path)
             .context("Failed to rename output file")?;
-        println!("\n✅ Dubbed cassette saved to: {}", output_path.display());
+    }
+    
+    // Handle completion
+    if let Some(ui) = dub_ui {
+        // Interactive mode - show completion screen
+        ui.show_completion(&output_path.display().to_string(), processed_events.len() as u64)?;
+        
+        // Wait for user input
+        use crossterm::event::{self, Event, KeyCode};
+        loop {
+            if let Ok(Event::Key(key)) = event::read() {
+                if matches!(key.code, KeyCode::Char(_) | KeyCode::Enter | KeyCode::Esc) {
+                    break;
+                }
+            }
+        }
+        
+        ui.cleanup()?;
+    } else {
+        debugln!(verbose, "\n✅ Dubbed cassette saved to: {}", output_path.display());
     }
     
     Ok(())
@@ -1099,8 +1184,8 @@ fn main() -> Result<()> {
             limit,
             since,
             until,
-            interactive: _,
-            verbose: _,
+            interactive,
+            verbose,
         } => {
             process_dub_command(
                 cassettes,
@@ -1114,6 +1199,8 @@ fn main() -> Result<()> {
                 *limit,
                 *since,
                 *until,
+                *interactive,
+                *verbose,
             )
         }
         Commands::Play {
@@ -1126,8 +1213,8 @@ fn main() -> Result<()> {
             since,
             until,
             output,
-            interactive: _,
-            verbose: _,
+            interactive,
+            verbose,
         } => {
             process_req_command(
                 cassette,
@@ -1139,6 +1226,8 @@ fn main() -> Result<()> {
                 *since,
                 *until,
                 output,
+                *interactive,
+                *verbose,
             )
         }
         Commands::Cast {

@@ -36,20 +36,20 @@ cassette record events.json --name my-notes
     query: {
       title: 'Query Events',
       code: `# Get all events
-cassette req my-notes.wasm
+cassette play my-notes.wasm
 
 # Filter by kind
-cassette req my-notes.wasm --kinds 1
+cassette play my-notes.wasm --kinds 1
 
 # Filter by author
-cassette req my-notes.wasm --authors npub1...
+cassette play my-notes.wasm --authors npub1...
 
 # Multiple filters
-cassette req my-notes.wasm --kinds 1 --kinds 7 --limit 10`
+cassette play my-notes.wasm --kinds 1 --kinds 7 --limit 10`
     },
     combine: {
-      title: 'Combine Cassettes',
-      code: `# Merge cassettes
+      title: 'Create Mixtapes',
+      code: `# Merge multiple cassettes
 cassette dub alice.wasm bob.wasm combined.wasm
 
 # Merge with filters

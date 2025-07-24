@@ -11,8 +11,14 @@ impl TapeReel {
         Self { frame: 0, size }
     }
 
-    pub fn next_frame(&mut self) {
+    pub fn next_frame(&mut self) -> String {
         self.frame = (self.frame + 1) % 8;
+        self.get_frame_symbol()
+    }
+    
+    pub fn get_frame_symbol(&self) -> String {
+        let symbols = ["◯", "◐", "◑", "◒", "●", "◓", "◔", "◕"];
+        symbols[self.frame].to_string()
     }
 
     pub fn render(&self, filled: bool) -> Vec<String> {

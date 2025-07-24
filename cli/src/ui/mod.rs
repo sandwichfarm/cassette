@@ -3,6 +3,9 @@ pub mod animations;
 pub mod colors;
 pub mod terminal;
 pub mod record;
+pub mod play;
+pub mod dub;
+pub mod cast;
 
 use std::io::{self};
 use crossterm::{

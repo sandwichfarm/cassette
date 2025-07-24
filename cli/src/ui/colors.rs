@@ -10,6 +10,11 @@ pub const ACCENT_YELLOW: Color = Color::Rgb { r: 255, g: 204, b: 0 };
 pub const ACCENT_PURPLE: Color = Color::Rgb { r: 187, g: 134, b: 252 };
 pub const ACCENT_ORANGE: Color = Color::Rgb { r: 255, g: 136, b: 0 };
 
+// OP-1 specific color aliases
+pub const OP1_ORANGE: Color = ACCENT_ORANGE;
+pub const OP1_BLUE: Color = ACCENT_BLUE;
+pub const OP1_RED: Color = ACCENT_RED;
+
 // Grayscale
 pub const DARK_GRAY: Color = Color::Rgb { r: 60, g: 60, b: 60 };
 pub const MEDIUM_GRAY: Color = Color::Rgb { r: 140, g: 140, b: 140 };

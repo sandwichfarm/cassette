@@ -57,23 +57,23 @@ Query events from a cassette using NIP-01 filters:
 
 ```bash
 # Get all events
-cassette req my-cassette.wasm
+cassette play my-cassette.wasm
 
 # Filter by event kind
-cassette req my-cassette.wasm --kinds 1
+cassette play my-cassette.wasm --kinds 1
 
 # Multiple filters
-cassette req my-cassette.wasm \
+cassette play my-cassette.wasm \
   --kinds 1 --kinds 7 \
   --authors npub1... \
   --limit 50
 
 # Custom filter JSON
-cassette req my-cassette.wasm \
+cassette play my-cassette.wasm \
   --filter '{"#t": ["bitcoin", "nostr"]}'
 
 # Output as NDJSON for piping
-cassette req my-cassette.wasm --output ndjson | grep "pattern"
+cassette play my-cassette.wasm --output ndjson | grep "pattern"
 ```
 
 Options:
@@ -146,7 +146,7 @@ nak req -k 1 -a <your-pubkey> wss://relay.damus.io | \
 cassette record test-events.json --name "test-fixture"
 
 # Query to verify
-cassette req test-fixture.wasm --kinds 1
+cassette play test-fixture.wasm --kinds 1
 ```
 
 ### Combine and Filter Archives
