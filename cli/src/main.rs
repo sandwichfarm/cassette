@@ -14,6 +14,8 @@ use futures_util::{StreamExt, SinkExt};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+mod ui;
+
 // Module for cassette generation
 mod generator {
     use std::fs::{self, File};
@@ -652,7 +654,8 @@ fn process_dub_command(
         cassette_desc,
         cassette_author,
         &output_dir,
-        false // no_bindings
+        false, // no_bindings
+        false // interactive
     )?;
     
     // Rename the generated file to the specified output name if needed
@@ -812,6 +815,9 @@ enum Commands {
             action = clap::ArgAction::SetTrue
         )]
         no_bindings: bool,
+        /// Enable interactive mode with visual feedback
+        #[arg(short = 'i', long)]
+        interactive: bool,
     },
     
     /// Combine multiple cassettes into a new cassette (dubbing/mixing)
@@ -857,6 +863,9 @@ enum Commands {
         /// Until timestamp
         #[arg(long)]
         until: Option<i64>,
+        /// Enable interactive mode with visual feedback
+        #[arg(short = 'i', long)]
+        interactive: bool,
     },
     
     /// Send a REQ message to a cassette and get events
@@ -895,6 +904,9 @@ enum Commands {
         /// Output format: json (default) or ndjson
         #[arg(short, long, default_value = "json")]
         output: String,
+        /// Enable interactive mode with visual feedback
+        #[arg(short = 'i', long)]
+        interactive: bool,
     },
     
     /// Cast events from cassettes to Nostr relays
@@ -921,6 +933,9 @@ enum Commands {
         /// Dry run - show what would be sent without actually sending
         #[arg(long)]
         dry_run: bool,
+        /// Enable interactive mode with visual feedback
+        #[arg(short = 'i', long)]
+        interactive: bool,
     },
 }
 
@@ -935,7 +950,8 @@ fn main() -> Result<()> {
             author, 
             output,
             generate: _,
-            no_bindings
+            no_bindings,
+            interactive
         } => {
             // Set default values if not provided
             let name_value = name.clone().unwrap_or_else(|| "cassette".to_string());
@@ -955,7 +971,8 @@ fn main() -> Result<()> {
                     &desc_value,
                     &author_value,
                     &output_value,
-                    *no_bindings
+                    *no_bindings,
+                    *interactive
                 )?;
             } else {
                 // No input file, read from stdin
@@ -991,7 +1008,8 @@ fn main() -> Result<()> {
                     &desc_value,
                     &author_value,
                     &output_value,
-                    *no_bindings
+                    *no_bindings,
+                    *interactive
                 )?;
                 
                 // The temp directory will be cleaned up when it goes out of scope
@@ -1011,6 +1029,7 @@ fn main() -> Result<()> {
             limit,
             since,
             until,
+            interactive,
         } => {
             process_dub_command(
                 cassettes,
@@ -1036,6 +1055,7 @@ fn main() -> Result<()> {
             since,
             until,
             output,
+            interactive,
         } => {
             process_req_command(
                 cassette,
@@ -1056,6 +1076,7 @@ fn main() -> Result<()> {
             throttle,
             timeout,
             dry_run,
+            interactive,
         } => {
             // Use tokio runtime for async operations
             let runtime = tokio::runtime::Runtime::new()?;
@@ -1229,17 +1250,31 @@ pub fn process_events(
     description: &str,
     author: &str,
     output_dir: &PathBuf,
-    _no_bindings: bool
+    _no_bindings: bool,
+    interactive: bool
 ) -> Result<()> {
+    // Initialize interactive UI if enabled
+    let mut record_ui = if interactive {
+        let ui = ui::record::RecordUI::new();
+        ui.init()?;
+        Some(ui)
+    } else {
+        None
+    };
+
     // Parse input file (supports both JSON array and NDJSON)
     let original_events = parse_events_from_file(input_file)?;
     
-    // Display statistics
-    println!("=== Cassette CLI - Record Command ===");
-    println!("Processing events for cassette creation...");
+    // Display statistics (only in non-interactive mode)
+    if !interactive {
+        println!("=== Cassette CLI - Record Command ===");
+        println!("Processing events for cassette creation...");
+    }
     
-    println!("\n📊 Initial Event Summary:");
-    println!("  Total events: {}", original_events.len());
+    if !interactive {
+        println!("\n📊 Initial Event Summary:");
+        println!("  Total events: {}", original_events.len());
+    }
     
     // Count the number of events by kind
     let mut kind_counts = std::collections::HashMap::new();
@@ -1250,23 +1285,38 @@ pub fn process_events(
     }
     
     // Display kind statistics
-    if !kind_counts.is_empty() {
+    if !interactive && !kind_counts.is_empty() {
         println!("\n📋 Event Kinds:");
         for (kind, count) in kind_counts.iter() {
             println!("  Kind {}: {} events", kind, count);
         }
     }
     
+    // Update interactive UI with initial stats
+    if let Some(ref mut ui) = record_ui {
+        for (i, event) in original_events.iter().enumerate() {
+            if let Some(kind) = event.get("kind").and_then(|k| k.as_u64()) {
+                ui.update(i as u64 + 1, Some(kind))?;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+    
     // Preprocess events to handle replaceable and addressable events
-    println!("\n🔍 Preprocessing events according to NIP-01...");
+    if !interactive {
+        println!("\n🔍 Preprocessing events according to NIP-01...");
+    }
     let processed_events = preprocess_events(original_events);
     
-    println!("\n📊 Final Event Summary:");
-    println!("  Total events after preprocessing: {}", processed_events.len());
+    if !interactive {
+        println!("\n📊 Final Event Summary:");
+        println!("  Total events after preprocessing: {}", processed_events.len());
+    }
     
     // Sample of events
-    println!("\n📝 Sample Events:");
-    for (i, event) in processed_events.iter().take(2).enumerate() {
+    if !interactive {
+        println!("\n📝 Sample Events:");
+        for (i, event) in processed_events.iter().take(2).enumerate() {
         if let (Some(id), Some(kind), Some(pubkey)) = (
             event.get("id").and_then(|id| id.as_str()),
             event.get("kind").and_then(|k| k.as_i64()),
@@ -1281,28 +1331,32 @@ pub fn process_events(
         }
     }
     
-    if processed_events.len() > 2 {
-        println!("  ... and {} more events", processed_events.len() - 2);
+        if processed_events.len() > 2 {
+            println!("  ... and {} more events", processed_events.len() - 2);
+        }
     }
 
     // Generate metadata
     let cassette_created = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let event_count = processed_events.len();
     
-    println!("\n📦 Cassette Information:");
-    println!("  Name: {}", name);
-    println!("  Description: {}", description);
-    println!("  Author: {}", author);
-    println!("  Created: {}", cassette_created);
+    if !interactive {
+        println!("\n📦 Cassette Information:");
+        println!("  Name: {}", name);
+        println!("  Description: {}", description);
+        println!("  Author: {}", author);
+        println!("  Created: {}", cassette_created);
+    }
 
     // Create a temporary directory for building
     let temp_dir = tempdir()?;
     let project_dir = temp_dir.path().to_path_buf();
-    println!("Using project directory: {}", project_dir.display());
 
-    println!("\n🔨 Generating WASM Module:");
-    println!("  Creating Rust project from template...");
-    println!("  Using project directory: {}", project_dir.display());
+    if !interactive {
+        println!("\n🔨 Generating WASM Module:");
+        println!("  Creating Rust project from template...");
+        println!("  Using project directory: {}", project_dir.display());
+    }
 
     // Write events to the src directory
     let src_dir = project_dir.join("src");
@@ -1334,13 +1388,23 @@ pub fn process_events(
     // Generate the cassette
     match generator.generate() {
         Ok(wasm_path) => {
-            println!("  ✅ WASM module generated successfully!");
-            println!("  Output: {}", wasm_path.display());
-            println!("\n✅ Cassette creation complete!");
-            println!("  You can now load this WebAssembly module into the Boombox server.");
+            if let Some(ui) = record_ui {
+                // Show completion screen in interactive mode
+                ui.show_completion(processed_events.len() as u64, &wasm_path.display().to_string())?;
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                ui.cleanup()?;
+            } else {
+                println!("  ✅ WASM module generated successfully!");
+                println!("  Output: {}", wasm_path.display());
+                println!("\n✅ Cassette creation complete!");
+                println!("  You can now load this WebAssembly module into the Boombox server.");
+            }
             Ok(())
         },
         Err(e) => {
+            if let Some(ui) = record_ui {
+                ui.cleanup()?;
+            }
             println!("  ❌ Failed to generate WASM module: {}", e);
             Err(anyhow!("Failed to generate WASM module: {}", e))
         }
