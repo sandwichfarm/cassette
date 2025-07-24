@@ -9,6 +9,19 @@ The Cassette CLI provides tools to:
 - **Query** cassettes using NIP-01 filters
 - **Combine** multiple cassettes into new ones
 
+## Prerequisites
+
+The Cassette CLI requires Rust to be installed on your system for WASM module generation.
+
+**Install Rust:**
+```bash
+# Install Rust via rustup
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Add WASM target
+rustup target add wasm32-unknown-unknown
+```
+
 ## Installation
 
 Download pre-built binaries from [releases](https://github.com/dskvr/cassette/releases/latest) or build from source:
