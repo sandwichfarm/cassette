@@ -8,7 +8,7 @@ use chrono::Utc;
 use std::fs::File;
 use tempfile::tempdir;
 use std::collections::{HashMap, HashSet};
-use wasmtime::{Store, Module, Instance, Memory};
+use wasmtime::{Store, Module, Instance, Memory, TypedFunc};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use futures_util::{StreamExt, SinkExt};
 use std::sync::Arc;
@@ -222,9 +222,27 @@ mod generator {
             // Run cargo build --target wasm32-unknown-unknown
             debugln!(self.verbose, "  Running cargo build...");
             
-            // Start the build process
+            // Build feature list for this cassette based on template features
+            let mut features = vec!["nip11"]; // Always include NIP-11 for info function
+            
+            // Check the cassette-tools features and enable corresponding cassette features
+            if let Some(features_json) = self.template_vars.get("features_array") {
+                if let Ok(cassette_tools_features) = serde_json::from_str::<Vec<String>>(features_json) {
+                    for feature in cassette_tools_features {
+                        match feature.as_str() {
+                            "nip42" => features.push("nip42"),
+                            "nip45" => features.push("nip45"), 
+                            "nip50" => features.push("nip50"),
+                            _ => {} // Ignore other features
+                        }
+                    }
+                }
+            }
+            
+            // Build cargo command with features
+            let features_str = features.join(",");
             let mut child = Command::new("cargo")
-                .args(&["build", "--target", "wasm32-unknown-unknown", "--release"])
+                .args(&["build", "--target", "wasm32-unknown-unknown", "--release", "--features", &features_str])
                 .spawn()
                 .context("Failed to run cargo build. Make sure Rust and the wasm32-unknown-unknown target are installed.")?;
             
@@ -366,6 +384,73 @@ fn process_info_command(
     Ok(())
 }
 
+/// Helper function to get event count for a filter using NIP-45 COUNT
+fn get_event_count_for_filter(
+    store: &mut Store<()>,
+    instance: &Instance,
+    memory: &Memory,
+    alloc_func: &TypedFunc<i32, i32>,
+    dealloc_func: &TypedFunc<(i32, i32), ()>,
+    filter: &serde_json::Map<String, Value>,
+    subscription: &str,
+) -> Result<Option<u64>, anyhow::Error> {
+    // Get the req function for sending COUNT
+    let req_func = match instance.get_typed_func::<(i32, i32), i32>(&mut *store, "req") {
+        Ok(func) => func,
+        Err(_) => return Ok(None), // No req function available
+    };
+    
+    // Create COUNT message with same filter
+    let count_message = json!(["COUNT", subscription, filter]);
+    let count_string = count_message.to_string();
+    let count_bytes = count_string.as_bytes();
+    
+    // Allocate memory for COUNT request
+    let count_ptr = alloc_func.call(&mut *store, count_bytes.len() as i32)?;
+    if count_ptr == 0 {
+        return Ok(None);
+    }
+    
+    // Write COUNT request to memory
+    memory.write(&mut *store, count_ptr as usize, count_bytes)?;
+    
+    // Call req function with COUNT
+    let result_ptr = req_func.call(&mut *store, (count_ptr, count_bytes.len() as i32))?;
+    
+    // Deallocate request memory
+    dealloc_func.call(&mut *store, (count_ptr, count_bytes.len() as i32))?;
+    
+    if result_ptr == 0 {
+        return Ok(None);
+    }
+    
+    // Read the result
+    let result = read_string_from_memory(&mut *store, instance, memory, result_ptr)?;
+    
+    // Try to deallocate the result
+    if let Ok(get_size_func) = instance.get_typed_func::<i32, i32>(&mut *store, "get_allocation_size") {
+        let size = get_size_func.call(&mut *store, result_ptr)?;
+        if size > 0 {
+            let _ = dealloc_func.call(&mut *store, (result_ptr, size));
+        }
+    }
+    
+    // Parse COUNT response
+    if let Ok(parsed) = serde_json::from_str::<Value>(&result) {
+        if let Some(arr) = parsed.as_array() {
+            if arr.len() >= 3 && arr[0].as_str() == Some("COUNT") {
+                if let Some(count_obj) = arr.get(2) {
+                    if let Some(count) = count_obj.get("count") {
+                        return Ok(count.as_u64());
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(None)
+}
+
 /// Process the REQ command - send requests to a cassette and get events
 fn process_req_command(
     cassette_path: &PathBuf,
@@ -380,6 +465,7 @@ fn process_req_command(
     interactive: bool,
     verbose: bool,
     nip11_args: &Nip11Args,
+    search_query: Option<&str>,
 ) -> Result<()> {
     // Initialize interactive UI if enabled
     let mut play_ui = if interactive {
@@ -421,6 +507,11 @@ fn process_req_command(
         filter.insert("until".to_string(), json!(u));
     }
     
+    // Add search query if specified (NIP-50)
+    if let Some(search) = search_query {
+        filter.insert("search".to_string(), json!(search));
+    }
+    
     // Parse any custom filter JSON arguments
     for filter_json in filter_args {
         let parsed: serde_json::Map<String, Value> = serde_json::from_str(filter_json)
@@ -460,6 +551,9 @@ fn process_req_command(
     let dealloc_func = instance
         .get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string")
         .context("Failed to get deallocation function")?;
+    
+    // Try to get total count first for progress bar (NIP-45)
+    let total_count = get_event_count_for_filter(&mut store, &instance, &memory, &alloc_func, &dealloc_func, &filter, subscription).unwrap_or(None);
     
     // Allocate memory for the request string
     let req_bytes = req_string.as_bytes();
@@ -512,7 +606,8 @@ fn process_req_command(
                             
                             // Update interactive UI
                             if let Some(ref mut ui) = play_ui {
-                                ui.update_playback(all_events.len() as u64, event_count, Some(&arr[2]))?;
+                                let total_for_ui = total_count.unwrap_or(all_events.len() as u64);
+                                ui.update_playback(total_for_ui, event_count, Some(&arr[2]))?;
                                 std::thread::sleep(std::time::Duration::from_millis(50));
                             }
                         }
@@ -539,6 +634,9 @@ fn process_req_command(
         
         // Wait for user input
         use crossterm::event::{self, Event, KeyCode};
+        use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
+        
+        enable_raw_mode()?;
         loop {
             if let Ok(Event::Key(key)) = event::read() {
                 match key.code {
@@ -547,6 +645,7 @@ fn process_req_command(
                 }
             }
         }
+        disable_raw_mode()?;
         
         ui.cleanup()?;
     } else {
@@ -582,6 +681,7 @@ fn process_count_command(
     until: Option<i64>,
     verbose: bool,
     nip11_args: &Nip11Args,
+    search_query: Option<&str>,
 ) -> Result<()> {
     // Read the WASM file
     let wasm_bytes = fs::read(cassette_path)
@@ -611,6 +711,11 @@ fn process_count_command(
     }
     if let Some(u) = until {
         filter.insert("until".to_string(), json!(u));
+    }
+    
+    // Add search query if specified (NIP-50)
+    if let Some(search) = search_query {
+        filter.insert("search".to_string(), json!(search));
     }
     
     // Parse any custom filter JSON arguments
@@ -981,7 +1086,9 @@ fn process_dub_command(
         false, // verbose
         false, // nip_11
         false, // nip_42
-        false  // nip_45
+        false, // nip_45
+        false, // nip_50
+        nip11_args
     )?;
     
     // Rename the generated file to the specified output name if needed
@@ -998,6 +1105,9 @@ fn process_dub_command(
         
         // Wait for user input
         use crossterm::event::{self, Event, KeyCode};
+        use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
+        
+        enable_raw_mode()?;
         loop {
             if let Ok(Event::Key(key)) = event::read() {
                 if matches!(key.code, KeyCode::Char(_) | KeyCode::Enter | KeyCode::Esc) {
@@ -1005,6 +1115,7 @@ fn process_dub_command(
                 }
             }
         }
+        disable_raw_mode()?;
         
         ui.cleanup()?;
     } else {
@@ -1199,6 +1310,10 @@ enum Commands {
         #[arg(long)]
         nip_45: bool,
         
+        /// Enable NIP-50 (Search Capability)
+        #[arg(long)]
+        nip_50: bool,
+        
         #[command(flatten)]
         nip11: Nip11Args,
     },
@@ -1308,6 +1423,10 @@ enum Commands {
         #[arg(long)]
         count: bool,
         
+        /// Search query for NIP-50 text search
+        #[arg(long)]
+        search: Option<String>,
+        
         #[command(flatten)]
         nip11: Nip11Args,
     },
@@ -1359,8 +1478,8 @@ fn load_cassette_with_nip11(
         // Build RelayInfo from CLI arguments
         let mut relay_info = serde_json::Map::new();
         
-        // Add supported NIPs - this will be populated by cassette-tools
-        relay_info.insert("supported_nips".to_string(), json!([]));
+        // Add required fields 
+        relay_info.insert("supported_nips".to_string(), json!(Vec::<u32>::new()));
         
         // Add optional fields if provided
         if let Some(name) = &nip11_args.relay_name {
@@ -1431,6 +1550,7 @@ fn main() -> Result<()> {
             nip_11,
             nip_42,
             nip_45,
+            nip_50,
             nip11
         } => {
             // Set default values if not provided
@@ -1456,7 +1576,9 @@ fn main() -> Result<()> {
                     *verbose,
                     *nip_11,
                     *nip_42,
-                    *nip_45
+                    *nip_45,
+                    *nip_50,
+                    nip11
                 )?;
             } else {
                 // No input file, read from stdin
@@ -1497,7 +1619,9 @@ fn main() -> Result<()> {
                     *verbose,
                     *nip_11,
                     *nip_42,
-                    *nip_45
+                    *nip_45,
+                    *nip_50,
+                    nip11
                 )?;
                 
                 // The temp directory will be cleaned up when it goes out of scope
@@ -1552,6 +1676,7 @@ fn main() -> Result<()> {
             verbose,
             info,
             count,
+            search,
             nip11,
         } => {
             if *info {
@@ -1570,6 +1695,7 @@ fn main() -> Result<()> {
                     *until,
                     *verbose,
                     nip11,
+                    search.as_deref(),
                 )
             } else {
                 process_req_command(
@@ -1585,6 +1711,7 @@ fn main() -> Result<()> {
                     *interactive,
                     *verbose,
                     nip11,
+                    search.as_deref(),
                 )
             }
         }
@@ -1777,7 +1904,9 @@ pub fn process_events(
     verbose: bool,
     nip_11: bool,
     nip_42: bool,
-    nip_45: bool
+    nip_45: bool,
+    nip_50: bool,
+    nip11_args: &Nip11Args,
 ) -> Result<()> {
     // Initialize interactive UI if enabled
     let mut record_ui = if interactive {
@@ -1908,10 +2037,27 @@ pub fn process_events(
     if nip_45 {
         features.push("nip45".to_string());
     }
+    if nip_50 {
+        features.push("nip50".to_string());
+    }
     
     // Convert features vector to JSON array format for template
     let features_json = serde_json::to_string(&features)?;
     generator.set_var("features_array", &features_json);
+    
+    // Set relay metadata for NIP-11 embedding
+    if let Some(relay_name) = &nip11_args.relay_name {
+        generator.set_var("relay_name", relay_name);
+    }
+    if let Some(relay_description) = &nip11_args.relay_description {
+        generator.set_var("relay_description", relay_description);
+    }
+    if let Some(relay_pubkey) = &nip11_args.relay_pubkey {
+        generator.set_var("relay_pubkey", relay_pubkey);
+    }
+    if let Some(relay_contact) = &nip11_args.relay_contact {
+        generator.set_var("relay_contact", relay_contact);
+    }
 
     // Set verbose mode on generator
     generator.set_verbose(verbose);

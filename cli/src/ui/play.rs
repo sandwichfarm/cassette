@@ -167,7 +167,7 @@ impl PlayUI {
         let reel_frame = self.tape_reel.next_frame();
         let tape_length = 15;
         let reel_unit_width = 7 + tape_length + 7;
-        let reel_x = (term_width.saturating_sub(reel_unit_width)) / 2;
+        let reel_x = (term_width.saturating_sub(reel_unit_width)) / 2 - 4;
         
         execute!(
             stdout,
@@ -407,7 +407,7 @@ impl PlayUI {
         let border = "████";
         let title_full = format!("{} {} {}", border, title, border);
         // Each █ character is 2 columns wide, so we need to calculate visual width
-        let visual_width = 8 + 1 + title.len() + 1 + 8; // 8 for each border (4 chars * 2 cols)
+        let visual_width = 4 + 1 + title.len() + 1 + 4; // 8 for each border (4 chars * 2 cols)
         let title_x = (term_width.saturating_sub(visual_width)) / 2;
         
         execute!(

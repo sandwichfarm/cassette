@@ -1,0 +1,5 @@
+{"id":"event1","pubkey":"test","created_at":1690000000,"kind":1,"tags":[],"content":"Bitcoin is revolutionary digital currency","sig":"sig1"}
+{"id":"event2","pubkey":"test","created_at":1690000001,"kind":1,"tags":[],"content":"Lightning Network enables fast payments","sig":"sig2"}
+{"id":"event3","pubkey":"test","created_at":1690000002,"kind":1,"tags":[],"content":"Nostr is decentralized social protocol","sig":"sig3"}
+{"id":"event4","pubkey":"test","created_at":1690000003,"kind":1,"tags":[],"content":"Ethereum smart contracts are interesting","sig":"sig4"}
+{"id":"event5","pubkey":"test","created_at":1690000004,"kind":1,"tags":[],"content":"Building the future with open protocols","sig":"sig5"}

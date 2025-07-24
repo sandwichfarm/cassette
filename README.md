@@ -1,6 +1,6 @@
 # Cassette
 
-Modular NIP-compatible, portable WebAssembly read-only relays with support for NIP-01, NIP-11, NIP-42, and NIP-45
+Modular NIP-compatible, portable WebAssembly read-only relays with support for NIP-01, NIP-11, NIP-42, NIP-45, and NIP-50
 
 ## NIP Implementation Status
 
@@ -8,6 +8,7 @@ Modular NIP-compatible, portable WebAssembly read-only relays with support for N
 - [x] **NIP-11** - Relay Information Document (relay metadata and capabilities)
 - [ ] **NIP-42** - Authentication (framework implemented, functionality planned)
 - [x] **NIP-45** - Event Counts (COUNT queries for efficient event counting)
+- [x] **NIP-50** - Search Capability (text search with relevance ranking)
 
 ## Quick Start
 
@@ -32,8 +33,11 @@ cassette record events.json --name my-notes
 # With COUNT support (NIP-45)
 cassette record events.json --name my-notes --nip-45
 
-# Full-featured with relay info (NIP-11 + NIP-45)
-cassette record events.json --name my-relay --nip-11 --nip-45 \
+# With search support (NIP-50)
+cassette record events.json --name my-notes --nip-50
+
+# Full-featured with relay info (NIP-11 + NIP-45 + NIP-50)
+cassette record events.json --name my-relay --nip-11 --nip-45 --nip-50 \
   --relay-name "My Archive" --relay-description "Personal event archive"
 
 # Output: my-notes.wasm
@@ -61,6 +65,12 @@ cassette play my-notes.wasm --info
 
 # COUNT events (NIP-45)
 cassette play my-notes.wasm --count --kinds 1
+
+# Search events (NIP-50)  
+cassette play my-notes.wasm --search "bitcoin lightning"
+
+# Search with filters
+cassette play my-notes.wasm --search "nostr" --kinds 1 --limit 10
 
 # COUNT with custom relay info
 cassette play my-notes.wasm --count --kinds 1 \
@@ -118,6 +128,7 @@ cassette record [OPTIONS] [INPUT_FILE]
 #   --nip-11           Enable NIP-11 (Relay Information Document)
 #   --nip-42           Enable NIP-42 (Authentication)
 #   --nip-45           Enable NIP-45 (Event Counts)
+#   --nip-50           Enable NIP-50 (Search Capability)
 #   --relay-name       Relay name for NIP-11
 #   --relay-description Relay description for NIP-11
 
@@ -125,7 +136,8 @@ cassette record [OPTIONS] [INPUT_FILE]
 nak req -k 30023 wss://relay.nostr.band | cassette record -n "long-form"
 cassette record my-events.json --name "my-backup"
 cassette record events.json --nip-45 --name "countable" # With COUNT support
-cassette record events.json --nip-11 --nip-45 --relay-name "Archive"
+cassette record events.json --nip-50 --name "searchable" # With search support
+cassette record events.json --nip-11 --nip-45 --nip-50 --relay-name "Archive"
 ```
 
 ### `play` - Play cassettes (send a `req`)
@@ -144,6 +156,7 @@ cassette play [OPTIONS] <CASSETTE>
 #   -o, --output       Output format: json or ndjson
 #   --info             Show NIP-11 relay information
 #   --count            Perform COUNT query (NIP-45)
+#   --search           Search query for NIP-50 text search
 #   --relay-name       Set relay name for dynamic info
 
 # Examples:
@@ -246,6 +259,24 @@ Framework for authentication support (currently placeholder for future implement
 cassette record events.json --name secure --nip-42
 ```
 
+#### NIP-50 (Search Capability)
+Adds text search functionality with relevance-based ranking instead of chronological ordering.
+
+```bash
+# Record with search support
+cassette record events.json --name searchable --nip-50
+
+# Basic text search
+cassette play searchable.wasm --search "bitcoin lightning"
+
+# Search with additional filters
+cassette play searchable.wasm --search "nostr protocol" --kinds 1 --limit 20
+
+# Search supports extensions (advanced)
+cassette play searchable.wasm --search "bitcoin domain:example.com"
+cassette play searchable.wasm --search "news language:en"
+```
+
 ### Combining NIPs
 
 You can combine multiple NIPs for full-featured cassettes:
@@ -253,7 +284,7 @@ You can combine multiple NIPs for full-featured cassettes:
 ```bash
 # Full-featured cassette
 cassette record events.json --name full-relay \
-  --nip-11 --nip-42 --nip-45 \
+  --nip-11 --nip-42 --nip-45 --nip-50 \
   --relay-name "Complete Archive" \
   --relay-description "Full-featured Nostr archive" \
   --relay-contact "contact@example.com"
@@ -261,6 +292,7 @@ cassette record events.json --name full-relay \
 # Test all features
 cassette play full-relay.wasm --info                    # Show relay info
 cassette play full-relay.wasm --count --kinds 1         # Count events
+cassette play full-relay.wasm --search "bitcoin"        # Search events
 cassette play full-relay.wasm --kinds 1 --limit 10      # Get events
 ```
 
@@ -295,11 +327,13 @@ Different NIP combinations affect cassette size and capabilities:
 - **NIP-01 only**: Smallest size, basic querying
 - **+ NIP-11**: Adds ~2KB, relay metadata support  
 - **+ NIP-45**: Adds ~5KB, efficient event counting
+- **+ NIP-50**: Adds ~4KB, text search with relevance ranking
 - **+ NIP-42**: Adds ~3KB, authentication framework
 
 Choose NIPs based on your use case:
 - **Archival**: NIP-01 + NIP-11 for basic archive with metadata
 - **Analytics**: NIP-01 + NIP-11 + NIP-45 for counting and analysis
+- **Search**: NIP-01 + NIP-11 + NIP-50 for text search capabilities
 - **Full-featured**: All NIPs for maximum compatibility
 
 ## Building from Source
@@ -335,7 +369,7 @@ cassette/
 ### Components
 
 - **CLI**: Command-line tool for creating and querying cassettes
-- **Cassette Tools**: Rust library providing memory management and modular NIP implementations (NIP-01, NIP-11, NIP-42, NIP-45)
+- **Cassette Tools**: Rust library providing memory management and modular NIP implementations (NIP-01, NIP-11, NIP-42, NIP-45, NIP-50)
 - **Loaders**: Language-specific libraries for loading and executing cassettes
 - **Boombox**: WebSocket server that serves cassettes as Nostr relays
 - **GUI**: Web interface for testing cassettes in the browser

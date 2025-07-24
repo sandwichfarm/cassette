@@ -1,0 +1,20 @@
+[
+  {
+    "id": "aaa4567e89b12d3a456426614174000",
+    "pubkey": "d1d1747115d16751a97c239f46ec1703292c3b7e9988b9ebdd4ec4705b15ed44",
+    "created_at": 1719329920,
+    "kind": 1,
+    "tags": [],
+    "content": "Test event for backwards compatibility",
+    "sig": "304502210091f0c1"
+  },
+  {
+    "id": "bbb4567e89b12d3a456426614174001",
+    "pubkey": "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2",
+    "created_at": 1719329921,
+    "kind": 1,
+    "tags": [],
+    "content": "Another test event",
+    "sig": "304502210091f0c2"
+  }
+]

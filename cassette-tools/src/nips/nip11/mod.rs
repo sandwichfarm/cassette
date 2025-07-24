@@ -248,22 +248,6 @@ impl RelayInfoBuilder {
     }
 }
 
-/// Export function for WASM cassettes to provide relay information
-#[cfg(feature = "nip11")]
-#[no_mangle]
-pub extern "C" fn info() -> *mut u8 {
-    unsafe {
-        match &RELAY_INFO_JSON {
-            Some(json) => crate::string_to_ptr(json.clone()),
-            None => {
-                // Return minimal info with just supported NIPs
-                let minimal_info = RelayInfo {
-                    supported_nips: crate::nips::build_supported_nips(),
-                    ..Default::default()
-                };
-                let json_str = serde_json::to_string(&minimal_info).unwrap_or_else(|_| "{}".to_string());
-                crate::string_to_ptr(json_str)
-            }
-        }
-    }
-}
+// Export function for WASM cassettes to provide relay information
+// Note: This function is disabled in favor of the template's custom info function
+// which includes embedded relay metadata

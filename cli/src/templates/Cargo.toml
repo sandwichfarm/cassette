@@ -7,6 +7,13 @@ description = "{{description}}"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = ["nip11"]
+nip11 = []
+nip42 = []
+nip45 = []
+nip50 = []
+
 [dependencies]
 cassette-tools = { path = "{{cassette_tools_path}}", features = {{{features_array}}} }
 serde = { version = "1.0", features = ["derive"] }

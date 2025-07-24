@@ -14,6 +14,9 @@ pub mod nip42;
 #[cfg(feature = "nip45")]
 pub mod nip45;
 
+#[cfg(feature = "nip50")]
+pub mod nip50;
+
 /// Build the list of supported NIPs based on enabled features
 pub fn build_supported_nips() -> Vec<u32> {
     let mut nips = vec![1]; // Always support NIP-01 (built into RelayHandler)
@@ -26,6 +29,9 @@ pub fn build_supported_nips() -> Vec<u32> {
     
     #[cfg(feature = "nip45")]
     nips.push(45);
+    
+    #[cfg(feature = "nip50")]
+    nips.push(50);
     
     nips
 }
@@ -40,6 +46,8 @@ pub fn supports_nip(nip: u32) -> bool {
         42 => true,
         #[cfg(feature = "nip45")]
         45 => true,
+        #[cfg(feature = "nip50")]
+        50 => true,
         _ => false,
     }
 }

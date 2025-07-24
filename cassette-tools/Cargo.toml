@@ -1,6 +1,6 @@
 [package]
 name = "cassette-tools"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -10,7 +10,8 @@ default = []
 nip11 = []  # Relay Information Document
 nip42 = ["nip11", "chrono"]  # Authentication (requires NIP-11 to announce capability)
 nip45 = ["nip11"]  # Event Counts (requires NIP-11 to announce capability)
-full = ["nip11", "nip42", "nip45"]
+nip50 = ["nip11"]  # Search Capability (requires NIP-11 to announce capability)
+full = ["nip11", "nip42", "nip45", "nip50"]
 
 [dependencies]
 anyhow = "1.0"

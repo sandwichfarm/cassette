@@ -5,6 +5,33 @@ use serde::{Serialize, Deserialize};
 use serde_json::{json, Value};
 use std::cell::RefCell;
 
+// Embed relay metadata at compile time
+const EMBEDDED_RELAY_INFO: &str = r#"{
+{{#if relay_name}}"name": "{{relay_name}}",{{/if}}
+{{#if relay_description}}"description": "{{relay_description}}",{{/if}}
+{{#if relay_pubkey}}"pubkey": "{{relay_pubkey}}",{{/if}}
+{{#if relay_contact}}"contact": "{{relay_contact}}",{{/if}}
+"supported_nips": []
+}"#;
+
+// Custom info function that includes embedded relay metadata
+#[cfg(feature = "nip11")]
+#[no_mangle]
+pub extern "C" fn info() -> *mut u8 {
+    // Parse the embedded relay info and ensure supported_nips is populated
+    let mut relay_info: serde_json::Map<String, serde_json::Value> = serde_json::from_str(EMBEDDED_RELAY_INFO)
+        .unwrap_or_else(|_| serde_json::Map::new());
+    
+    // Always update supported_nips with current build features
+    relay_info.insert(
+        "supported_nips".to_string(), 
+        serde_json::json!(cassette_tools::nips::build_supported_nips())
+    );
+    
+    let json_str = serde_json::to_string(&relay_info).unwrap_or_else(|_| "{}".to_string());
+    string_to_ptr(json_str)
+}
+
 // NIP-11 info function is provided by cassette-tools
 // When NIP-11 is enabled, it provides the full implementation
 // When NIP-11 is not enabled, it provides a stub implementation
@@ -24,6 +51,8 @@ struct Filter {
     since: Option<i64>,
     until: Option<i64>,
     limit: Option<usize>,
+    // NIP-50: Search field
+    search: Option<String>,
 }
 
 // Custom deserialization helpers to ensure NIP-119 tag filters are correctly parsed
@@ -301,8 +330,29 @@ fn handle_req_command(arr: &[Value]) -> *mut u8 {
             }
         }
 
-        // Sort by created_at in reverse order (newest first)
-        matching_events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        // Check if any filter has a search query (NIP-50)
+        let has_search_query = filters.iter().any(|f| f.search.is_some());
+        
+        if has_search_query {
+            // NIP-50: Sort by search relevance (highest score first)
+            #[cfg(feature = "nip50")]
+            {
+                // Get the first search query for scoring
+                let search_query = filters.iter()
+                    .find_map(|f| f.search.as_ref())
+                    .cloned()
+                    .unwrap_or_default();
+                    
+                matching_events.sort_by(|a, b| {
+                    let score_a = score_event_for_search(a, &search_query);
+                    let score_b = score_event_for_search(b, &search_query);
+                    score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+        } else {
+            // Default: Sort by created_at in reverse order (newest first)
+            matching_events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        }
         
         // Apply limit if specified - find the highest limit across all filters
         let max_limit = filters.iter()
@@ -526,8 +576,53 @@ fn matches_filter(event: &Note, filter: &Filter) -> bool {
         }
     }
 
+    // Check search query (NIP-50)
+    #[cfg(feature = "nip50")]
+    if let Some(search_query) = &filter.search {
+        if !matches_search_query(event, search_query) {
+            return false;
+        }
+    }
+
     // If we've passed all conditions, the event matches the filter
     true
+}
+
+// NIP-50 search functionality
+#[cfg(feature = "nip50")]
+fn matches_search_query(event: &Note, search_query: &str) -> bool {
+    // Convert to serde_json::Value for compatibility with nip50 module
+    let event_json = serde_json::json!({
+        "id": event.id,
+        "pubkey": event.pubkey,
+        "created_at": event.created_at,
+        "kind": event.kind,
+        "tags": event.tags,
+        "content": event.content,
+        "sig": event.sig
+    });
+    
+    // Use the nip50 module's scoring function
+    cassette_tools::nips::nip50::score_event(&event_json, 
+        &cassette_tools::nips::nip50::parse_search_query(search_query)) > 0.0
+}
+
+#[cfg(feature = "nip50")]
+fn score_event_for_search(event: &Note, search_query: &str) -> f32 {
+    // Convert to serde_json::Value for compatibility with nip50 module
+    let event_json = serde_json::json!({
+        "id": event.id,
+        "pubkey": event.pubkey,
+        "created_at": event.created_at,
+        "kind": event.kind,
+        "tags": event.tags,
+        "content": event.content,
+        "sig": event.sig
+    });
+    
+    // Use the nip50 module's scoring function
+    cassette_tools::nips::nip50::score_event(&event_json, 
+        &cassette_tools::nips::nip50::parse_search_query(search_query))
 }
 
 // Note: Memory management functions are already exported by cassette_tools
