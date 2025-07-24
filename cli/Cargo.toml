@@ -27,7 +27,7 @@ tempfile = "3.8"
 handlebars = "4.3"
 wasmtime = "15.0"
 tokio = { version = "1.0", features = ["full"] }
-tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.20", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 crossterm = "0.27"
 sha2 = "0.10"

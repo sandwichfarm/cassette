@@ -69,7 +69,7 @@ jobs:
         if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt update
-          sudo apt install -y gcc-aarch64-linux-gnu
+          sudo apt install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - name: Set up cross-compilation environment
         if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
