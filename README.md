@@ -50,6 +50,19 @@ cassette dub alice.wasm bob.wasm combined.wasm
 cassette dub *.wasm filtered.wasm --kinds 1 --since 1700000000
 ```
 
+### Cast to Relays
+
+```bash
+# Broadcast events to a relay
+cassette cast my-notes.wasm --relays wss://relay.damus.io
+
+# Broadcast to multiple relays
+cassette cast *.wasm --relays wss://nos.lol wss://relay.nostr.band
+
+# Test with dry-run
+cassette cast archive.wasm --relays ws://localhost:7000 --dry-run
+```
+
 ## What is a Cassette?
 
 A cassette is a WebAssembly module containing Nostr events that implements the NIP-01 relay protocol. Think of it as a portable, queryable database that runs anywhere WebAssembly does - browsers, servers, edge workers, or CLI tools.
@@ -122,6 +135,24 @@ cassette dub [OPTIONS] <CASSETTES...> <OUTPUT>
 cassette dub cassette1.wasm cassette2.wasm combined.wasm
 cassette dub *.wasm all-events.wasm --name "Complete Archive"
 cassette dub raw/*.wasm clean.wasm --kinds 1 --kinds 30023
+```
+
+### `cast` - Broadcast events to Nostr relays
+
+```bash
+cassette cast [OPTIONS] <CASSETTES...> --relays <RELAYS...>
+
+# Options:
+#   -r, --relays       Target relay URLs (required)
+#   -c, --concurrency  Max concurrent connections (default: 5)
+#   -t, --throttle     Delay between events in ms (default: 100)
+#   --timeout          Connection timeout in seconds (default: 30)
+#   --dry-run          Preview without sending
+
+# Examples:
+cassette cast events.wasm --relays wss://relay.damus.io
+cassette cast *.wasm --relays wss://nos.lol wss://relay.nostr.band
+cassette cast archive.wasm --relays ws://localhost:7000 --dry-run
 ```
 
 ## Building from Source
