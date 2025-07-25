@@ -19,7 +19,7 @@ mod ui;
 /// Sanitize a name for use as a filename
 /// Converts to lowercase, replaces spaces with hyphens, removes special characters
 fn sanitize_filename(name: &str) -> String {
-    name.to_lowercase()
+    let sanitized = name.to_lowercase()
         .chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '-' {
@@ -37,7 +37,14 @@ fn sanitize_filename(name: &str) -> String {
         .split('-')
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
-        .join("-")
+        .join("-");
+    
+    // If the result is empty, use "bruh"
+    if sanitized.is_empty() {
+        "bruh".to_string()
+    } else {
+        sanitized
+    }
 }
 
 // Macro for debug output that only prints in verbose mode
@@ -2446,9 +2453,11 @@ mod tests {
         assert_eq!(sanitize_filename("under_scores"), "underscores");
         
         // Edge cases
-        assert_eq!(sanitize_filename(""), "");
-        assert_eq!(sanitize_filename("   "), "");
-        assert_eq!(sanitize_filename("---"), "");
+        assert_eq!(sanitize_filename(""), "bruh");
+        assert_eq!(sanitize_filename("   "), "bruh");
+        assert_eq!(sanitize_filename("---"), "bruh");
+        assert_eq!(sanitize_filename("!!!"), "bruh");
+        assert_eq!(sanitize_filename("@#$%^&*()"), "bruh");
         assert_eq!(sanitize_filename("a-b-c"), "a-b-c");
         assert_eq!(sanitize_filename("UPPERCASE"), "uppercase");
         
