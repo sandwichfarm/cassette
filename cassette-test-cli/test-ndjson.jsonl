@@ -1,3 +1,0 @@
-{"id":"test1","pubkey":"pubkey1","created_at":1234567890,"kind":1,"tags":[],"content":"Test event 1","sig":"sig1"}
-{"id":"test2","pubkey":"pubkey2","created_at":1234567891,"kind":1,"tags":[["t","test"]],"content":"Test event 2","sig":"sig2"}
-{"id":"test3","pubkey":"pubkey3","created_at":1234567892,"kind":0,"tags":[],"content":"{\"name\":\"Test User\"}","sig":"sig3"}
