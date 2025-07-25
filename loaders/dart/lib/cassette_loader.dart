@@ -80,6 +80,7 @@ class Cassette {
   late final WasmFunction _reqFunc;
   late final WasmFunction _describeFunc;
   WasmFunction? _closeFunc;
+  WasmFunction? _infoFunc;
   WasmFunction? _deallocFunc;
   WasmFunction? _getSizeFunc;
   
@@ -116,6 +117,12 @@ class Cassette {
     try {
       _closeFunc = _instance.exports.whereType<WasmFunction>().firstWhere(
         (export) => export.name == 'close',
+      );
+    } catch (_) {}
+
+    try {
+      _infoFunc = _instance.exports.whereType<WasmFunction>().firstWhere(
+        (export) => export.name == 'info',
       );
     } catch (_) {}
 
@@ -291,5 +298,28 @@ class Cassette {
     _deallocFunc?.call([resultPtr, resultStr.length]);
 
     return resultStr;
+  }
+
+  /// Get NIP-11 relay information
+  String info() {
+    if (_infoFunc == null) {
+      // Return minimal info if function not found
+      return jsonEncode({'supported_nips': []});
+    }
+
+    // Call info function
+    final ptr = _infoFunc!.call([]) as int;
+
+    if (ptr == 0) {
+      return jsonEncode({'supported_nips': []});
+    }
+
+    // Read result
+    final infoStr = _memoryManager.readString(ptr);
+
+    // Try to deallocate
+    _deallocFunc?.call([ptr, infoStr.length]);
+
+    return infoStr;
   }
 }

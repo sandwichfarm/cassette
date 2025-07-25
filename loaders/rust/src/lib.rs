@@ -106,6 +106,7 @@ pub struct Cassette {
     req_func: TypedFunc<(i32, i32), i32>,
     describe_func: TypedFunc<(), i32>,
     close_func: Option<TypedFunc<(i32, i32), i32>>,
+    info_func: Option<TypedFunc<(), i32>>,
     dealloc_func: Option<TypedFunc<(i32, i32), ()>>,
     get_size_func: Option<TypedFunc<i32, i32>>,
     debug: bool,
@@ -133,6 +134,10 @@ impl Cassette {
             .get_typed_func::<(i32, i32), i32>(&mut store, "close")
             .ok();
 
+        let info_func = instance
+            .get_typed_func::<(), i32>(&mut store, "info")
+            .ok();
+
         let dealloc_func = instance
             .get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string")
             .ok();
@@ -149,6 +154,7 @@ impl Cassette {
             req_func,
             describe_func,
             close_func,
+            info_func,
             dealloc_func,
             get_size_func,
             debug,
@@ -311,5 +317,27 @@ impl Cassette {
         }
 
         Ok(result_str)
+    }
+
+    /// Get NIP-11 relay information
+    pub fn info(&mut self) -> Result<String> {
+        let info_func = self.info_func
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("info function not implemented"))?;
+
+        let ptr = info_func.call(&mut self.store, ())?;
+        
+        if ptr == 0 {
+            return Ok(json!({"supported_nips": []}).to_string());
+        }
+
+        let info_str = self.memory_manager.read_string(&mut self.store, ptr)?;
+        
+        // Try to deallocate
+        if let Some(dealloc) = &self.dealloc_func {
+            let _ = dealloc.call(&mut self.store, (ptr, info_str.len() as i32));
+        }
+
+        Ok(info_str)
     }
 }

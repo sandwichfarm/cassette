@@ -114,6 +114,12 @@ Cassette::Cassette(const std::string& path, bool debug)
         }
     }
     
+    if (auto info_export = instance.get(store, "info")) {
+        if (std::holds_alternative<wasmtime::Func>(*info_export)) {
+            info_func = std::get<wasmtime::Func>(*info_export);
+        }
+    }
+    
     if (auto dealloc_export = instance.get(store, "dealloc_string")) {
         if (std::holds_alternative<wasmtime::Func>(*dealloc_export)) {
             dealloc_func = std::get<wasmtime::Func>(*dealloc_export);
@@ -354,6 +360,40 @@ std::string Cassette::close(const std::string& close_msg) {
     }
     
     return result_str;
+}
+
+std::string Cassette::info() {
+    std::lock_guard<std::mutex> lock(mutex);
+    
+    if (!info_func) {
+        // Return minimal info if function not found
+        return R"({"supported_nips": []})";
+    }
+    
+    // Call info function
+    auto results = info_func->call(store, {});
+    
+    if (results.empty() || !results[0].i32()) {
+        return R"({"supported_nips": []})";
+    }
+    
+    int32_t ptr = *results[0].i32();
+    if (ptr == 0) {
+        return R"({"supported_nips": []})";
+    }
+    
+    // Read result
+    std::string info_str = memory_manager->read_string(ptr);
+    
+    // Try to deallocate
+    if (dealloc_func) {
+        dealloc_func->call(store, {
+            wasmtime::Val::i32(ptr),
+            wasmtime::Val::i32(static_cast<int32_t>(info_str.length()))
+        });
+    }
+    
+    return info_str;
 }
 
 } // namespace cassette

@@ -184,6 +184,19 @@ class CoreCassetteInterface {
     return '{}';
   }
   
+  info(): string {
+    this.logger.log('Getting cassette NIP-11 relay information');
+    
+    // Try to use the info method if available
+    if (typeof this.exports.info === 'function') {
+      return this.memoryManager.callStringFunction('info');
+    }
+    
+    // Fallback to minimal info if info method not found
+    this.logger.log('No info method found, returning minimal info');
+    return JSON.stringify({ supported_nips: [] });
+  }
+  
   req(requestStr: string): string {
     this.logger.log(`Processing request: ${requestStr.substring(0, 100)}${requestStr.length > 100 ? '...' : ''}`);
     
@@ -611,7 +624,8 @@ export async function loadCassette(
         describe: () => coreInterface.describe(),
         req: (requestStr: string) => coreInterface.req(requestStr),
         close: (closeStr: string) => coreInterface.close(closeStr),
-        getSchema: () => coreInterface.getSchema()
+        getSchema: () => coreInterface.getSchema(),
+        info: () => coreInterface.info()
       },
       eventTracker: opts.deduplicateEvents !== false ? createEventTracker() : undefined,
       // Add memory stats method

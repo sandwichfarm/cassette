@@ -48,6 +48,7 @@ private:
     wasmtime::Func req_func;
     wasmtime::Func describe_func;
     std::optional<wasmtime::Func> close_func;
+    std::optional<wasmtime::Func> info_func;
     std::optional<wasmtime::Func> dealloc_func;
     std::optional<wasmtime::Func> get_size_func;
     
@@ -63,6 +64,7 @@ public:
     std::string describe();
     std::string req(const std::string& request);
     std::string close(const std::string& close_msg);
+    std::string info();
 };
 
 } // namespace cassette

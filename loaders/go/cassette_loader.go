@@ -387,3 +387,39 @@ func (c *Cassette) Close(closeMsg string) (string, error) {
 
 	return resultStr, nil
 }
+
+// Info returns NIP-11 relay information
+func (c *Cassette) Info() (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	infoFunc, ok := c.exports["info"]
+	if !ok {
+		// Return minimal info if function not found
+		return `{"supported_nips": []}`, nil
+	}
+
+	// Call info function
+	result, err := infoFunc.Call(c.store)
+	if err != nil {
+		return "", err
+	}
+
+	ptr := result.(int32)
+	if ptr == 0 {
+		return `{"supported_nips": []}`, nil
+	}
+
+	// Read result
+	infoStr, err := c.memory.ReadString(ptr)
+	if err != nil {
+		return "", err
+	}
+
+	// Try to deallocate
+	if deallocFunc, ok := c.exports["dealloc_string"]; ok {
+		deallocFunc.Call(c.store, ptr, int32(len(infoStr)))
+	}
+
+	return infoStr, nil
+}

@@ -126,6 +126,11 @@ export interface Cassette {
      * Get JSON schema for the cassette (optional)
      */
     getSchema?: () => string;
+    
+    /**
+     * Get NIP-11 relay information (optional)
+     */
+    info?: () => string;
   };
   
   /**
@@ -266,4 +271,7 @@ export interface CassetteMethods {
   
   /** Get JSON schema for the cassette (optional) */
   getSchema?: () => string;
+  
+  /** Get NIP-11 relay information (optional) */
+  info?: () => string;
 } 

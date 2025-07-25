@@ -439,6 +439,33 @@ class Cassette:
         except Exception as e:
             return json.dumps(["NOTICE", f"Failed to process close: {e}"])
             
+    def info(self) -> str:
+        """Get NIP-11 relay information"""
+        try:
+            # Check if info function exists
+            exports = self.instance.exports(self.store)
+            if 'info' not in exports:
+                # Return minimal info if function not found
+                if self.debug:
+                    print("[Cassette] No info function found, returning minimal info")
+                return json.dumps({"supported_nips": []})
+            
+            info_func = exports['info']
+            ptr = info_func(self.store)
+            
+            if ptr == 0:
+                return json.dumps({"supported_nips": []})
+                
+            result = self.memory_manager.read_string(ptr)
+            self.memory_manager.deallocate_string(ptr)
+            
+            return result
+            
+        except Exception as e:
+            if self.debug:
+                print(f"[Cassette] Error calling info: {e}")
+            return json.dumps({"supported_nips": []})
+            
     def get_memory_stats(self) -> MemoryStats:
         """Get memory statistics for this cassette"""
         pages = self.memory.size(self.store)

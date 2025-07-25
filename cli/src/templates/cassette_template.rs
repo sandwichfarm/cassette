@@ -175,6 +175,7 @@ pub extern "C" fn req(ptr: *const u8, len: usize) -> *mut u8 {
     // Check command type
     let command = arr[0].as_str().unwrap_or("");
     match command {
+        "EVENT" => handle_event_command(&arr),
         "COUNT" => handle_count_command(&arr),
         "REQ" => handle_req_command(&arr),
         _ => {
@@ -185,6 +186,23 @@ pub extern "C" fn req(ptr: *const u8, len: usize) -> *mut u8 {
             string_to_ptr(json!(["NOTICE", format!("Unknown command: {}", command)]).to_string())
         }
     }
+}
+
+// Handle EVENT command
+fn handle_event_command(arr: &[Value]) -> *mut u8 {
+    if arr.len() < 2 {
+        return string_to_ptr(json!(["NOTICE", "EVENT must contain at least command and event"]).to_string());
+    }
+    
+    // Extract event ID if possible
+    let event_id = if let Some(event_obj) = arr[1].as_object() {
+        event_obj.get("id").and_then(|id| id.as_str()).unwrap_or("").to_string()
+    } else {
+        String::new()
+    };
+    
+    // Return OK with error message for read-only relay
+    string_to_ptr(json!(["OK", event_id, false, "error: relay is read-only"]).to_string())
 }
 
 // Handle COUNT command
