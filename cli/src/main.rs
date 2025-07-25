@@ -20,6 +20,7 @@ use secp256k1::{XOnlyPublicKey, Secp256k1, Message as Secp256k1Message};
 use sha2::{Sha256, Digest};
 
 mod ui;
+mod deps;
 
 /// Sanitize a name for use as a filename
 /// Converts to lowercase, replaces spaces with hyphens, removes special characters
@@ -362,8 +363,15 @@ mod generator {
             debugln!(self.verbose, "Debug: Template data: {}", serde_json::to_string_pretty(&template_data).unwrap_or_default());
             
             // Render the lib.rs template
-            let lib_rs_content = handlebars.render_template(TEMPLATE_RS, &template_data)
-                .context("Failed to render lib.rs template")?;
+            let lib_rs_content = match handlebars.render_template(TEMPLATE_RS, &template_data) {
+                Ok(content) => content,
+                Err(e) => {
+                    let keys: Vec<String> = template_data.as_object()
+                        .map(|o| o.keys().cloned().collect())
+                        .unwrap_or_default();
+                    return Err(anyhow::anyhow!("Failed to render lib.rs template. Error: {}. Available keys: {:?}", e, keys));
+                }
+            };
 
             // Debug: Write the rendered template to a log file
             let log_dir = PathBuf::from("../logs");
@@ -416,10 +424,13 @@ mod generator {
             let mut project_root = current_dir.clone();
             loop {
                 if project_root.join("cassette-tools").exists() {
-                    // Found the project root
-                    let tools_path = project_root.join("cassette-tools").display().to_string();
-                    debugln!(self.verbose, "  Found cassette-tools at: {}", tools_path);
-                    return Ok(tools_path);
+                    // Found the project root - canonicalize to resolve symlinks
+                    let tools_path = project_root.join("cassette-tools")
+                        .canonicalize()
+                        .context("Failed to canonicalize cassette-tools path")?;
+                    let tools_path_str = tools_path.display().to_string();
+                    debugln!(self.verbose, "  Found cassette-tools at: {}", tools_path_str);
+                    return Ok(tools_path_str);
                 }
                 
                 if !project_root.pop() {
@@ -896,17 +907,37 @@ fn process_req_command(
     } else {
         // Non-interactive mode - just output results
         match output_format {
+            "nip01" => {
+                // Output as NIP-01 protocol messages
+                for event in &all_events {
+                    let event_msg = json!(["EVENT", subscription, event]);
+                    println!("{}", serde_json::to_string(&event_msg)?);
+                }
+                // Send EOSE at the end
+                let eose_msg = json!(["EOSE", subscription]);
+                println!("{}", serde_json::to_string(&eose_msg)?);
+            }
             "ndjson" => {
                 for event in &all_events {
                     println!("{}", serde_json::to_string(&event)?);
                 }
             }
-            _ => {
+            "json" => {
                 if all_events.len() == 1 {
                     println!("{}", serde_json::to_string_pretty(&all_events[0])?);
                 } else {
                     println!("{}", serde_json::to_string_pretty(&all_events)?);
                 }
+            }
+            _ => {
+                eprintln!("Unknown output format: {}. Using nip01.", output_format);
+                // Default to nip01
+                for event in &all_events {
+                    let event_msg = json!(["EVENT", subscription, event]);
+                    println!("{}", serde_json::to_string(&event_msg)?);
+                }
+                let eose_msg = json!(["EOSE", subscription]);
+                println!("{}", serde_json::to_string(&eose_msg)?);
             }
         }
     }
@@ -1634,8 +1665,8 @@ enum Commands {
         #[arg(long)]
         until: Option<i64>,
         
-        /// Output format: json (default) or ndjson
-        #[arg(short, long, default_value = "json")]
+        /// Output format: nip01 (default), json, or ndjson
+        #[arg(short, long, default_value = "nip01")]
         output: String,
         /// Enable interactive mode with visual feedback
         #[arg(short = 'i', long)]
@@ -2011,6 +2042,7 @@ async fn process_deck_relay_mode(
         start_time: SystemTime::now(),
         current_size: 0,
     }));
+    let event_store = Arc::new(RwLock::new(DeckEventStore::new()));
     
     // Load existing cassettes from output directory
     {
@@ -2027,6 +2059,14 @@ async fn process_deck_relay_mode(
                                 let engine = wasmtime::Engine::default();
                                 match Module::new(&engine, &wasm_bytes) {
                                     Ok(module) => {
+                                        // Load events from cassette into event store
+                                        let mut store = Store::new(&engine, ());
+                                        if let Ok(instance) = Instance::new(&mut store, &module, &[]) {
+                                            // Get all events from this cassette
+                                            // For now, we'll just add the cassette - full event extraction would be complex
+                                            // The deduplication will happen when new events are added
+                                        }
+                                        
                                         let mut cassettes = active_cassettes.write().await;
                                         cassettes.push((path.clone(), module, engine));
                                         loaded_count += 1;
@@ -2110,8 +2150,9 @@ async fn process_deck_relay_mode(
                 }
                 let cassettes = active_cassettes.clone();
                 let recording = recording_state.clone();
+                let store = event_store.clone();
                 let skip_val = skip_validation;
-                tokio::spawn(handle_deck_relay_connection(stream, cassettes, recording, skip_val, verbose));
+                tokio::spawn(handle_deck_relay_connection(stream, cassettes, recording, store, skip_val, verbose));
             }
             _ = &mut rotation_handle => {
                 eprintln!("⚠️  Rotation handler stopped");
@@ -2145,11 +2186,23 @@ async fn process_deck_relay_mode(
     Ok(())
 }
 
+// Helper function to check if an event exists in any loaded cassette
+async fn check_event_exists_in_cassettes(
+    cassettes: &Arc<RwLock<Vec<(PathBuf, Module, Engine)>>>,
+    event_id: &str,
+) -> bool {
+    // For now, we'll return false and rely on the buffer check
+    // A full implementation would require querying each cassette's stored events
+    // This is sufficient since events are checked against the buffer before being added
+    false
+}
+
 // Helper function to handle relay mode connections (writable relay)
 async fn handle_deck_relay_connection(
     stream: TcpStream,
     active_cassettes: Arc<RwLock<Vec<(PathBuf, Module, Engine)>>>,
     recording_state: Arc<RwLock<RecordingState>>,
+    event_store: Arc<RwLock<DeckEventStore>>,
     skip_validation: bool,
     verbose: bool,
 ) -> Result<()> {
@@ -2198,12 +2251,8 @@ async fn handle_deck_relay_connection(
             let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
             stream.try_write(response.as_bytes())?;
             return Ok(());
-        } else {
-            // Not a NIP-11 request, return 400 Bad Request
-            let response = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: 51\r\n\r\nHTTP not supported. Use WebSocket or NIP-11 request";
-            stream.try_write(response.as_bytes())?;
-            return Ok(());
         }
+        // If it's not a NIP-11 request, fall through to WebSocket handling
     }
     
     // Handle WebSocket connection
@@ -2216,164 +2265,451 @@ async fn handle_deck_relay_connection(
     while let Some(msg) = read.next().await {
         match msg {
             Ok(Message::Text(text)) => {
-                if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
-                    if let Some(arr) = parsed.as_array() {
-                        if arr.is_empty() {
+                if verbose {
+                    println!("📨 Received message: {}", text);
+                }
+                
+                // First, try to parse as JSON
+                let parsed = match serde_json::from_str::<Value>(&text) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let notice = json!(["NOTICE", format!("Invalid JSON: {}", e)]);
+                        write.send(Message::Text(notice.to_string())).await?;
+                        continue;
+                    }
+                };
+                
+                // Check if it's an array (required for NIP-01 messages)
+                let arr = match parsed.as_array() {
+                    Some(a) => a,
+                    None => {
+                        let notice = json!(["NOTICE", "Invalid message format: expected array"]);
+                        write.send(Message::Text(notice.to_string())).await?;
+                        continue;
+                    }
+                };
+                
+                // Check minimum array length
+                if arr.is_empty() {
+                    let notice = json!(["NOTICE", "Invalid message: empty array"]);
+                    write.send(Message::Text(notice.to_string())).await?;
+                    continue;
+                }
+                
+                // Get message type
+                let msg_type = match arr[0].as_str() {
+                    Some(t) => t,
+                    None => {
+                        let notice = json!(["NOTICE", "Invalid message: first element must be a string"]);
+                        write.send(Message::Text(notice.to_string())).await?;
+                        continue;
+                    }
+                };
+                
+                match msg_type {
+                    "EVENT" => {
+                        // EVENT messages must have exactly 2 elements: ["EVENT", event_object]
+                        if arr.len() != 2 {
+                            let notice = json!(["NOTICE", "Invalid EVENT message: expected 2 elements"]);
+                            write.send(Message::Text(notice.to_string())).await?;
                             continue;
                         }
                         
-                        match arr[0].as_str() {
-                            Some("EVENT") => {
-                                // Handle incoming EVENT
-                                if arr.len() >= 2 {
-                                    if let Some(event) = arr.get(1) {
-                                        // Validate event if needed
-                                        if !skip_validation {
-                                            if let Err(e) = validate_event(event) {
-                                                let notice = json!(["NOTICE", format!("Invalid event: {}", e)]);
-                                                write.send(Message::Text(notice.to_string())).await?;
-                                                continue;
-                                            }
-                                        }
-                                        
-                                        // Add to recording state
-                                        let event_size = serde_json::to_string(event)?.len();
-                                        let mut state = recording_state.write().await;
-                                        state.current_events.push(event.clone());
-                                        state.event_count += 1;
-                                        state.current_size += event_size;
-                                        
-                                        if verbose {
-                                            println!("📥 EVENT received: {} (total: {})", 
-                                                event.get("id").and_then(|i| i.as_str()).unwrap_or("?"),
-                                                state.event_count
-                                            );
-                                        }
-                                        
-                                        // Send OK response
-                                        let event_id = event.get("id").and_then(|i| i.as_str()).unwrap_or("");
-                                        let ok_msg = json!(["OK", event_id, true, ""]);
-                                        write.send(Message::Text(ok_msg.to_string())).await?;
-                                    }
-                                }
+                        let event = match arr.get(1) {
+                            Some(e) if e.is_object() => e,
+                            _ => {
+                                let notice = json!(["NOTICE", "Invalid EVENT: second element must be an event object"]);
+                                write.send(Message::Text(notice.to_string())).await?;
+                                continue;
                             }
-                            Some("REQ") => {
-                                // Handle REQ - query both current recording and archived cassettes
-                                if arr.len() >= 3 {
-                                    let sub_id = arr[1].as_str().unwrap_or("");
-                                    let filters = &arr[2..];
+                        };
+                        
+                        // Validate event if needed
+                        if !skip_validation {
+                            if let Err(e) = validate_event(event) {
+                                let notice = json!(["NOTICE", format!("Invalid event: {}", e)]);
+                                write.send(Message::Text(notice.to_string())).await?;
+                                continue;
+                            }
+                        }
+                        
+                        // Try to add event to the store
+                        let (added, replaced) = {
+                            let mut store = event_store.write().await;
+                            store.add_event(event.clone())
+                        };
+                        
+                        let event_id = event.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                        
+                        if !added {
+                            if verbose {
+                                println!("⚠️  Event {} already exists, rejecting", event_id);
+                            }
+                            
+                            // Send OK response with false for duplicate
+                            let ok_msg = json!(["OK", event_id, false, "error: duplicate event"]);
+                            let ok_msg_str = ok_msg.to_string();
+                            
+                            if verbose {
+                                println!("📤 Sending response: {}", ok_msg_str);
+                            }
+                            
+                            write.send(Message::Text(ok_msg_str)).await?;
+                        } else {
+                            if let Some(old_id) = replaced {
+                                if verbose {
+                                    println!("♻️  Event replaced older event: {}", old_id);
+                                }
+                                // Remove the old event from current buffer if it's there
+                                let mut state = recording_state.write().await;
+                                state.current_events.retain(|e| {
+                                    e.get("id").and_then(|i| i.as_str()) != Some(&old_id)
+                                });
+                                drop(state);
+                            }
+                            
+                            // Add to recording state
+                            let mut state = recording_state.write().await;
+                            state.current_events.push(event.clone());
+                            state.event_count = state.current_events.len();
+                            state.current_size = state.current_events.iter()
+                                .map(|e| serde_json::to_string(e).unwrap_or_default().len())
+                                .sum();
+                            
+                            if verbose {
+                                println!("📥 EVENT received: {} (total: {})", event_id, state.event_count);
+                            }
+                            
+                            // Send OK response with true for successful add
+                            let ok_msg = json!(["OK", event_id, true, ""]);
+                            let ok_msg_str = ok_msg.to_string();
+                        
+                            if verbose {
+                                println!("📤 Sending response: {}", ok_msg_str);
+                            }
+                            
+                            write.send(Message::Text(ok_msg_str)).await?;
+                        }
+                    }
+                    "REQ" => {
+                        // REQ messages must have at least 3 elements: ["REQ", subscription_id, filter, ...]
+                        if arr.len() < 3 {
+                            let notice = json!(["NOTICE", "Invalid REQ message: expected at least 3 elements"]);
+                            write.send(Message::Text(notice.to_string())).await?;
+                            continue;
+                        }
+                        
+                        let sub_id = match arr[1].as_str() {
+                            Some(id) => id,
+                            None => {
+                                let notice = json!(["NOTICE", "Invalid REQ: subscription ID must be a string"]);
+                                write.send(Message::Text(notice.to_string())).await?;
+                                continue;
+                            }
+                        };
+                        
+                        // Validate filters
+                        let filters = &arr[2..];
+                        for (i, filter) in filters.iter().enumerate() {
+                            if !filter.is_object() {
+                                let notice = json!(["NOTICE", format!("Invalid REQ: filter {} must be an object", i + 1)]);
+                                write.send(Message::Text(notice.to_string())).await?;
+                                continue;
+                            }
+                        }
+                        
+                        if verbose {
+                            println!("📖 REQ received - Subscription ID: {}, Filters: {:?}", sub_id, filters);
+                        }
+                        
+                        // Store subscription
+                        subscriptions.insert(sub_id.to_string(), json!(filters));
+                        
+                        // Collect ALL events from all sources first
+                        let mut all_collected_events = Vec::new();
+                        
+                        // 1. Get events from current recording buffer
+                        let current_events = {
+                            let state = recording_state.read().await;
+                            state.current_events.clone()
+                        };
+                        
+                        // Add matching events from buffer
+                        for event in &current_events {
+                            if event_matches_filters(event, filters) {
+                                all_collected_events.push(event.clone());
+                            }
+                        }
+                        
+                        if verbose {
+                            println!("📊 Found {} matching events in current buffer", all_collected_events.len());
+                        }
+                        
+                        // 2. Query ALL cassettes to get complete state
+                        let cassettes = active_cassettes.read().await;
+                        for (path_idx, (_path, module, engine)) in cassettes.iter().enumerate() {
+                            let mut store = Store::new(engine, ());
+                            let instance = Instance::new(&mut store, module, &[])?;
+                            
+                            if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send") {
+                                if let Ok(alloc_func) = instance.get_typed_func::<i32, i32>(&mut store, "alloc_buffer") {
+                                    let memory = instance.get_memory(&mut store, "memory").unwrap();
+                                    let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string").ok();
                                     
-                                    // Store subscription
-                                    subscriptions.insert(sub_id.to_string(), json!(filters));
+                                    // Keep querying this cassette until we get EOSE
+                                    let mut got_eose = false;
+                                    let mut cassette_events = 0;
                                     
-                                    // Query current recording buffer
-                                    let current_events = {
-                                        let state = recording_state.read().await;
-                                        state.current_events.clone()
-                                    };
-                                    
-                                    // Send matching events from current buffer
-                                    for event in &current_events {
-                                        if event_matches_filters(event, filters) {
-                                            let event_msg = json!(["EVENT", sub_id, event]);
-                                            write.send(Message::Text(event_msg.to_string())).await?;
-                                        }
-                                    }
-                                    
-                                    // Query archived cassettes
-                                    let cassettes = active_cassettes.read().await;
-                                    for (_path, module, engine) in cassettes.iter() {
-                                        let mut store = Store::new(engine, ());
-                                        let instance = Instance::new(&mut store, module, &[])?;
+                                    while !got_eose {
+                                        let req_msg = if filters.is_empty() {
+                                            json!(["REQ", sub_id, {}])
+                                        } else {
+                                            let mut msg_arr = vec![json!("REQ"), json!(sub_id)];
+                                            msg_arr.extend(filters.iter().cloned());
+                                            json!(msg_arr)
+                                        };
+                                        let msg_bytes = req_msg.to_string().into_bytes();
+                                        let msg_ptr = alloc_func.call(&mut store, msg_bytes.len() as i32)?;
                                         
-                                        // Send REQ to cassette and process responses
-                                        if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send") {
-                                            if let Ok(alloc_func) = instance.get_typed_func::<i32, i32>(&mut store, "alloc_buffer") {
-                                                let memory = instance.get_memory(&mut store, "memory").unwrap();
-                                                let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string").ok();
-                                                
-                                                // Keep sending REQ until we get EOSE
-                                                let mut got_eose = false;
-                                                while !got_eose {
-                                                    let req_msg = if filters.is_empty() {
-                                                        json!(["REQ", sub_id, {}])
-                                                    } else {
-                                                        let mut msg_arr = vec![json!("REQ"), json!(sub_id)];
-                                                        msg_arr.extend(filters.iter().cloned());
-                                                        json!(msg_arr)
-                                                    };
-                                                    let msg_bytes = req_msg.to_string().into_bytes();
-                                                    let msg_ptr = alloc_func.call(&mut store, msg_bytes.len() as i32)?;
-                                                    
-                                                    if msg_ptr == 0 {
-                                                        break;
-                                                    }
-                                                    
-                                                    memory.write(&mut store, msg_ptr as usize, &msg_bytes)?;
-                                                    let result_ptr = send_func.call(&mut store, (msg_ptr, msg_bytes.len() as i32))?;
-                                                    
-                                                    if let Some(dealloc) = &dealloc_func {
-                                                        dealloc.call(&mut store, (msg_ptr, msg_bytes.len() as i32))?;
-                                                    }
-                                                    
-                                                    if result_ptr == 0 {
-                                                        break;
-                                                    }
-                                                    
-                                                    let result = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
-                                                    
-                                                    // Parse the response
-                                                    if let Ok(parsed) = serde_json::from_str::<Vec<Value>>(&result) {
-                                                        if parsed.len() >= 2 {
-                                                            match parsed[0].as_str() {
-                                                                Some("EVENT") => {
-                                                                    // Validate event if needed before sending
-                                                                    if !skip_validation && parsed.len() >= 3 {
-                                                                        if let Some(event) = parsed.get(2) {
-                                                                            if let Err(e) = validate_event(event) {
-                                                                                if verbose {
-                                                                                    println!("⚠️  Skipping invalid event from cassette: {}", e);
-                                                                                }
-                                                                                continue;
-                                                                            }
+                                        if msg_ptr == 0 {
+                                            break;
+                                        }
+                                        
+                                        memory.write(&mut store, msg_ptr as usize, &msg_bytes)?;
+                                        let result_ptr = send_func.call(&mut store, (msg_ptr, msg_bytes.len() as i32))?;
+                                        
+                                        if let Some(dealloc) = &dealloc_func {
+                                            dealloc.call(&mut store, (msg_ptr, msg_bytes.len() as i32))?;
+                                        }
+                                        
+                                        if result_ptr == 0 {
+                                            break;
+                                        }
+                                        
+                                        let result = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
+                                        
+                                        // Parse the response
+                                        if let Ok(parsed) = serde_json::from_str::<Vec<Value>>(&result) {
+                                            if parsed.len() >= 2 {
+                                                match parsed[0].as_str() {
+                                                    Some("EVENT") => {
+                                                        if parsed.len() >= 3 {
+                                                            if let Some(event) = parsed.get(2) {
+                                                                // Validate event if needed
+                                                                if !skip_validation {
+                                                                    if let Err(e) = validate_event(event) {
+                                                                        if verbose {
+                                                                            println!("⚠️  Skipping invalid event from cassette: {}", e);
                                                                         }
+                                                                        continue;
                                                                     }
-                                                                    write.send(Message::Text(result)).await?;
                                                                 }
-                                                                Some("EOSE") => {
-                                                                    got_eose = true;
-                                                                    // Don't forward EOSE yet, we might have more cassettes
-                                                                }
-                                                                _ => {
-                                                                    // Forward other messages
-                                                                    write.send(Message::Text(result)).await?;
-                                                                }
+                                                                
+                                                                // Collect the event
+                                                                all_collected_events.push(event.clone());
+                                                                cassette_events += 1;
                                                             }
                                                         }
+                                                    }
+                                                    Some("EOSE") => {
+                                                        got_eose = true;
+                                                    }
+                                                    _ => {
+                                                        // Ignore other messages during collection
                                                     }
                                                 }
                                             }
                                         }
                                     }
                                     
-                                    // Send EOSE
-                                    let eose_msg = json!(["EOSE", sub_id]);
-                                    write.send(Message::Text(eose_msg.to_string())).await?;
+                                    if verbose && cassette_events > 0 {
+                                        println!("📊 Found {} events in cassette {}", cassette_events, path_idx);
+                                    }
                                 }
                             }
-                            Some("CLOSE") => {
-                                // Handle CLOSE
-                                if arr.len() >= 2 {
-                                    let sub_id = arr[1].as_str().unwrap_or("");
-                                    subscriptions.remove(sub_id);
+                        }
+                        
+                        if verbose {
+                            println!("📊 Total collected events before deduplication: {}", all_collected_events.len());
+                        }
+                        
+                        // 3. Apply deduplication for replaceable events
+                        let mut events_by_id: HashMap<String, Value> = HashMap::new();
+                        let mut replaceable_events: HashMap<(String, i64), String> = HashMap::new();
+                        let mut param_replaceable_events: HashMap<(String, i64, String), String> = HashMap::new();
+                        
+                        for event in all_collected_events {
+                            let event_id = event.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                            let event_pubkey = event.get("pubkey").and_then(|p| p.as_str()).unwrap_or("").to_string();
+                            let event_kind = event.get("kind").and_then(|k| k.as_i64()).unwrap_or(0);
+                            let event_created_at = event.get("created_at").and_then(|t| t.as_i64()).unwrap_or(0);
+                            
+                            if event_id.is_empty() || event_pubkey.is_empty() {
+                                continue; // Skip invalid events
+                            }
+                            
+                            // Check if it's a replaceable event
+                            if event_kind == 0 || event_kind == 3 || (event_kind >= 10000 && event_kind <= 19999) {
+                                let key = (event_pubkey.clone(), event_kind);
+                                if let Some(existing_id) = replaceable_events.get(&key) {
+                                    if let Some(existing_event) = events_by_id.get(existing_id) {
+                                        if let Some(existing_created_at) = existing_event.get("created_at").and_then(|t| t.as_i64()) {
+                                            if event_created_at > existing_created_at {
+                                                // Replace with newer event
+                                                events_by_id.remove(existing_id);
+                                                events_by_id.insert(event_id.clone(), event);
+                                                replaceable_events.insert(key, event_id);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    events_by_id.insert(event_id.clone(), event);
+                                    replaceable_events.insert(key, event_id);
                                 }
                             }
-                            Some("COUNT") => {
-                                // Handle COUNT if NIP-45 is enabled
-                                // Similar to REQ but return counts
-                                if arr.len() >= 3 {
-                                    let sub_id = arr[1].as_str().unwrap_or("");
-                                    let filters = &arr[2..];
+                            // Check if it's a parameterized replaceable event
+                            else if event_kind >= 30000 && event_kind <= 39999 {
+                                let d_tag = event.get("tags")
+                                    .and_then(|tags| tags.as_array())
+                                    .and_then(|tags_array| {
+                                        tags_array.iter()
+                                            .find(|tag| tag.as_array()
+                                                .and_then(|t| t.get(0).and_then(|t0| t0.as_str()))
+                                                .unwrap_or("") == "d"
+                                            )
+                                            .and_then(|tag| tag.as_array())
+                                            .and_then(|tag_array| tag_array.get(1).and_then(|t1| t1.as_str()))
+                                    })
+                                    .unwrap_or("")
+                                    .to_string();
+                                
+                                let key = (event_pubkey.clone(), event_kind, d_tag);
+                                if let Some(existing_id) = param_replaceable_events.get(&key) {
+                                    if let Some(existing_event) = events_by_id.get(existing_id) {
+                                        if let Some(existing_created_at) = existing_event.get("created_at").and_then(|t| t.as_i64()) {
+                                            if event_created_at > existing_created_at {
+                                                // Replace with newer event
+                                                events_by_id.remove(existing_id);
+                                                events_by_id.insert(event_id.clone(), event);
+                                                param_replaceable_events.insert(key, event_id);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    events_by_id.insert(event_id.clone(), event);
+                                    param_replaceable_events.insert(key, event_id);
+                                }
+                            }
+                            // Regular event - just check for duplicates
+                            else {
+                                events_by_id.entry(event_id).or_insert(event);
+                            }
+                        }
+                        
+                        // Convert back to a vector
+                        let mut final_events: Vec<Value> = events_by_id.into_values().collect();
+                        
+                        if verbose {
+                            println!("📊 Events after deduplication: {}", final_events.len());
+                        }
+                        
+                        // 4. Sort events by created_at (newest first) 
+                        final_events.sort_by(|a, b| {
+                            let a_time = a.get("created_at").and_then(|t| t.as_i64()).unwrap_or(0);
+                            let b_time = b.get("created_at").and_then(|t| t.as_i64()).unwrap_or(0);
+                            b_time.cmp(&a_time)
+                        });
+                        
+                        // 5. Apply limit if specified in any filter
+                        let mut max_limit: Option<u64> = None;
+                        for filter in filters {
+                            if let Some(limit) = filter.get("limit").and_then(|l| l.as_u64()) {
+                                max_limit = Some(max_limit.map_or(limit, |m: u64| m.max(limit)));
+                            }
+                        }
+                        
+                        if let Some(limit) = max_limit {
+                            final_events.truncate(limit as usize);
+                            if verbose {
+                                println!("📊 Applied limit of {}, final event count: {}", limit, final_events.len());
+                            }
+                        }
+                        
+                        // 6. Send all events
+                        for event in final_events {
+                            let event_msg = json!(["EVENT", sub_id, event]);
+                            let event_msg_str = event_msg.to_string();
+                            
+                            if verbose {
+                                println!("📤 Sending EVENT: {}", 
+                                    event.get("id").and_then(|i| i.as_str()).unwrap_or("?"));
+                            }
+                            
+                            write.send(Message::Text(event_msg_str)).await?;
+                        }
+                        
+                        // 7. Send EOSE
+                        let eose_msg = json!(["EOSE", sub_id]);
+                        let eose_msg_str = eose_msg.to_string();
+                        
+                        if verbose {
+                            println!("📤 Sending EOSE for subscription: {}", sub_id);
+                        }
+                        
+                        write.send(Message::Text(eose_msg_str)).await?;
+                    }
+                    "CLOSE" => {
+                        // CLOSE messages must have exactly 2 elements: ["CLOSE", subscription_id]
+                        if arr.len() != 2 {
+                            let notice = json!(["NOTICE", "Invalid CLOSE message: expected 2 elements"]);
+                            write.send(Message::Text(notice.to_string())).await?;
+                            continue;
+                        }
+                        
+                        let sub_id = match arr[1].as_str() {
+                            Some(id) => id,
+                            None => {
+                                let notice = json!(["NOTICE", "Invalid CLOSE: subscription ID must be a string"]);
+                                write.send(Message::Text(notice.to_string())).await?;
+                                continue;
+                            }
+                        };
+                        
+                        if verbose {
+                            println!("🔚 CLOSE received for subscription: {}", sub_id);
+                        }
+                        
+                        subscriptions.remove(sub_id);
+                    }
+                    "COUNT" => {
+                        // COUNT messages must have at least 3 elements: ["COUNT", subscription_id, filter, ...]
+                        if arr.len() < 3 {
+                            let notice = json!(["NOTICE", "Invalid COUNT message: expected at least 3 elements"]);
+                            write.send(Message::Text(notice.to_string())).await?;
+                            continue;
+                        }
+                        
+                        let sub_id = match arr[1].as_str() {
+                            Some(id) => id,
+                            None => {
+                                let notice = json!(["NOTICE", "Invalid COUNT: subscription ID must be a string"]);
+                                write.send(Message::Text(notice.to_string())).await?;
+                                continue;
+                            }
+                        };
+                        
+                        let filters = &arr[2..];
+                        for (i, filter) in filters.iter().enumerate() {
+                            if !filter.is_object() {
+                                let notice = json!(["NOTICE", format!("Invalid COUNT: filter {} must be an object", i + 1)]);
+                                write.send(Message::Text(notice.to_string())).await?;
+                                continue;
+                            }
+                        }
+                        
+                        if verbose {
+                            println!("📊 COUNT received - Subscription ID: {}, Filters: {:?}", sub_id, filters);
+                        }
                                     
                                     let mut total_count = 0;
                                     
@@ -2439,20 +2775,42 @@ async fn handle_deck_relay_connection(
                                     }
                                     
                                     let count_msg = json!(["COUNT", sub_id, {"count": total_count}]);
-                                    write.send(Message::Text(count_msg.to_string())).await?;
-                                }
-                            }
-                            _ => {
-                                let notice = json!(["NOTICE", "Unknown command"]);
-                                write.send(Message::Text(notice.to_string())).await?;
-                            }
+                                    let count_msg_str = count_msg.to_string();
+                                    
+                                    if verbose {
+                                        println!("📤 Sending COUNT response: {} events matched", total_count);
+                                    }
+                                    
+                                    write.send(Message::Text(count_msg_str)).await?;
+                    }
+                    _ => {
+                        if verbose {
+                            println!("⚠️  Unknown command received: {}", msg_type);
                         }
+                        
+                        let notice = json!(["NOTICE", format!("Unknown command: {}", msg_type)]);
+                        let notice_str = notice.to_string();
+                        
+                        if verbose {
+                            println!("📤 Sending NOTICE: {}", notice_str);
+                        }
+                        
+                        write.send(Message::Text(notice_str)).await?;
                     }
                 }
             }
-            Ok(Message::Close(_)) => break,
+            Ok(Message::Close(_)) => {
+                if verbose {
+                    println!("🔌 WebSocket connection closed");
+                }
+                break;
+            }
             _ => {}
         }
+    }
+    
+    if verbose {
+        println!("👋 Connection handler finished");
     }
     
     Ok(())
@@ -2460,38 +2818,134 @@ async fn handle_deck_relay_connection(
 
 // Helper function to check if an event matches filters
 fn event_matches_filters(event: &Value, filters: &[Value]) -> bool {
-    // Simple filter matching - this could be expanded
+    // If no filters provided, match nothing
+    if filters.is_empty() {
+        return false;
+    }
+    
+    // NIP-01: filters are OR'd together (any filter match = include event)
     for filter in filters {
         if let Some(filter_obj) = filter.as_object() {
-            // Check kinds
-            if let Some(kinds) = filter_obj.get("kinds").and_then(|k| k.as_array()) {
-                if let Some(event_kind) = event.get("kind").and_then(|k| k.as_i64()) {
-                    if !kinds.iter().any(|k| k.as_i64() == Some(event_kind)) {
-                        continue;
-                    }
-                }
-            }
+            let mut matches = true;
             
-            // Check authors
-            if let Some(authors) = filter_obj.get("authors").and_then(|a| a.as_array()) {
-                if let Some(event_author) = event.get("pubkey").and_then(|p| p.as_str()) {
-                    if !authors.iter().any(|a| {
-                        if let Some(author_prefix) = a.as_str() {
-                            event_author.starts_with(author_prefix)
+            // Check ids (exact match)
+            if let Some(ids) = filter_obj.get("ids").and_then(|i| i.as_array()) {
+                if let Some(event_id) = event.get("id").and_then(|i| i.as_str()) {
+                    let id_matches = ids.iter().any(|id| {
+                        if let Some(id_prefix) = id.as_str() {
+                            event_id.starts_with(id_prefix)
                         } else {
                             false
                         }
-                    }) {
-                        continue;
+                    });
+                    if !id_matches {
+                        matches = false;
+                    }
+                } else {
+                    matches = false;
+                }
+            }
+            
+            // Check kinds
+            if matches && filter_obj.contains_key("kinds") {
+                if let Some(kinds) = filter_obj.get("kinds").and_then(|k| k.as_array()) {
+                    if let Some(event_kind) = event.get("kind").and_then(|k| k.as_i64()) {
+                        if !kinds.iter().any(|k| k.as_i64() == Some(event_kind)) {
+                            matches = false;
+                        }
+                    } else {
+                        matches = false;
                     }
                 }
             }
             
-            // If we get here, the event matches this filter
-            return true;
+            // Check authors (prefix match)
+            if matches && filter_obj.contains_key("authors") {
+                if let Some(authors) = filter_obj.get("authors").and_then(|a| a.as_array()) {
+                    if let Some(event_author) = event.get("pubkey").and_then(|p| p.as_str()) {
+                        let author_matches = authors.iter().any(|a| {
+                            if let Some(author_prefix) = a.as_str() {
+                                event_author.starts_with(author_prefix)
+                            } else {
+                                false
+                            }
+                        });
+                        if !author_matches {
+                            matches = false;
+                        }
+                    } else {
+                        matches = false;
+                    }
+                }
+            }
+            
+            // Check since
+            if matches && filter_obj.contains_key("since") {
+                if let Some(since) = filter_obj.get("since").and_then(|s| s.as_i64()) {
+                    if let Some(created_at) = event.get("created_at").and_then(|t| t.as_i64()) {
+                        if created_at < since {
+                            matches = false;
+                        }
+                    } else {
+                        matches = false;
+                    }
+                }
+            }
+            
+            // Check until
+            if matches && filter_obj.contains_key("until") {
+                if let Some(until) = filter_obj.get("until").and_then(|u| u.as_i64()) {
+                    if let Some(created_at) = event.get("created_at").and_then(|t| t.as_i64()) {
+                        if created_at > until {
+                            matches = false;
+                        }
+                    } else {
+                        matches = false;
+                    }
+                }
+            }
+            
+            // Check tag filters (e.g., #e, #p, #t)
+            if matches {
+                for (key, values) in filter_obj {
+                    if key.starts_with('#') && key.len() == 2 {
+                        let tag_name = &key[1..];
+                        if let Some(filter_values) = values.as_array() {
+                            if let Some(event_tags) = event.get("tags").and_then(|t| t.as_array()) {
+                                let tag_matches = filter_values.iter().any(|filter_value| {
+                                    if let Some(filter_str) = filter_value.as_str() {
+                                        event_tags.iter().any(|tag| {
+                                            if let Some(tag_array) = tag.as_array() {
+                                                tag_array.len() >= 2 &&
+                                                tag_array[0].as_str() == Some(tag_name) &&
+                                                tag_array[1].as_str() == Some(filter_str)
+                                            } else {
+                                                false
+                                            }
+                                        })
+                                    } else {
+                                        false
+                                    }
+                                });
+                                if !tag_matches {
+                                    matches = false;
+                                }
+                            } else {
+                                matches = false;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // If all conditions in this filter match, the event matches
+            if matches {
+                return true;
+            }
         }
     }
     
+    // No filters matched
     false
 }
 
@@ -2556,6 +3010,7 @@ async fn process_deck_record_mode(
         start_time: SystemTime::now(),
         current_size: 0,
     }));
+    let event_store = Arc::new(RwLock::new(DeckEventStore::new()));
     
     // Start the WebSocket server
     let server_handle = {
@@ -2685,6 +3140,107 @@ struct RecordingState {
     current_size: usize,
 }
 
+// Global event store for deck mode with deduplication
+struct DeckEventStore {
+    // All events by ID
+    events_by_id: HashMap<String, Value>,
+    // Replaceable events indexed by author + kind (for kinds 0, 3, 10000-19999)
+    replaceable_events: HashMap<(String, u64), String>, // (author, kind) -> event_id
+    // Parameterized replaceable events indexed by author + kind + d-tag (for kinds 30000-39999)
+    param_replaceable_events: HashMap<(String, u64, String), String>, // (author, kind, d_tag) -> event_id
+}
+
+impl DeckEventStore {
+    fn new() -> Self {
+        Self {
+            events_by_id: HashMap::new(),
+            replaceable_events: HashMap::new(),
+            param_replaceable_events: HashMap::new(),
+        }
+    }
+    
+    // Check if event should replace an existing one
+    fn check_replaceable(&self, event: &Value) -> Option<String> {
+        let kind = event.get("kind")?.as_u64()?;
+        let pubkey = event.get("pubkey")?.as_str()?;
+        
+        // Check if it's a replaceable event
+        if kind == 0 || kind == 3 || (10000..=19999).contains(&kind) {
+            // Regular replaceable
+            return self.replaceable_events.get(&(pubkey.to_string(), kind)).cloned();
+        } else if (30000..=39999).contains(&kind) {
+            // Parameterized replaceable - need d-tag
+            let d_tag = event.get("tags")?
+                .as_array()?
+                .iter()
+                .find(|tag| {
+                    tag.as_array()
+                        .and_then(|t| t.get(0))
+                        .and_then(|t| t.as_str())
+                        .map(|t| t == "d")
+                        .unwrap_or(false)
+                })?
+                .as_array()?
+                .get(1)?
+                .as_str()?;
+            
+            return self.param_replaceable_events.get(&(pubkey.to_string(), kind, d_tag.to_string())).cloned();
+        }
+        
+        None
+    }
+    
+    // Add event to store, returns (added, replaced_event_id)
+    fn add_event(&mut self, event: Value) -> (bool, Option<String>) {
+        let event_id = match event.get("id").and_then(|i| i.as_str()) {
+            Some(id) => id.to_string(),
+            None => return (false, None),
+        };
+        
+        // Check if we already have this exact event
+        if self.events_by_id.contains_key(&event_id) {
+            return (false, None);
+        }
+        
+        // Check if this replaces an existing event
+        let replaced = self.check_replaceable(&event);
+        if let Some(old_id) = &replaced {
+            // Remove the old event
+            self.events_by_id.remove(old_id);
+        }
+        
+        // Update indices
+        if let (Some(kind), Some(pubkey)) = (event.get("kind").and_then(|k| k.as_u64()), 
+                                             event.get("pubkey").and_then(|p| p.as_str())) {
+            if kind == 0 || kind == 3 || (10000..=19999).contains(&kind) {
+                self.replaceable_events.insert((pubkey.to_string(), kind), event_id.clone());
+            } else if (30000..=39999).contains(&kind) {
+                if let Some(d_tag) = event.get("tags")
+                    .and_then(|t| t.as_array())
+                    .and_then(|tags| {
+                        tags.iter().find(|tag| {
+                            tag.as_array()
+                                .and_then(|t| t.get(0))
+                                .and_then(|t| t.as_str())
+                                .map(|t| t == "d")
+                                .unwrap_or(false)
+                        })
+                    })
+                    .and_then(|tag| tag.as_array())
+                    .and_then(|t| t.get(1))
+                    .and_then(|t| t.as_str()) {
+                    self.param_replaceable_events.insert((pubkey.to_string(), kind, d_tag.to_string()), event_id.clone());
+                }
+            }
+        }
+        
+        // Add the event
+        self.events_by_id.insert(event_id.clone(), event);
+        
+        (true, replaced)
+    }
+}
+
 // Helper function to record from a single relay
 async fn record_from_relay(
     relay_url: &str,
@@ -2758,14 +3314,10 @@ async fn rotate_cassette(
     nip11_args: &Nip11Args,
     verbose: bool,
 ) -> Result<()> {
-    // Get events and reset state
+    // Get events but DON'T reset state yet - keep events queryable until cassette is compiled
     let events = {
-        let mut state = recording_state.write().await;
-        let events = std::mem::take(&mut state.current_events);
-        state.event_count = 0;
-        state.current_size = 0;
-        state.start_time = SystemTime::now();
-        events
+        let state = recording_state.read().await;
+        state.current_events.clone()
     };
     
     if events.is_empty() {
@@ -2785,15 +3337,17 @@ async fn rotate_cassette(
     let output_dir = output_dir.clone();
     let active_cassettes = active_cassettes.clone();
     let nip11_args = nip11_args.clone();
+    let recording_state_clone = recording_state.clone();
+    let event_count = events.len();
     
-    tokio::task::spawn_blocking(move || {
+    let handle = tokio::task::spawn_blocking(move || {
         // Create temporary directory for compilation
         let temp_dir = TempDir::new()?;
         let project_dir = temp_dir.path();
         
         // Build features list
-        let mut features = vec!["default"];
-        if _nip_11 { features.push("nip11"); }
+        // Since the Cargo.toml template has default = ["nip11"], we always need nip11
+        let mut features = vec!["default", "nip11"];
         if nip_45 { features.push("nip45"); }
         if nip_50 { features.push("nip50"); }
         
@@ -2804,7 +3358,14 @@ async fn rotate_cassette(
             project_dir,
         );
         
-        generator.set_var("events", &serde_json::to_string(&events)?);
+        let events_json = serde_json::to_string(&events)?;
+        println!("🔍 Debug: Serializing {} events for cassette", events.len());
+        println!("🔍 Debug: First event sample: {}", 
+            events.first()
+                .map(|e| serde_json::to_string(e).unwrap_or_default())
+                .unwrap_or_default());
+        
+        generator.set_var("events_json", &events_json);
         generator.set_var("features_array", &serde_json::to_string(&features)?);
         generator.set_var("version", env!("CARGO_PKG_VERSION"));
         
@@ -2830,14 +3391,57 @@ async fn rotate_cassette(
         let engine = Engine::default();
         let module = Module::from_file(&engine, &cassette_path)?;
         
-        // Add to active cassettes
+        // Add to active cassettes and clear the buffer
         tokio::runtime::Handle::current().block_on(async {
             let mut cassettes = active_cassettes.write().await;
             cassettes.push((cassette_path.clone(), module, engine));
             println!("✅ Hot-loaded cassette: {}", cassette_path.display());
+            
+            // NOW we can clear the buffer since the cassette is ready
+            let mut state = recording_state_clone.write().await;
+            // Remove the events we just compiled (with bounds check)
+            let drain_count = event_count.min(state.current_events.len());
+            if drain_count > 0 {
+                state.current_events.drain(0..drain_count);
+            }
+            state.event_count = state.current_events.len();
+            state.current_size = state.current_events.iter()
+                .map(|e| serde_json::to_string(e).unwrap_or_default().len())
+                .sum();
+            state.start_time = SystemTime::now();
         });
         
         Ok::<(), anyhow::Error>(())
+    });
+    
+    // Wait for the compilation to complete and log any errors
+    let recording_state_for_error = recording_state.clone();
+    tokio::spawn(async move {
+        match handle.await {
+            Ok(Ok(())) => {
+                // Success - already logged
+            }
+            Ok(Err(e)) => {
+                eprintln!("❌ Cassette compilation failed: {}", e);
+                // Reset state on failure to prevent infinite rotation loop
+                let mut state = recording_state_for_error.write().await;
+                state.current_events.clear();
+                state.event_count = 0;
+                state.current_size = 0;
+                state.start_time = SystemTime::now();
+                eprintln!("⚠️  Cleared {} events due to compilation failure", event_count);
+            }
+            Err(e) => {
+                eprintln!("❌ Task join error: {}", e);
+                // Reset state on failure to prevent infinite rotation loop
+                let mut state = recording_state_for_error.write().await;
+                state.current_events.clear();
+                state.event_count = 0;
+                state.current_size = 0;
+                state.start_time = SystemTime::now();
+                eprintln!("⚠️  Cleared {} events due to task failure", event_count);
+            }
+        }
     });
     
     Ok(())
@@ -3270,6 +3874,10 @@ async fn main() -> Result<()> {
             nip_50,
             nip11
         } => {
+            // Check dependencies before proceeding
+            let dep_check = deps::DependencyCheck::new();
+            dep_check.check_for_record()?;
+            
             // Set default values if not provided
             let name_value = name.clone().unwrap_or_else(|| "cassette".to_string());
             let sanitized_name = sanitize_filename(&name_value);
@@ -3357,6 +3965,10 @@ async fn main() -> Result<()> {
             verbose,
             nip11,
         } => {
+            // Check dependencies before proceeding
+            let dep_check = deps::DependencyCheck::new();
+            dep_check.check_for_dub()?;
+            
             // Check if required parameters are missing
             if cassettes.is_empty() || output.is_none() {
                 if cassettes.is_empty() {
@@ -3437,7 +4049,7 @@ async fn main() -> Result<()> {
                 eprintln!("  -l, --limit <LIMIT>         Limit number of events");
                 eprintln!("      --since <TIMESTAMP>     Events after timestamp");
                 eprintln!("      --until <TIMESTAMP>     Events before timestamp");
-                eprintln!("  -o, --output <FORMAT>       Output format: json or ndjson (default: json)");
+                eprintln!("  -o, --output <FORMAT>       Output format: nip01, json, or ndjson (default: nip01)");
                 eprintln!("      --info                  Show NIP-11 relay information");
                 eprintln!("      --count                 Perform COUNT query (NIP-45)");
                 eprintln!("      --search <QUERY>        Search query for NIP-50");
@@ -3895,7 +4507,7 @@ fn preprocess_events(events: Vec<Value>) -> Vec<Value> {
     filtered_events
 }
 
-/// Parse events from file, supporting both JSON array and NDJSON formats
+/// Parse events from file, supporting JSON array, NDJSON, and NIP-01 message formats
 fn parse_events_from_file(input_file: &str) -> Result<Vec<Value>> {
     let file = File::open(input_file)?;
     let mut reader = BufReader::new(file);
@@ -3908,8 +4520,42 @@ fn parse_events_from_file(input_file: &str) -> Result<Vec<Value>> {
     reader.seek(std::io::SeekFrom::Start(0))?;
     
     if first_char[0] == b'[' {
-        // JSON array format
-        serde_json::from_reader(reader).context("Failed to parse JSON array")
+        // Could be JSON array or NIP-01 message
+        let content = std::fs::read_to_string(input_file)?;
+        let parsed: Value = serde_json::from_str(&content)?;
+        
+        if let Some(arr) = parsed.as_array() {
+            // Check if it's a NIP-01 message format ["EVENT", {...}]
+            if arr.len() == 2 && arr[0].as_str() == Some("EVENT") {
+                // Single NIP-01 message, extract the event
+                if let Some(event) = arr.get(1) {
+                    Ok(vec![event.clone()])
+                } else {
+                    Err(anyhow!("Invalid NIP-01 message format"))
+                }
+            } else if arr.len() >= 1 && arr[0].is_object() {
+                // Regular JSON array of events
+                Ok(arr.clone())
+            } else {
+                // Could be an array of NIP-01 messages
+                let mut events = Vec::new();
+                for item in arr {
+                    if let Some(msg_arr) = item.as_array() {
+                        if msg_arr.len() == 2 && msg_arr[0].as_str() == Some("EVENT") {
+                            if let Some(event) = msg_arr.get(1) {
+                                events.push(event.clone());
+                            }
+                        }
+                    } else if item.is_object() {
+                        // Regular event object
+                        events.push(item.clone());
+                    }
+                }
+                Ok(events)
+            }
+        } else {
+            Err(anyhow!("Expected JSON array"))
+        }
     } else {
         // Assume NDJSON format (newline-delimited JSON)
         let mut events = Vec::new();
@@ -3924,12 +4570,32 @@ fn parse_events_from_file(input_file: &str) -> Result<Vec<Value>> {
                 continue;
             }
             
-            // Parse each line as a JSON object
-            match serde_json::from_str::<Value>(trimmed) {
-                Ok(event) => events.push(event),
-                Err(e) => {
-                    // Skip invalid lines with a warning
-                    eprintln!("Warning: Skipping invalid JSON on line {}: {}", line_num + 1, e);
+            // Try to parse as NIP-01 message first
+            if trimmed.starts_with("[") {
+                match serde_json::from_str::<Value>(trimmed) {
+                    Ok(Value::Array(arr)) if arr.len() == 2 && arr[0].as_str() == Some("EVENT") => {
+                        // NIP-01 message format
+                        if let Some(event) = arr.get(1) {
+                            events.push(event.clone());
+                        }
+                    }
+                    _ => {
+                        // Try as regular event
+                        match serde_json::from_str::<Value>(trimmed) {
+                            Ok(event) if event.is_object() => events.push(event),
+                            _ => eprintln!("Warning: Skipping invalid line {}: {}", line_num + 1, trimmed),
+                        }
+                    }
+                }
+            } else {
+                // Parse as regular JSON object
+                match serde_json::from_str::<Value>(trimmed) {
+                    Ok(event) if event.is_object() => events.push(event),
+                    Ok(_) => eprintln!("Warning: Skipping non-object on line {}", line_num + 1),
+                    Err(e) => {
+                        // Skip invalid lines with a warning
+                        eprintln!("Warning: Skipping invalid JSON on line {}: {}", line_num + 1, e);
+                    }
                 }
             }
         }

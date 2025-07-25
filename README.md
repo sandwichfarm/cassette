@@ -6,23 +6,25 @@ Portable nostr relays that you can scrub, dub and cast notes from. Mostly rust, 
 
 ## Table of Contents
 
-- [What's New](#whats-new-in-v062)
+- [What's New](#whats-new-in-v071)
 - [NIPs Support](#nips-look)
 - [Quick Start](#quick-start)
   - [Prerequisites](#prerequisites)
   - [Record a cassette](#record-a-cassette)
   - [Scrub through a cassette](#scrub-through-a-cassette)
   - [Dub a Mixtape](#dub-a-mixtape)
-  - [Cast to Relays](#cast-to-relays)
+  - [Play to Relays](#play-to-relays)
   - [Listen - Serve cassettes as a relay](#listen---serve-cassettes-as-a-relay)
+  - [Deck - Run a writable relay](#deck---run-a-writable-relay)
 - [What is a Cassette?](#what-is-a-cassette)
   - [Use Cases](#use-cases)
 - [CLI Commands](#cli-commands)
   - [`record`](#record---record-events-onto-cassettes)
   - [`scrub`](#scrub---scrub-through-cassettes-send-a-req)
   - [`dub`](#dub---combine-cassettes-into-a-mixtape)
-  - [`cast`](#cast---broadcast-events-to-nostr-relays)
+  - [`play`](#play---broadcast-events-to-nostr-relays)
   - [`listen`](#listen---serve-cassettes-as-a-websocket-relay)
+  - [`deck`](#deck---run-a-cassette-deck-relay)
 - [Advanced Configuration](#advanced-configuration)
   - [Modular NIP Support](#modular-nip-support)
     - [NIP-01 (Basic Relay Protocol)](#nip-01-basic-relay-protocol)
@@ -44,12 +46,17 @@ Portable nostr relays that you can scrub, dub and cast notes from. Mostly rust, 
 - [Migration Guide](#migration-guide)
 - [License](#license)
 
-## What's New in v0.6.2
+## What's New in v0.8.0
 
+- **🎛️ New `deck` command**: Run a cassette deck - continuously record and serve cassettes as a writable relay
+- **📼 Deck relay mode**: Accept events via WebSocket and automatically compile them into cassettes
+- **♻️ Event deduplication**: Proper handling of replaceable events (NIP-01) across all cassettes
+- **🔍 Complete NIP-01 compliance**: Full filter support including ids, kinds, authors, since, until, limit, and tag filters
+- **📊 Improved REQ handling**: Collects all events before applying replaceable event logic and filters
 - **🎚️ Renamed `play` to `scrub`**: Better reflects the analog tape metaphor of moving through content
 - **🌐 New `listen` command**: Serve cassettes as a WebSocket relay with NIP-11 support
 - **🔧 NIP-11 improvements**: Added `software` and `version` fields to relay information
-- **🐛 Bug fixes**: Fixed WebSocket connection state issues in the listen server
+- **🐛 Bug fixes**: Fixed WebSocket connection state issues and event handling in relay mode
 
 > **Note**: The `play` command is deprecated but still works with a warning. Please use `scrub` instead.
 
@@ -87,8 +94,8 @@ cassette record events.json --name my-notes --nip-45
 # With search support (NIP-50)
 cassette record events.json --name my-notes --nip-50
 
-# Full-featured with relay info (NIP-11 + NIP-45 + NIP-50)
-cassette record events.json --name my-relay --nip-11 --nip-45 --nip-50 \
+# Full-featured with relay info (NIP-45 + NIP-50)
+cassette record events.json --name my-relay --nip-45 --nip-50 \
   --relay-description "Personal event archive"
 
 # Output: my-notes.wasm
@@ -138,17 +145,17 @@ cassette dub alice.wasm bob.wasm combined.wasm
 cassette dub *.wasm filtered.wasm --kinds 1 --since 1700000000
 ```
 
-### Cast to Relays
+### Play to Relays
 
 ```bash
 # Broadcast events to a relay
-cassette cast my-notes.wasm --relays wss://relay.damus.io
+cassette play my-notes.wasm --relays wss://relay.damus.io
 
 # Broadcast to multiple relays
-cassette cast *.wasm --relays wss://nos.lol wss://relay.nostr.band
+cassette play *.wasm --relays wss://nos.lol wss://relay.nostr.band
 
 # Test with dry-run
-cassette cast archive.wasm --relays ws://localhost:7000 --dry-run
+cassette play archive.wasm --relays ws://localhost:7000 --dry-run
 ```
 
 ### Listen - Serve cassettes as a relay
@@ -168,6 +175,25 @@ cassette listen archive.wasm --verbose
 
 # Connect with any Nostr client
 nak req ws://localhost:7777 -k 1 -l 10
+```
+
+### Deck - Run a writable relay
+
+```bash
+# Run a writable relay that creates cassettes (relay mode)
+cassette deck
+
+# Run with custom settings
+cassette deck --port 1337 --event-limit 1000 --size-limit 10
+
+# Record from other relays continuously (record mode)
+cassette deck --mode record --relays wss://relay.damus.io --kinds 1
+
+# Verbose mode to see all operations
+cassette deck -v
+
+# Send events to the deck
+echo "hello world" | nak event -c - | nak publish ws://localhost:7777
 ```
 
 ## What is a Cassette?
@@ -195,21 +221,20 @@ cassette record [OPTIONS] [INPUT_FILE]
 #   -a, --author       Author/curator name
 #   -o, --output       Output directory (default: ./cassettes)
 #   --no-bindings      Skip JavaScript bindings, WASM only
-#   --nip-11           Enable NIP-11 (Relay Information Document)
-#   --nip-42           Enable NIP-42 (Authentication)
+#   --nip-42           Enable NIP-42 (Authentication) - placeholder
 #   --nip-45           Enable NIP-45 (Event Counts)
 #   --nip-50           Enable NIP-50 (Search Capability)
-#   --relay-name       Name for NIP-11
-#   --relay-description Description for NIP-11
-#   --relay-contact    Contact for NIP-11
-#   --relay-pubkey     Owner pubkey for NIP-11
+#   --relay-name       Name for NIP-11 relay info
+#   --relay-description Description for NIP-11 relay info
+#   --relay-contact    Contact for NIP-11 relay info
+#   --relay-pubkey     Owner pubkey for NIP-11 relay info
 
 # Examples:
 nak req -k 30023 wss://relay.nostr.band | cassette record -n "long-form"
 cassette record my-events.json --name "my-backup"
 cassette record events.json --nip-45 --name "countable" # With COUNT support
 cassette record events.json --nip-50 --name "searchable" # With search support
-cassette record events.json --nip-11 --nip-45 --nip-50 --name "Archive"
+cassette record events.json --nip-45 --nip-50 --name "Archive"
 ```
 
 ### `scrub` - Scrub through cassettes (send a `req`)
@@ -262,10 +287,10 @@ cassette dub *.wasm all-events.wasm --name "Complete Archive"
 cassette dub raw/*.wasm clean.wasm --kinds 1 --kinds 30023
 ```
 
-### `cast` - Broadcast events to Nostr relays
+### `play` - Broadcast events to Nostr relays
 
 ```bash
-cassette cast [OPTIONS] <CASSETTES...> --relays <RELAYS...>
+cassette play [OPTIONS] <CASSETTES...> --relays <RELAYS...>
 
 # Options:
 #   -r, --relays       Target relay URLs (required)
@@ -275,9 +300,11 @@ cassette cast [OPTIONS] <CASSETTES...> --relays <RELAYS...>
 #   --dry-run          Preview without sending
 
 # Examples:
-cassette cast events.wasm --relays wss://relay.damus.io
-cassette cast *.wasm --relays wss://nos.lol wss://relay.nostr.band
-cassette cast archive.wasm --relays ws://localhost:7000 --dry-run
+cassette play events.wasm --relays wss://relay.damus.io
+cassette play *.wasm --relays wss://nos.lol wss://relay.nostr.band
+cassette play archive.wasm --relays ws://localhost:7000 --dry-run
+
+# Note: The 'cast' command is deprecated and will show a warning
 ```
 
 ### `listen` - Serve cassettes as a WebSocket relay
@@ -303,9 +330,52 @@ cassette listen archive.wasm --verbose                          # Debug mode
 # - Serves cassettes as a NIP-01 compliant WebSocket relay
 # - Supports NIP-11 relay information via HTTP with Accept: application/nostr+json
 # - Handles multiple cassettes - aggregates responses from all loaded cassettes
-# - Auto-selects available port if not specified (tries 7777, 8080, 8888, etc.)
+# - Auto-selects available port if not specified
 # - Compatible with all Nostr clients (nak, nostcat, web clients, etc.)
 # - Each connection gets a fresh state to prevent cross-connection contamination
+```
+
+### `deck` - Run a cassette deck relay
+
+```bash
+cassette deck [OPTIONS]
+
+# Options:
+#   -m, --mode         Operation mode: 'relay' (writable) or 'record' (from relays)
+#   -r, --relays       Relay URLs to record from (record mode only)
+#   -n, --name         Base name for cassettes (default: deck)
+#   -o, --output       Output directory (default: ./deck)
+#   -p, --port         Port to serve on (default: 7777)
+#   --bind             Bind address (default: 127.0.0.1)
+#   -e, --event-limit  Max events per cassette (default: 10000)
+#   -s, --size-limit   Max cassette size in MB (default: 100)
+#   -d, --duration     Recording duration per cassette in seconds (default: 3600)
+#   -f, --filter       Filter JSON for recording
+#   -k, --kinds        Event kinds to record
+#   --authors          Authors to filter
+#   -v, --verbose      Show verbose output
+#   --nip-11           Enable NIP-11 support
+#   --nip-45           Enable NIP-45 (COUNT) support
+#   --nip-50           Enable NIP-50 (search) support
+
+# Examples:
+# Relay mode - accept events and compile cassettes
+cassette deck                                              # Default relay mode
+cassette deck -p 1337 -e 100                              # Custom port and rotation
+cassette deck -v --name archive                           # Verbose with custom name
+
+# Record mode - record from other relays
+cassette deck --mode record --relays wss://relay.damus.io
+cassette deck -m record -r wss://nos.lol --kinds 1 --kinds 30023
+cassette deck -m record -r wss://relay.nostr.band --filter '{"#t":["bitcoin"]}'
+
+# Features:
+# - Relay mode: Acts as a writable relay, stores events in rotating cassettes
+# - Record mode: Continuously records from other relays
+# - Auto-rotation based on event count, size, or time
+# - Hot-loads compiled cassettes for immediate querying
+# - Proper NIP-01 compliance with event deduplication
+# - Replaceable event handling (kinds 0, 3, 10000-19999, 30000-39999)
 ```
 
 ## Advanced Configuration
@@ -323,11 +393,11 @@ cassette record events.json --name basic-relay
 ```
 
 #### NIP-11 (Relay Information Document)
-Always available for basic info. Enables dynamic relay metadata and capability discovery.
+Always included in all cassettes. Provides relay metadata and capability discovery.
 
 ```bash
-# With static relay information
-cassette record events.json --name my-relay --nip-11 \
+# Record with custom relay information
+cassette record events.json --name my-relay \
   --relay-name "My Relay" \
   --relay-description "My curated event collection" \
   --relay-contact "contact@example.com" \
@@ -342,7 +412,7 @@ cassette scrub any-cassette.wasm --info \
   --relay-description "Runtime description"
 ```
 
-> **Note**: NIP-11 info automatically includes `software: "@sandwichfarm/cassette"` and the current CLI version.
+> **Note**: NIP-11 is always enabled. Relay info automatically includes `software: "@sandwichfarm/cassette"` and the current CLI version.
 
 #### NIP-45 (Event Counts)
 Adds COUNT query support for efficient event counting without retrieving full events.
@@ -390,10 +460,10 @@ You can combine multiple NIPs for full-featured cassettes:
 ```bash
 # Full-featured cassette
 cassette record events.json --name full-relay \
-  --nip-11 --nip-42 --nip-45 --nip-50 \
-  --description "Full-featured Nostr archive" \
-  --contact "contact@example.com" \
-  --pubkey "npub1abc..."
+  --nip-42 --nip-45 --nip-50 \
+  --relay-description "Full-featured Nostr archive" \
+  --relay-contact "contact@example.com" \
+  --relay-pubkey "npub1abc..."
 
 # Test all features
 cassette scrub full-relay.wasm --info                    # Show relay info
@@ -430,16 +500,15 @@ cassette scrub relay.wasm --kinds 1 --output ndjson | jq .
 
 Different NIP combinations affect cassette size and capabilities:
 
-- **NIP-01 only**: Smallest size, basic querying
-- **+ NIP-11**: Adds ~2KB, relay metadata support  
+- **Base (NIP-01 + NIP-11)**: Smallest size, basic querying with relay info
 - **+ NIP-45**: Adds ~5KB, efficient event counting
 - **+ NIP-50**: Adds ~4KB, text search with relevance ranking
-- **+ NIP-42**: Adds ~3KB, authentication framework
+- **+ NIP-42**: Adds ~3KB, authentication framework (placeholder)
 
 Choose NIPs based on your use case:
-- **Archival**: NIP-01 + NIP-11 for basic archive with metadata
-- **Analytics**: NIP-01 + NIP-11 + NIP-45 for counting and analysis
-- **Search**: NIP-01 + NIP-11 + NIP-50 for text search capabilities
+- **Basic Archive**: Default (NIP-01 + NIP-11 included)
+- **Analytics**: Add NIP-45 for counting and analysis
+- **Search**: Add NIP-50 for text search capabilities
 - **Full-featured**: All NIPs for maximum compatibility
 
 ## Building from Source
@@ -492,11 +561,11 @@ Cassettes implement a simplified WebAssembly interface:
 // Core export (v0.5.0+)
 fn send(ptr, len) -> ptr       // Handle all NIP-01 messages (REQ, CLOSE, EVENT, COUNT)
 
-// NIP-11 support (always available)
+// NIP-11 support (always included)
 fn info() -> ptr               // Relay information document
 
-// NIP-11 dynamic configuration (when nip11 feature enabled)
-fn set_relay_info(ptr, len) -> i32  // Set relay metadata
+// NIP-11 dynamic configuration
+fn set_relay_info(ptr, len) -> i32  // Set relay metadata at runtime
 
 // Memory management
 fn alloc_buffer(size) -> ptr
@@ -673,11 +742,28 @@ AI Tips:
 
 ## Migration Guide
 
+### v0.8.0
+- **Deck duplicate event rejection**: The deck relay now properly rejects duplicate events per NIP-01
+- **Fixed REQ limit handling**: The deck relay now collects ALL events before applying filters and limits
+- **Improved event deduplication**: Proper handling of replaceable and parameterized replaceable events
+- **Complete filter implementation**: Full support for ids, kinds, authors, since, until, limit, and tag filters
+
+### v0.7.1
+- New `deck` command for running a writable relay that creates cassettes
+- NIP-11 is now always enabled in all cassettes (no need for --nip-11 flag)
+- Improved NIP-01 compliance with proper replaceable event handling
+- The `deck` relay collects all events before applying filters and limits
+
 ### v0.6.2
 - The `play` command has been renamed to `scrub` to better reflect the analog tape metaphor
 - The old `play` command still works but shows a deprecation warning
 - Update your scripts to use `cassette scrub` instead of `cassette play`
 - NIP-11 relay info now includes `software` and `version` fields automatically
+
+### Note on `cast` vs `play`
+- `cast` is the deprecated command that shows a warning
+- `play` is the current command for broadcasting events to relays
+- `scrub` is for reading/querying cassettes (formerly `play`)
 
 ## License
 

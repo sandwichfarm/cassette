@@ -142,7 +142,7 @@ pub struct PaymentOption {
 }
 
 /// Static relay info storage for WASM cassettes
-static mut RELAY_INFO_JSON: Option<String> = None;
+pub static mut RELAY_INFO_JSON: Option<String> = None;
 
 /// Initialize relay info from JSON string (called by CLI)
 #[no_mangle]

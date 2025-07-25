@@ -1,0 +1,10 @@
+🎵 Loading 1 cassette(s):
+  - test-deck/initial.wasm
+🚀 Cassette relay server started
+   WebSocket: ws://127.0.0.1:7778
+   HTTP (NIP-11): http://127.0.0.1:7778
+   Press Ctrl+C to stop
+New connection from: 127.0.0.1:53018
+Received: ["REQ","sub1",{}]
+
+Client disconnected

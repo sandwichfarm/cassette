@@ -34,9 +34,7 @@ pub extern "C" fn info() -> *mut u8 {
     string_to_ptr(json_str)
 }
 
-// NIP-11 info function is provided by cassette-tools
-// When NIP-11 is enabled, it provides the full implementation
-// When NIP-11 is not enabled, it provides a stub implementation
+// When NIP-11 is not enabled, cassette-tools provides a basic info function
 
 // Import the req and close functions from the lib crate
 // extern crate cassette_cli;
