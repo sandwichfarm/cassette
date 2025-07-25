@@ -1,4 +1,4 @@
-> ATTENTION: Alpha! WASM interface is being standardized, cassettes you make today might be broken tomorrow. 
+> ATTENTION: Alpha! WASM interface has not yet been standardized, cassettes you make today might be broken tomorrow. 
 
 # Cassette
 
