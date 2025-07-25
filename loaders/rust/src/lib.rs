@@ -103,9 +103,7 @@ pub struct Cassette {
     instance: Instance,
     memory_manager: MemoryManager,
     event_tracker: EventTracker,
-    req_func: TypedFunc<(i32, i32), i32>,
-    describe_func: TypedFunc<(), i32>,
-    close_func: Option<TypedFunc<(i32, i32), i32>>,
+    send_func: TypedFunc<(i32, i32), i32>,
     info_func: Option<TypedFunc<(), i32>>,
     dealloc_func: Option<TypedFunc<(i32, i32), ()>>,
     get_size_func: Option<TypedFunc<i32, i32>>,
@@ -122,17 +120,9 @@ impl Cassette {
 
         let memory_manager = MemoryManager::new(&mut store, &instance)?;
 
-        let req_func = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "req")
-            .context("req function not found")?;
-
-        let describe_func = instance
-            .get_typed_func::<(), i32>(&mut store, "describe")
-            .context("describe function not found")?;
-
-        let close_func = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "close")
-            .ok();
+        let send_func = instance
+            .get_typed_func::<(i32, i32), i32>(&mut store, "send")
+            .context("send function not found")?;
 
         let info_func = instance
             .get_typed_func::<(), i32>(&mut store, "info")
@@ -151,9 +141,7 @@ impl Cassette {
             instance,
             memory_manager,
             event_tracker: EventTracker::new(),
-            req_func,
-            describe_func,
-            close_func,
+            send_func,
             info_func,
             dealloc_func,
             get_size_func,
@@ -161,45 +149,80 @@ impl Cassette {
         })
     }
 
-    /// Get cassette description
+    /// Get cassette description by synthesizing from info
     pub fn describe(&mut self) -> Result<String> {
-        let ptr = self.describe_func.call(&mut self.store, ())?;
-        let desc = self.memory_manager.read_string(&mut self.store, ptr)?;
-        
-        // Try to deallocate
-        if let Some(dealloc) = &self.dealloc_func {
-            let _ = dealloc.call(&mut self.store, (ptr, desc.len() as i32));
+        match self.info() {
+            Ok(info_str) => {
+                match serde_json::from_str::<Value>(&info_str) {
+                    Ok(info) => {
+                        let mut parts = Vec::new();
+                        
+                        if let Some(name) = info.get("name").and_then(|v| v.as_str()) {
+                            parts.push(name.to_string());
+                        }
+                        
+                        if let Some(description) = info.get("description").and_then(|v| v.as_str()) {
+                            parts.push(description.to_string());
+                        }
+                        
+                        if let Some(nips) = info.get("supported_nips").and_then(|v| v.as_array()) {
+                            let nip_numbers: Vec<String> = nips.iter()
+                                .filter_map(|v| v.as_i64().map(|n| n.to_string()))
+                                .collect();
+                            if !nip_numbers.is_empty() {
+                                parts.push(format!("Supports NIPs: {}", nip_numbers.join(", ")));
+                            }
+                        }
+                        
+                        if parts.is_empty() {
+                            Ok("No description available".to_string())
+                        } else {
+                            Ok(parts.join(" - "))
+                        }
+                    }
+                    Err(_) => Ok("Invalid cassette info format".to_string())
+                }
+            }
+            Err(_) => Ok("No cassette info available".to_string())
         }
-
-        Ok(desc)
     }
 
-    /// Process a REQ message
-    pub fn req(&mut self, request: &str) -> Result<String> {
-        // Parse request to check for new REQ
-        if let Ok(req_data) = serde_json::from_str::<Vec<Value>>(request) {
-            if req_data.len() >= 2 && req_data[0] == "REQ" {
-                // New REQ, reset event tracker
-                self.event_tracker.reset();
-                if self.debug {
-                    eprintln!("[Cassette] New REQ, resetting event tracker");
+    /// Send any NIP-01 message to the cassette
+    pub fn send(&mut self, message: &str) -> Result<String> {
+        // Parse message to check for REQ or CLOSE
+        if let Ok(msg_data) = serde_json::from_str::<Vec<Value>>(message) {
+            if msg_data.len() >= 2 {
+                let msg_type = msg_data[0].as_str().unwrap_or("");
+                
+                if msg_type == "REQ" {
+                    // New REQ, reset event tracker
+                    self.event_tracker.reset();
+                    if self.debug {
+                        eprintln!("[Cassette] New REQ, resetting event tracker");
+                    }
+                } else if msg_type == "CLOSE" {
+                    // CLOSE message, also reset event tracker
+                    self.event_tracker.reset();
+                    if self.debug {
+                        eprintln!("[Cassette] CLOSE message, resetting event tracker");
+                    }
                 }
             }
         }
 
-        // Write request to memory
-        let req_ptr = self.memory_manager.write_string(&mut self.store, request)?;
+        // Write message to memory
+        let msg_ptr = self.memory_manager.write_string(&mut self.store, message)?;
 
-        // Call req function
-        let result_ptr = self.req_func.call(&mut self.store, (req_ptr, request.len() as i32))?;
+        // Call send function
+        let result_ptr = self.send_func.call(&mut self.store, (msg_ptr, message.len() as i32))?;
 
-        // Deallocate request
+        // Deallocate message
         if let Some(dealloc) = &self.dealloc_func {
-            let _ = dealloc.call(&mut self.store, (req_ptr, request.len() as i32));
+            let _ = dealloc.call(&mut self.store, (msg_ptr, message.len() as i32));
         }
 
         if result_ptr == 0 {
-            return Ok(json!(["NOTICE", "req() returned null pointer"]).to_string());
+            return Ok(json!(["NOTICE", "send() returned null pointer"]).to_string());
         }
 
         // Read result
@@ -234,7 +257,7 @@ impl Cassette {
                         }
 
                         let msg_type = parsed[0].as_str().unwrap_or("");
-                        if !["NOTICE", "EVENT", "EOSE"].contains(&msg_type) {
+                        if !["NOTICE", "EVENT", "EOSE", "OK", "CLOSED", "AUTH"].contains(&msg_type) {
                             if self.debug {
                                 eprintln!("[Cassette] Unknown message type: {}", msg_type);
                             }
@@ -287,37 +310,6 @@ impl Cassette {
         Ok(result_str)
     }
 
-    /// Process a CLOSE message
-    pub fn close(&mut self, close_msg: &str) -> Result<String> {
-        let close_func = self.close_func
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("close function not implemented"))?;
-
-        // Write close message to memory
-        let close_ptr = self.memory_manager.write_string(&mut self.store, close_msg)?;
-
-        // Call close function
-        let result_ptr = close_func.call(&mut self.store, (close_ptr, close_msg.len() as i32))?;
-
-        // Deallocate close message
-        if let Some(dealloc) = &self.dealloc_func {
-            let _ = dealloc.call(&mut self.store, (close_ptr, close_msg.len() as i32));
-        }
-
-        if result_ptr == 0 {
-            return Ok(json!(["NOTICE", "close() returned null pointer"]).to_string());
-        }
-
-        // Read result
-        let result_str = self.memory_manager.read_string(&mut self.store, result_ptr)?;
-
-        // Deallocate result
-        if let Some(dealloc) = &self.dealloc_func {
-            let _ = dealloc.call(&mut self.store, (result_ptr, result_str.len() as i32));
-        }
-
-        Ok(result_str)
-    }
 
     /// Get NIP-11 relay information
     pub fn info(&mut self) -> Result<String> {

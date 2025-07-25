@@ -123,32 +123,190 @@ class CoreCassetteInterface {
     }
   }
   
-  // Core cassette methods
-  describe(): string {
-    this.logger.log('Getting cassette description');
+  // Universal send method for all NIP-01 messages
+  send(messageStr: string): string {
+    this.logger.log(`Processing message: ${messageStr.substring(0, 100)}${messageStr.length > 100 ? '...' : ''}`);
     
-    // Try to use chunked method first
-    if (typeof this.exports.get_description_size === 'function' && 
-        typeof this.exports.get_description_chunk === 'function') {
-      this.logger.log('Using chunked description method');
-      const size = (this.exports.get_description_size as Function)();
-      let description = '';
-      
-      // Load in chunks of 1000 bytes
-      const chunkSize = 1000;
-      for (let i = 0; i < size; i += chunkSize) {
-        const ptr = (this.exports.get_description_chunk as Function)(i, chunkSize);
-        const chunkStr = this.memoryManager.readString(ptr);
-        description += chunkStr;
-        this.memoryManager.deallocateString(ptr);
-      }
-      
-      return description;
+    if (typeof this.exports.send !== 'function') {
+      throw new Error('send function not implemented by cassette');
     }
     
-    // Fall back to direct describe method
-    this.logger.log('Using direct describe method');
-    return this.memoryManager.callStringFunction('describe');
+    // Parse the message to determine type
+    try {
+      this.logger.log(`Validating message JSON: ${messageStr}`);
+      const parsedMsg = JSON.parse(messageStr);
+      
+      if (Array.isArray(parsedMsg) && parsedMsg.length >= 1) {
+        const messageType = parsedMsg[0];
+        
+        // Handle REQ messages specially for event tracking
+        if (messageType === "REQ" && parsedMsg.length >= 2) {
+          const subscriptionId = parsedMsg[1];
+          
+          // CRITICAL FIX: Always reset event tracker for EACH new REQ call
+          // This ensures events from previous REQ calls don't affect deduplication
+          if (this.eventTracker) {
+            this.logger.log(`New REQ call received, resetting event tracker`);
+            this.eventTracker.reset();
+            this.currentSubscriptionId = subscriptionId;
+          }
+        }
+        
+        // Handle CLOSE messages
+        if (messageType === "CLOSE" && parsedMsg.length >= 2) {
+          const subscriptionId = parsedMsg[1];
+          
+          // Reset event tracker and subscription ID on CLOSE
+          if (subscriptionId === this.currentSubscriptionId) {
+            this.logger.log(`Closing subscription ${subscriptionId}, resetting event tracker`);
+            if (this.eventTracker) {
+              this.eventTracker.reset();
+            }
+            this.currentSubscriptionId = '';
+          }
+        }
+      }
+    } catch (parseError) {
+      this.logger.warn(`Failed to parse message string: ${parseError}`);
+    }
+    
+    // Validate and potentially fix JSON format issues before sending to WASM
+    const validatedMessageStr = this.validateJsonFormat(messageStr);
+    
+    // Write message string to memory
+    let messagePtr = 0;
+    let resultPtr = 0;
+    let result = '';
+    
+    try {
+      // First allocate and write the message string to memory
+      try {
+        messagePtr = this.memoryManager.writeString(validatedMessageStr);
+        if (messagePtr === 0) {
+          this.logger.error("Failed to allocate memory for message string");
+          return JSON.stringify(["NOTICE", "Error: Failed to allocate memory for message"]);
+        }
+      } catch (allocError: any) {
+        this.logger.error(`Error allocating memory for message: ${allocError}`);
+        return JSON.stringify(["NOTICE", `Error: ${allocError.message}`]);
+      }
+    
+      // Call send function (which should return a pointer to the result)
+      try {
+        this.logger.log('Calling send function');
+        resultPtr = (this.exports.send as Function)(messagePtr, messageStr.length);
+        
+        if (resultPtr === 0) {
+          this.logger.warn('send function returned null pointer');
+          return JSON.stringify(["NOTICE", "Error: Empty response from cassette"]);
+        }
+      } catch (callError: any) {
+        this.logger.error(`Error calling send function: ${callError}`);
+        return JSON.stringify(["NOTICE", `Error: ${callError.message}`]);
+      }
+      
+      // Read result from memory
+      try {
+        result = this.memoryManager.readString(resultPtr);
+        if (!result || result.length === 0) {
+          this.logger.warn('Empty result from send function');
+          return JSON.stringify(["NOTICE", "Error: Empty response from cassette"]);
+        }
+        
+        this.logger.log(`Raw result from send: ${result.substring(0, 100)}${result.length > 100 ? '...' : ''}`);
+        
+        // Process results just like before for event deduplication
+        return this.processResults(result);
+      } catch (readError: any) {
+        this.logger.error(`Error reading result from memory: ${readError}`);
+        return JSON.stringify(["NOTICE", `Error: ${readError.message}`]);
+      }
+    } catch (error: any) {
+      this.logger.error(`Error in send method: ${error}`);
+      return JSON.stringify(["NOTICE", `Error: ${error.message}`]);
+    } finally {
+      // Clean up memory (with proper error handling)
+      if (messagePtr) {
+        try {
+          this.memoryManager.deallocateString(messagePtr);
+        } catch (cleanupError) {
+          this.logger.error(`Error cleaning up message memory: ${cleanupError}`);
+        }
+      }
+      
+      if (resultPtr) {
+        try {
+          this.memoryManager.deallocateString(resultPtr);
+        } catch (cleanupError) {
+          this.logger.error(`Error cleaning up result memory: ${cleanupError}`);
+        }
+      }
+    }
+  }
+  
+  // Process results with event deduplication
+  private processResults(result: string): string {
+    // Split result into individual messages if it contains newlines
+    if (result.includes('\n')) {
+      const messages = result.trim().split('\n');
+      this.logger.log(`Processing ${messages.length} newline-separated messages`);
+      
+      // Validate and filter messages
+      const filteredMessages = messages.filter(message => {
+        try {
+          const parsed = JSON.parse(message);
+          if (!Array.isArray(parsed) || parsed.length < 2) {
+            this.logger.warn(`Invalid message format: ${message.substring(0, 100)}`);
+            return false;
+          }
+          if (!["NOTICE", "EVENT", "EOSE", "OK", "COUNT"].includes(parsed[0])) {
+            this.logger.warn(`Unknown message type: ${parsed[0]}`);
+            return false;
+          }
+          
+          // For EVENT messages, check for duplicates
+          if (parsed[0] === "EVENT" && parsed.length >= 3 && this.eventTracker && 
+              typeof parsed[2] === 'object' && parsed[2].id) {
+            const eventId = parsed[2].id;
+            if (!this.eventTracker.addAndCheck(eventId)) {
+              this.logger.log(`Filtered duplicate event: ${eventId}`);
+              return false;
+            }
+          }
+          return true;
+        } catch (parseError) {
+          this.logger.warn(`Failed to parse message: ${parseError}`);
+          return false;
+        }
+      });
+      
+      // Return filtered messages
+      return filteredMessages.join('\n');
+    }
+    
+    // If we get here, the result doesn't contain newlines
+    try {
+      const parsed = JSON.parse(result);
+      if (Array.isArray(parsed)) {
+        if (parsed[0] === "EVENT" && parsed.length >= 3 && 
+            this.eventTracker && typeof parsed[2] === 'object' && parsed[2].id) {
+          const eventId = parsed[2].id;
+          if (!this.eventTracker.addAndCheck(eventId)) {
+            this.logger.log(`Filtered duplicate event: ${eventId}`);
+            return ''; // Return empty string instead of NOTICE message
+          }
+        }
+        // Always return EOSE messages
+        if (parsed[0] === "EOSE") {
+          this.logger.log(`Received EOSE message for subscription ${parsed[1]}`);
+          return result;
+        }
+      }
+      return result;
+    } catch (parseError: any) {
+      this.logger.warn(`Failed to parse result: ${parseError.message}`);
+      return JSON.stringify(["NOTICE", `Error: ${parseError.message}`]);
+    }
   }
   
   getSchema(): string {
@@ -197,288 +355,24 @@ class CoreCassetteInterface {
     return JSON.stringify({ supported_nips: [] });
   }
   
-  req(requestStr: string): string {
-    this.logger.log(`Processing request: ${requestStr.substring(0, 100)}${requestStr.length > 100 ? '...' : ''}`);
-    
-    if (typeof this.exports.req !== 'function') {
-      throw new Error('req function not implemented by cassette');
-    }
-    
-    // Parse the request to determine subscription ID
+  describe(): string {
+    this.logger.log('Getting cassette description');
+    // Since we're removing the describe function from cassettes,
+    // return a minimal description based on available info
     try {
-      this.logger.log(`Validating request JSON: ${requestStr}`);
-      const parsedReq = JSON.parse(requestStr);
-      
-      if (Array.isArray(parsedReq) && parsedReq.length >= 2 && parsedReq[0] === "REQ") {
-        const subscriptionId = parsedReq[1];
-        
-        // CRITICAL FIX: Always reset event tracker for EACH new REQ call
-        // This ensures events from previous REQ calls don't affect deduplication
-        if (this.eventTracker) {
-          this.logger.log(`New REQ call received, resetting event tracker`);
-          this.eventTracker.reset();
-          this.currentSubscriptionId = subscriptionId;
-        }
-      }
-    } catch (parseError) {
-      this.logger.warn(`Failed to parse request string: ${parseError}`);
-    }
-    
-    // Validate and potentially fix JSON format issues before sending to WASM
-    const validatedRequestStr = this.validateJsonFormat(requestStr);
-    
-    // Write request string to memory
-    let requestPtr = 0;
-    let resultPtr = 0;
-    let result = '';
-    
-    try {
-      // First allocate and write the request string to memory
-      try {
-        requestPtr = this.memoryManager.writeString(validatedRequestStr);
-        if (requestPtr === 0) {
-          this.logger.error("Failed to allocate memory for request string");
-          return JSON.stringify(["NOTICE", "Error: Failed to allocate memory for request"]);
-        }
-      } catch (allocError: any) {
-        this.logger.error(`Error allocating memory for request: ${allocError}`);
-        return JSON.stringify(["NOTICE", `Error: ${allocError.message}`]);
-      }
-    
-      // Call req function (which should return a pointer to the result)
-      try {
-        this.logger.log('Calling req function');
-        resultPtr = (this.exports.req as Function)(requestPtr, requestStr.length);
-        
-        if (resultPtr === 0) {
-          this.logger.warn('req function returned null pointer');
-          return JSON.stringify(["NOTICE", "Error: Empty response from cassette"]);
-        }
-      } catch (callError: any) {
-        this.logger.error(`Error calling req function: ${callError}`);
-        return JSON.stringify(["NOTICE", `Error: ${callError.message}`]);
-      }
-      
-      // Read result from memory
-      try {
-        result = this.memoryManager.readString(resultPtr);
-        if (!result || result.length === 0) {
-          this.logger.warn('Empty result from req function');
-          return JSON.stringify(["NOTICE", "Error: Empty response from cassette"]);
-        }
-        
-        this.logger.log(`Raw result from req: ${result.substring(0, 100)}${result.length > 100 ? '...' : ''}`);
-        
-        // Split result into individual messages if it contains newlines
-        if (result.includes('\n')) {
-          const messages = result.trim().split('\n');
-          this.logger.log(`Processing ${messages.length} newline-separated messages`);
-          
-          // Validate and filter messages
-          const filteredMessages = messages.filter(message => {
-            try {
-              const parsed = JSON.parse(message);
-              if (!Array.isArray(parsed) || parsed.length < 2) {
-                this.logger.warn(`Invalid message format: ${message.substring(0, 100)}`);
-                return false;
-              }
-              if (!["NOTICE", "EVENT", "EOSE"].includes(parsed[0])) {
-                this.logger.warn(`Unknown message type: ${parsed[0]}`);
-                return false;
-              }
-              
-              // For EVENT messages, check for duplicates
-              if (parsed[0] === "EVENT" && parsed.length >= 3 && this.eventTracker && 
-                  typeof parsed[2] === 'object' && parsed[2].id) {
-                const eventId = parsed[2].id;
-                if (!this.eventTracker.addAndCheck(eventId)) {
-                  this.logger.log(`Filtered duplicate event: ${eventId}`);
-                  return false;
-                }
-              }
-              return true;
-            } catch (parseError) {
-              this.logger.warn(`Failed to parse message: ${parseError}`);
-              return false;
-            }
-          });
-          
-          // Return filtered messages
-          return filteredMessages.join('\n');
-        }
-        
-        // If we get here, the result doesn't contain newlines
-        try {
-          const parsed = JSON.parse(result);
-          if (Array.isArray(parsed)) {
-            if (parsed[0] === "EVENT" && parsed.length >= 3 && 
-                this.eventTracker && typeof parsed[2] === 'object' && parsed[2].id) {
-              const eventId = parsed[2].id;
-              if (!this.eventTracker.addAndCheck(eventId)) {
-                this.logger.log(`Filtered duplicate event: ${eventId}`);
-                return ''; // Return empty string instead of NOTICE message
-              }
-            }
-            // Always return EOSE messages
-            if (parsed[0] === "EOSE") {
-              this.logger.log(`Received EOSE message for subscription ${parsed[1]}`);
-              return result;
-            }
-          }
-          return result;
-        } catch (parseError: any) {
-          this.logger.warn(`Failed to parse result: ${parseError.message}`);
-          return JSON.stringify(["NOTICE", `Error: ${parseError.message}`]);
-        }
-      } catch (readError: any) {
-        this.logger.error(`Error reading result from memory: ${readError}`);
-        return JSON.stringify(["NOTICE", `Error: ${readError.message}`]);
-      }
-    } catch (error: any) {
-      this.logger.error(`Error in req method: ${error}`);
-      return JSON.stringify(["NOTICE", `Error: ${error.message}`]);
-    } finally {
-      // Clean up memory (with proper error handling)
-      if (requestPtr) {
-        try {
-          this.memoryManager.deallocateString(requestPtr);
-        } catch (cleanupError) {
-          this.logger.error(`Error cleaning up request memory: ${cleanupError}`);
-        }
-      }
-      
-      if (resultPtr) {
-        try {
-          this.memoryManager.deallocateString(resultPtr);
-        } catch (cleanupError) {
-          this.logger.error(`Error cleaning up result memory: ${cleanupError}`);
-        }
-      }
-    }
-  }
-  
-  close(closeStr: string): string {
-    this.logger.log(`Processing close request: ${closeStr}`);
-    
-    if (typeof this.exports.close !== 'function') {
-      this.logger.log('Close function not implemented, returning default notice');
-      return JSON.stringify(["NOTICE", "Close not implemented"]);
-    }
-    
-    try {
-      const parsedClose = JSON.parse(closeStr);
-      if (Array.isArray(parsedClose) && parsedClose.length >= 2 && parsedClose[0] === "CLOSE") {
-        const subscriptionId = parsedClose[1];
-        
-        // Reset event tracker and subscription ID on CLOSE
-        if (subscriptionId === this.currentSubscriptionId) {
-          this.logger.log(`Closing subscription ${subscriptionId}, resetting event tracker`);
-          if (this.eventTracker) {
-            this.eventTracker.reset();
-          }
-          this.currentSubscriptionId = '';
-        }
-      }
-    } catch (parseError) {
-      this.logger.warn(`Failed to parse close string: ${parseError}`);
-    }
-    
-    // Write close string to memory
-    let closePtr = 0;
-    let resultPtr = 0;
-    let result = '';
-    
-    try {
-      // First allocate and write the close string to memory
-      try {
-        closePtr = this.memoryManager.writeString(closeStr);
-        if (closePtr === 0) {
-          this.logger.error("Failed to allocate memory for close string");
-          return JSON.stringify(["NOTICE", "Error: Failed to allocate memory for close request"]);
-        }
-      } catch (allocError: any) {
-        this.logger.error(`Error allocating memory for close request: ${allocError}`);
-        return JSON.stringify(["NOTICE", `Error: ${allocError.message}`]);
-      }
-    
-      // Call close function (which should return a pointer to the result)
-      try {
-        this.logger.log('Calling close function');
-        resultPtr = (this.exports.close as Function)(closePtr, closeStr.length);
-        
-        if (resultPtr === 0) {
-          this.logger.warn('close function returned null pointer');
-          return JSON.stringify(["NOTICE", "Error: Empty response from cassette"]);
-        }
-      } catch (callError: any) {
-        this.logger.error(`Error calling close function: ${callError}`);
-        return JSON.stringify(["NOTICE", `Error: ${callError.message}`]);
-      }
-      
-      // Read result from memory
-      try {
-        result = this.memoryManager.readString(resultPtr);
-        if (!result || result.length === 0) {
-          this.logger.warn('Empty result from close function');
-          return JSON.stringify(["NOTICE", "Error: Empty response from cassette"]);
-        }
-        
-        this.logger.log(`Raw result from close: ${result.substring(0, 100)}${result.length > 100 ? '...' : ''}`);
-      } catch (readError: any) {
-        this.logger.error(`Error reading result from memory: ${readError}`);
-        return JSON.stringify(["NOTICE", `Error: ${readError.message}`]);
-      }
-      
-      // Validate the result before returning
-      if (result.startsWith('[')) {
-        try {
-          const parsed = JSON.parse(result);
-          if (Array.isArray(parsed) && parsed.length >= 2) {
-            // Handle standard NIP-01 message types
-            if (parsed[0] === "NOTICE") {
-              this.logger.log(`Received NOTICE: ${parsed[1]}`);
-              return result; // Return NOTICE as is
-            }
-          }
-          
-          // Return the result as is if it's already valid JSON
-          return result;
-        } catch (parseError: any) {
-          // Not valid JSON, but starts with '[', might be malformed
-          this.logger.warn(`Result starts with '[' but is not valid JSON: ${parseError.message}`);
-          return JSON.stringify(["NOTICE", `Error: Invalid response format: ${parseError.message}`]);
-        }
-      }
-      
-      // Not a well-formatted response, try to parse it anyway
-      try {
-        JSON.parse(result); // Just check if it's valid JSON
-        return result;
-      } catch (parseError: any) {
-        // Not valid JSON at all
-        this.logger.warn(`Result is not valid JSON: ${parseError.message}`);
-        return JSON.stringify(["NOTICE", `Error: Invalid response: ${result.substring(0, 50)}`]);
-      }
-    } catch (error: any) {
-      this.logger.error(`Error in close method: ${error}`);
-      return JSON.stringify(["NOTICE", `Error: ${error.message}`]);
-    } finally {
-      // Clean up memory (with proper error handling)
-      if (closePtr) {
-        try {
-          this.memoryManager.deallocateString(closePtr);
-        } catch (cleanupError) {
-          this.logger.error(`Error cleaning up close memory: ${cleanupError}`);
-        }
-      }
-      
-      if (resultPtr) {
-        try {
-          this.memoryManager.deallocateString(resultPtr);
-        } catch (cleanupError) {
-          this.logger.error(`Error cleaning up result memory: ${cleanupError}`);
-        }
-      }
+      const info = this.info();
+      const infoObj = JSON.parse(info);
+      return JSON.stringify({
+        name: infoObj.name || 'Unknown Cassette',
+        description: infoObj.description || 'No description available',
+        version: '1.0.0'
+      });
+    } catch (e) {
+      return JSON.stringify({
+        name: 'Unknown Cassette',
+        description: 'No description available',
+        version: '1.0.0'
+      });
     }
   }
 }
@@ -622,8 +516,7 @@ export async function loadCassette(
       version,
       methods: {
         describe: () => coreInterface.describe(),
-        req: (requestStr: string) => coreInterface.req(requestStr),
-        close: (closeStr: string) => coreInterface.close(closeStr),
+        send: (messageStr: string) => coreInterface.send(messageStr),
         getSchema: () => coreInterface.getSchema(),
         info: () => coreInterface.info()
       },

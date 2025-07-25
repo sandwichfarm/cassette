@@ -45,9 +45,8 @@ private:
     std::unique_ptr<MemoryManager> memory_manager;
     std::unique_ptr<EventTracker> event_tracker;
     
-    wasmtime::Func req_func;
-    wasmtime::Func describe_func;
-    std::optional<wasmtime::Func> close_func;
+    wasmtime::Func send_func;
+    std::optional<wasmtime::Func> describe_func;
     std::optional<wasmtime::Func> info_func;
     std::optional<wasmtime::Func> dealloc_func;
     std::optional<wasmtime::Func> get_size_func;
@@ -62,8 +61,7 @@ public:
     Cassette(const std::string& path, bool debug = false);
     
     std::string describe();
-    std::string req(const std::string& request);
-    std::string close(const std::string& close_msg);
+    std::string send(const std::string& message);
     std::string info();
 };
 

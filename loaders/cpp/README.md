@@ -57,7 +57,7 @@ int main() {
         
         // Loop to get all events
         while (true) {
-            std::string result = cassette.req(req);
+            std::string result = cassette.send(req);
             
             if (result.empty()) {
                 break;
@@ -70,6 +70,10 @@ int main() {
                 break;
             }
         }
+        
+        // Send a CLOSE message
+        std::string close_msg = R"(["CLOSE", "sub1"])";
+        cassette.send(close_msg);
         
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;

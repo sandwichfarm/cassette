@@ -394,10 +394,10 @@ fn get_event_count_for_filter(
     filter: &serde_json::Map<String, Value>,
     subscription: &str,
 ) -> Result<Option<u64>, anyhow::Error> {
-    // Get the req function for sending COUNT
-    let req_func = match instance.get_typed_func::<(i32, i32), i32>(&mut *store, "req") {
+    // Get the send function for sending COUNT
+    let send_func = match instance.get_typed_func::<(i32, i32), i32>(&mut *store, "send") {
         Ok(func) => func,
-        Err(_) => return Ok(None), // No req function available
+        Err(_) => return Ok(None), // No send function available
     };
     
     // Create COUNT message with same filter
@@ -414,8 +414,8 @@ fn get_event_count_for_filter(
     // Write COUNT request to memory
     memory.write(&mut *store, count_ptr as usize, count_bytes)?;
     
-    // Call req function with COUNT
-    let result_ptr = req_func.call(&mut *store, (count_ptr, count_bytes.len() as i32))?;
+    // Call send function with COUNT
+    let result_ptr = send_func.call(&mut *store, (count_ptr, count_bytes.len() as i32))?;
     
     // Deallocate request memory
     dealloc_func.call(&mut *store, (count_ptr, count_bytes.len() as i32))?;
@@ -536,10 +536,10 @@ fn process_req_command(
         .get_memory(&mut store, "memory")
         .ok_or_else(|| anyhow!("Memory export not found"))?;
     
-    // Get the req function
-    let req_func = instance
-        .get_typed_func::<(i32, i32), i32>(&mut store, "req")
-        .context("Failed to get req function")?;
+    // Get the send function
+    let send_func = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "send")
+        .context("Failed to get send function")?;
     
     // Get allocation function
     let alloc_func = instance
@@ -572,8 +572,8 @@ fn process_req_command(
         // Write request to memory
         memory.write(&mut store, req_ptr as usize, req_bytes)?;
         
-        // Call the req function
-        let result_ptr = req_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
+        // Call the send function
+        let result_ptr = send_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
         
         // Deallocate request memory immediately after use
         dealloc_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
@@ -744,10 +744,10 @@ fn process_count_command(
         .get_memory(&mut store, "memory")
         .ok_or_else(|| anyhow!("Memory export not found"))?;
     
-    // Get the req function (COUNT also uses the req function)
-    let req_func = instance
-        .get_typed_func::<(i32, i32), i32>(&mut store, "req")
-        .context("Failed to get req function")?;
+    // Get the send function (COUNT also uses the send function)
+    let send_func = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "send")
+        .context("Failed to get send function")?;
     
     // Get allocation function
     let alloc_func = instance
@@ -771,8 +771,8 @@ fn process_count_command(
     // Write COUNT request to memory
     memory.write(&mut store, count_ptr as usize, count_bytes)?;
     
-    // Call the req function with COUNT message
-    let result_ptr = req_func.call(&mut store, (count_ptr, count_bytes.len() as i32))?;
+    // Call the send function with COUNT message
+    let result_ptr = send_func.call(&mut store, (count_ptr, count_bytes.len() as i32))?;
     
     // Deallocate request memory
     dealloc_func.call(&mut store, (count_ptr, count_bytes.len() as i32))?;
@@ -890,10 +890,10 @@ fn process_dub_command(
             .get_memory(&mut store, "memory")
             .ok_or_else(|| anyhow!("Memory export not found"))?;
         
-        // Get the req function
-        let req_func = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "req")
-            .context("Failed to get req function")?;
+        // Get the send function
+        let send_func = instance
+            .get_typed_func::<(i32, i32), i32>(&mut store, "send")
+            .context("Failed to get send function")?;
         
         // Get allocation function
         let alloc_func = instance
@@ -926,8 +926,8 @@ fn process_dub_command(
             // Write request to memory
             memory.write(&mut store, req_ptr as usize, req_bytes)?;
             
-            // Call the req function
-            let result_ptr = req_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
+            // Call the send function
+            let result_ptr = send_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
             
             // Deallocate request memory immediately after use
             dealloc_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
@@ -2279,7 +2279,7 @@ fn extract_all_events_from_cassette(cassette_path: &std::path::PathBuf, nip11_ar
     let alloc_func = instance
         .get_typed_func::<i32, i32>(&mut store, "alloc_buffer")
         .or_else(|_| instance.get_typed_func::<i32, i32>(&mut store, "alloc_string"))?;
-    let req_func = instance.get_typed_func::<(i32, i32), i32>(&mut store, "req")?;
+    let send_func = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send")?;
     let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string").ok();
     
     // Request all events
@@ -2296,7 +2296,7 @@ fn extract_all_events_from_cassette(cassette_path: &std::path::PathBuf, nip11_ar
         }
         
         memory.write(&mut store, req_ptr as usize, req_bytes)?;
-        let result_ptr = req_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
+        let result_ptr = send_func.call(&mut store, (req_ptr, req_bytes.len() as i32))?;
         
         if let Some(dealloc) = &dealloc_func {
             dealloc.call(&mut store, (req_ptr, req_bytes.len() as i32))?;

@@ -305,139 +305,125 @@ class Cassette:
                 event_count=0
             )
             
-    def describe(self) -> str:
-        """Get cassette description"""
+    def send(self, message: str) -> str:
+        """Send any NIP-01 message to the cassette"""
         try:
-            describe_func = self.instance.exports(self.store)['describe']
-            ptr = describe_func(self.store)
-            
-            if ptr == 0:
-                return json.dumps({"error": "describe() returned null pointer"})
+            # Parse message to check type
+            msg_data = json.loads(message)
+            if isinstance(msg_data, list) and len(msg_data) >= 1:
+                msg_type = msg_data[0]
                 
-            result = self.memory_manager.read_string(ptr)
-            self.memory_manager.deallocate_string(ptr)
-            
-            return result
-            
-        except Exception as e:
-            return json.dumps({"error": f"Failed to call describe: {e}"})
-            
-    def req(self, request: str) -> str:
-        """Process a REQ message"""
-        try:
-            # Parse request to check if it's a new REQ
-            req_data = json.loads(request)
-            if isinstance(req_data, list) and len(req_data) >= 3 and req_data[0] == "REQ":
-                # New REQ, reset event tracking
-                self.returned_events.clear()
-                if self.debug:
-                    print(f"[Cassette] New REQ call received, resetting event tracker")
+                # Handle REQ messages - reset event tracking
+                if msg_type == "REQ" and len(msg_data) >= 2:
+                    self.returned_events.clear()
+                    if self.debug:
+                        print(f"[Cassette] New REQ call received, resetting event tracker")
+                
+                # Handle CLOSE messages - could also reset tracking
+                if msg_type == "CLOSE" and len(msg_data) >= 2:
+                    # Optionally reset event tracking
+                    pass
                     
-            # Write request to memory
-            req_ptr = self.memory_manager.write_string(request)
-            if req_ptr == 0:
-                return json.dumps(["NOTICE", "Failed to allocate memory for request"])
-                
-            # Call req function
-            req_func = self.instance.exports(self.store)['req']
-            result_ptr = req_func(self.store, req_ptr, len(request.encode('utf-8')))
+        except Exception:
+            # If parsing fails, still send the message
+            pass
             
-            # Read result
-            if result_ptr == 0:
-                self.memory_manager.deallocate_string(req_ptr)
-                return json.dumps(["NOTICE", "req() returned null pointer"])
-                
-            result = self.memory_manager.read_string(result_ptr)
+        # Write message to memory
+        msg_ptr = self.memory_manager.write_string(message)
+        if msg_ptr == 0:
+            return json.dumps(["NOTICE", "Failed to allocate memory for message"])
             
-            # Deallocate memory
-            self.memory_manager.deallocate_string(req_ptr)
-            self.memory_manager.deallocate_string(result_ptr)
+        # Call send function
+        send_func = self.instance.exports(self.store)['send']
+        result_ptr = send_func(self.store, msg_ptr, len(message.encode('utf-8')))
+        
+        # Read result
+        if result_ptr == 0:
+            self.memory_manager.deallocate_string(msg_ptr)
+            return json.dumps(["NOTICE", "send() returned null pointer"])
             
-            # Handle newline-separated messages (like JavaScript loader)
-            if '\n' in result:
-                messages = result.strip().split('\n')
-                if self.debug:
-                    print(f"[Cassette] Processing {len(messages)} newline-separated messages")
-                
-                filtered_messages = []
-                for message in messages:
-                    try:
-                        parsed = json.loads(message)
-                        if not isinstance(parsed, list) or len(parsed) < 2:
-                            if self.debug:
-                                print(f"[Cassette] Invalid message format: {message[:100]}")
-                            continue
-                        
-                        # Validate message type
-                        if parsed[0] not in ["NOTICE", "EVENT", "EOSE"]:
-                            if self.debug:
-                                print(f"[Cassette] Unknown message type: {parsed[0]}")
-                            continue
-                        
-                        # Filter duplicate events
-                        if parsed[0] == "EVENT" and len(parsed) >= 3:
-                            event_id = parsed[2].get('id', '')
-                            if event_id in self.returned_events:
-                                if self.debug:
-                                    print(f"[Cassette] Filtering duplicate event: {event_id}")
-                                continue
-                            self.returned_events.add(event_id)
-                        
-                        filtered_messages.append(message)
-                    except Exception as e:
+        result = self.memory_manager.read_string(result_ptr)
+        
+        # Deallocate memory
+        self.memory_manager.deallocate_string(msg_ptr)
+        self.memory_manager.deallocate_string(result_ptr)
+        
+        # Process results similar to req() for backward compatibility
+        return self._process_results(result)
+        
+    def _process_results(self, result: str) -> str:
+        """Process results with event deduplication"""
+        # Handle newline-separated messages
+        if '\n' in result:
+            messages = result.strip().split('\n')
+            if self.debug:
+                print(f"[Cassette] Processing {len(messages)} newline-separated messages")
+            
+            filtered_messages = []
+            for message in messages:
+                try:
+                    parsed = json.loads(message)
+                    if not isinstance(parsed, list) or len(parsed) < 2:
                         if self.debug:
-                            print(f"[Cassette] Failed to parse message: {e}")
+                            print(f"[Cassette] Invalid message format: {message[:100]}")
                         continue
-                
-                # Return filtered messages as newline-separated string
-                return '\n'.join(filtered_messages) if filtered_messages else ""
-            
-            # Single message - filter as before
-            try:
-                parsed = json.loads(result)
-                if isinstance(parsed, list) and parsed[0] == "EVENT" and len(parsed) >= 3:
-                    event_id = parsed[2].get('id', '')
-                    if event_id in self.returned_events:
+                    
+                    # Validate message type
+                    if parsed[0] not in ["NOTICE", "EVENT", "EOSE", "OK", "COUNT"]:
                         if self.debug:
-                            print(f"[Cassette] Filtering duplicate event: {event_id}")
-                        # Return empty string to indicate no new event
-                        return ""
-                    self.returned_events.add(event_id)
-            except:
-                pass
-                
-            return result
+                            print(f"[Cassette] Unknown message type: {parsed[0]}")
+                        continue
+                    
+                    # Filter duplicate events
+                    if parsed[0] == "EVENT" and len(parsed) >= 3:
+                        event_id = parsed[2].get('id', '')
+                        if event_id in self.returned_events:
+                            if self.debug:
+                                print(f"[Cassette] Filtering duplicate event: {event_id}")
+                            continue
+                        self.returned_events.add(event_id)
+                    
+                    filtered_messages.append(message)
+                except Exception as e:
+                    if self.debug:
+                        print(f"[Cassette] Failed to parse message: {e}")
+                    continue
             
-        except Exception as e:
-            return json.dumps(["NOTICE", f"Failed to process request: {e}"])
-            
-    def close(self, close_msg: str) -> str:
-        """Process a CLOSE message"""
+            # Return filtered messages as newline-separated string
+            return '\n'.join(filtered_messages) if filtered_messages else ""
+        
+        # Single message - filter as before
         try:
-            # Write close message to memory
-            close_ptr = self.memory_manager.write_string(close_msg)
-            if close_ptr == 0:
-                return json.dumps(["NOTICE", "Failed to allocate memory for close message"])
-                
-            # Call close function
-            close_func = self.instance.exports(self.store)['close']
-            result_ptr = close_func(self.store, close_ptr, len(close_msg.encode('utf-8')))
+            parsed = json.loads(result)
+            if isinstance(parsed, list) and parsed[0] == "EVENT" and len(parsed) >= 3:
+                event_id = parsed[2].get('id', '')
+                if event_id in self.returned_events:
+                    if self.debug:
+                        print(f"[Cassette] Filtering duplicate event: {event_id}")
+                    # Return empty string to indicate no new event
+                    return ""
+                self.returned_events.add(event_id)
+        except:
+            pass
             
-            # Read result
-            if result_ptr == 0:
-                self.memory_manager.deallocate_string(close_ptr)
-                return json.dumps(["NOTICE", "close() returned null pointer"])
-                
-            result = self.memory_manager.read_string(result_ptr)
-            
-            # Deallocate memory
-            self.memory_manager.deallocate_string(close_ptr)
-            self.memory_manager.deallocate_string(result_ptr)
-            
-            return result
-            
-        except Exception as e:
-            return json.dumps(["NOTICE", f"Failed to process close: {e}"])
+        return result
+        
+    def describe(self) -> str:
+        """Get cassette description (synthesized from info if available)"""
+        try:
+            info_str = self.info()
+            info_data = json.loads(info_str)
+            return json.dumps({
+                "name": info_data.get("name", "Unknown Cassette"),
+                "description": info_data.get("description", "No description available"),
+                "version": "1.0.0"
+            })
+        except Exception:
+            return json.dumps({
+                "name": "Unknown Cassette",
+                "description": "No description available",
+                "version": "1.0.0"
+            })
             
     def info(self) -> str:
         """Get NIP-11 relay information"""
@@ -566,9 +552,9 @@ if __name__ == "__main__":
         print("\n📋 Testing describe:")
         print(cassette.describe())
         
-        # Test REQ
+        # Test REQ using send()
         print("\n📤 Testing REQ:")
-        req_response = cassette.req('["REQ", "sub1", {"kinds": [1], "limit": 3}]')
+        req_response = cassette.send('["REQ", "sub1", {"kinds": [1], "limit": 3}]')
         print(req_response)
         
         # Get memory stats
