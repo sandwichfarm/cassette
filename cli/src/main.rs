@@ -4,15 +4,16 @@ use serde_json::{Value, json};
 use std::fs;
 use std::io::{Read, Write, BufReader, BufRead, Seek};
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use chrono::Utc;
 use std::fs::File;
-use tempfile::tempdir;
+use tempfile::{tempdir, TempDir};
 use std::collections::{HashMap, HashSet};
-use wasmtime::{Store, Module, Instance, Memory, TypedFunc};
+use wasmtime::{Store, Module, Instance, Memory, TypedFunc, Engine};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message, accept_async};
 use futures_util::{StreamExt, SinkExt};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::net::{TcpListener, TcpStream};
 use glob::glob;
 use secp256k1::{XOnlyPublicKey, Secp256k1, Message as Secp256k1Message};
@@ -699,7 +700,7 @@ fn process_req_command(
     output_format: &str,
     interactive: bool,
     verbose: bool,
-    skip_validation: bool,
+    _skip_validation: bool,
     nip11_args: &Nip11Args,
     search_query: Option<&str>,
 ) -> Result<()> {
@@ -838,7 +839,7 @@ fn process_req_command(
                     Some("EVENT") => {
                         if arr.len() >= 3 {
                             // Validate event if validation is not skipped
-                            if !skip_validation {
+                            if !_skip_validation {
                                 if !validate_nostr_event(&arr[2], verbose) {
                                     // Skip invalid event
                                     continue;
@@ -1323,7 +1324,7 @@ fn process_dub_command(
         false, // interactive
         false, // verbose
         true, // validate (enabled by default)
-        false, // nip_11
+        false, // _nip_11
         false, // nip_42
         false, // nip_45
         false, // nip_50
@@ -1532,11 +1533,11 @@ enum Commands {
         
         /// Skip validation of Nostr events (validation is enabled by default)
         #[arg(long)]
-        skip_validation: bool,
+        _skip_validation: bool,
         
         /// Enable NIP-11 (Relay Information Document)
         #[arg(long)]
-        nip_11: bool,
+        _nip_11: bool,
         
         /// Enable NIP-42 (Authentication)
         #[arg(long)]
@@ -1560,7 +1561,7 @@ enum Commands {
         cassettes: Vec<PathBuf>,
         
         /// Output cassette file path
-        output: PathBuf,
+        output: Option<PathBuf>,
         
         /// Name for the generated cassette (used for filename)
         #[arg(short, long)]
@@ -1603,7 +1604,7 @@ enum Commands {
     /// Scrub through cassette events (send REQ messages and get events)
     Scrub {
         /// Path to the cassette WASM file
-        cassette: PathBuf,
+        cassette: Option<PathBuf>,
         
         /// Subscription ID
         #[arg(short, long, default_value = "sub1")]
@@ -1645,7 +1646,7 @@ enum Commands {
         
         /// Skip validation of returned Nostr events (validation is enabled by default)
         #[arg(long)]
-        skip_validation: bool,
+        _skip_validation: bool,
         
         /// Show NIP-11 relay information instead of playing events
         #[arg(long)]
@@ -1664,10 +1665,10 @@ enum Commands {
     },
     
     /// [DEPRECATED] Use 'scrub' command instead - Play cassette events
-    #[command(hide = true)]
-    Play {
+    #[command(name = "deprecated-play", hide = true)]
+    DeprecatedPlay {
         /// Path to the cassette WASM file
-        cassette: PathBuf,
+        cassette: Option<PathBuf>,
         
         /// Subscription ID
         #[arg(short, long, default_value = "sub1")]
@@ -1711,7 +1712,7 @@ enum Commands {
         
         /// Skip validation of returned Nostr events (validation is enabled by default)
         #[arg(long)]
-        skip_validation: bool,
+        _skip_validation: bool,
         
         /// Show NIP-11 relay information instead of playing events
         #[arg(long)]
@@ -1729,13 +1730,49 @@ enum Commands {
         nip11: Nip11Args,
     },
     
-    /// Cast events from cassettes to Nostr relays
+    /// Play events from cassettes to Nostr relays
+    Play {
+        /// Input cassette files to broadcast
+        cassettes: Vec<PathBuf>,
+        
+        /// Target relay URLs
+        #[arg(short, long)]
+        relays: Vec<String>,
+        
+        /// Maximum concurrent relay connections
+        #[arg(short, long, default_value = "5")]
+        concurrency: usize,
+        
+        /// Delay between event publishes in milliseconds (per relay)
+        #[arg(short, long, default_value = "100")]
+        throttle: u64,
+        
+        /// Timeout for relay connections in seconds
+        #[arg(long, default_value = "30")]
+        timeout: u64,
+        
+        /// Dry run - show what would be sent without actually sending
+        #[arg(long)]
+        dry_run: bool,
+        /// Enable interactive mode with visual feedback
+        #[arg(short = 'i', long)]
+        interactive: bool,
+        /// Show verbose output including compilation details
+        #[arg(short, long)]
+        verbose: bool,
+        
+        #[command(flatten)]
+        nip11: Nip11Args,
+    },
+    
+    /// [DEPRECATED] Use 'play' command instead - Cast events from cassettes to Nostr relays
+    #[command(hide = true)]
     Cast {
         /// Input cassette files to broadcast
         cassettes: Vec<PathBuf>,
         
         /// Target relay URLs
-        #[arg(short, long, required = true)]
+        #[arg(short, long)]
         relays: Vec<String>,
         
         /// Maximum concurrent relay connections
@@ -1793,6 +1830,81 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+    
+    /// Run a cassette deck - continuously record and serve cassettes
+    Deck {
+        /// Operation mode: 'relay' (writable relay) or 'record' (record from relays)
+        #[arg(short, long, default_value = "relay")]
+        mode: String,
+        
+        /// Relay URLs to record from (for record mode)
+        #[arg(short, long)]
+        relays: Vec<String>,
+        
+        /// Base name for cassettes (will append timestamp)
+        #[arg(short, long, default_value = "deck")]
+        name: String,
+        
+        /// Output directory for cassettes
+        #[arg(short, long, default_value = "./deck")]
+        output: PathBuf,
+        
+        /// Port to serve on
+        #[arg(short, long, default_value = "7777")]
+        port: u16,
+        
+        /// Bind address
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        
+        /// Maximum events per cassette (triggers rotation)
+        #[arg(short = 'e', long, default_value = "10000")]
+        event_limit: usize,
+        
+        /// Maximum cassette size in MB (triggers rotation)
+        #[arg(short = 's', long, default_value = "100")]
+        size_limit: usize,
+        
+        /// Recording duration per cassette in seconds (0 = no time limit)
+        #[arg(short = 'd', long, default_value = "3600")]
+        duration: u64,
+        
+        /// Filter JSON for recording
+        #[arg(short, long)]
+        filter: Option<String>,
+        
+        /// Event kinds to record
+        #[arg(short, long)]
+        kinds: Vec<i64>,
+        
+        /// Authors to filter
+        #[arg(short, long)]
+        authors: Vec<String>,
+        
+        /// Enable NIP-11 support
+        #[arg(long)]
+        _nip_11: bool,
+        
+        /// Enable NIP-45 (COUNT) support
+        #[arg(long)]
+        nip_45: bool,
+        
+        /// Enable NIP-50 (search) support
+        #[arg(long)]
+        nip_50: bool,
+        
+        /// Show verbose output
+        #[arg(short, long)]
+        verbose: bool,
+        
+        /// Skip event validation
+        #[arg(long)]
+        _skip_validation: bool,
+        
+        #[command(flatten)]
+        nip11: Nip11Args,
+    },
+    
 }
 
 /// Helper function to load a cassette and set its NIP-11 info if available
@@ -1855,6 +1967,961 @@ fn load_cassette_with_nip11(
         
         if result != 0 {
             eprintln!("Warning: Failed to set NIP-11 info (error code: {})", result);
+        }
+    }
+    
+    Ok(())
+}
+
+
+/// Process the deck command in relay mode - run a writable relay with cassette backend
+async fn process_deck_relay_mode(
+    base_name: &str,
+    output_dir: &PathBuf,
+    port: u16,
+    bind_address: &str,
+    event_limit: usize,
+    size_limit: usize,
+    duration: u64,
+    _nip_11: bool,
+    nip_45: bool,
+    nip_50: bool,
+    verbose: bool,
+    skip_validation: bool,
+    nip11_args: &Nip11Args,
+) -> Result<()> {
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use tokio::net::TcpListener;
+    use std::time::SystemTime;
+    
+    println!("🎛️  Starting Cassette Deck in RELAY mode");
+    println!("🌐 Accepting events on: {}:{}", bind_address, port);
+    println!("📼 Output directory: {}", output_dir.display());
+    println!("📊 Rotation: {} events / {} MB / {} seconds", event_limit, size_limit, duration);
+    
+    // Create output directory
+    fs::create_dir_all(output_dir)?;
+    
+    // Shared state for cassettes and current recording
+    let active_cassettes: Arc<RwLock<Vec<(PathBuf, Module, Engine)>>> = Arc::new(RwLock::new(Vec::new()));
+    let recording_state = Arc::new(RwLock::new(RecordingState {
+        current_events: Vec::new(),
+        event_count: 0,
+        start_time: SystemTime::now(),
+        current_size: 0,
+    }));
+    
+    // Load existing cassettes from output directory
+    {
+        let pattern = output_dir.join("*.wasm");
+        let pattern_str = pattern.to_string_lossy();
+        let mut loaded_count = 0;
+        
+        for entry in glob(&pattern_str)? {
+            match entry {
+                Ok(path) => {
+                    if path.is_file() && path.extension().map_or(false, |ext| ext == "wasm") {
+                        match fs::read(&path) {
+                            Ok(wasm_bytes) => {
+                                let engine = wasmtime::Engine::default();
+                                match Module::new(&engine, &wasm_bytes) {
+                                    Ok(module) => {
+                                        let mut cassettes = active_cassettes.write().await;
+                                        cassettes.push((path.clone(), module, engine));
+                                        loaded_count += 1;
+                                        if verbose {
+                                            println!("📼 Loaded existing cassette: {}", path.display());
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("⚠️  Failed to load cassette {}: {}", path.display(), e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("⚠️  Failed to read cassette {}: {}", path.display(), e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    if verbose {
+                        eprintln!("⚠️  Error reading directory: {}", e);
+                    }
+                }
+            }
+        }
+        
+        if loaded_count > 0 {
+            println!("📚 Loaded {} existing cassette(s)", loaded_count);
+        }
+    }
+    
+    // Start the WebSocket relay server
+    let addr = format!("{}:{}", bind_address, port);
+    let listener = TcpListener::bind(&addr).await?;
+    println!("🌐 Deck relay listening on ws://{}", addr);
+    
+    // Start rotation monitor
+    let mut rotation_handle = {
+        let recording_state = recording_state.clone();
+        let active_cassettes = active_cassettes.clone();
+        let output_dir = output_dir.clone();
+        let base_name = base_name.to_string();
+        let nip11_args = nip11_args.clone();
+        
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                
+                let should_rotate = {
+                    let state = recording_state.read().await;
+                    state.event_count >= event_limit ||
+                    state.current_size >= size_limit * 1024 * 1024 ||
+                    (duration > 0 && state.start_time.elapsed().unwrap().as_secs() >= duration)
+                };
+                
+                if should_rotate {
+                    if let Err(e) = rotate_cassette(
+                        &recording_state,
+                        &active_cassettes,
+                        &output_dir,
+                        &base_name,
+                        _nip_11,
+                        nip_45,
+                        nip_50,
+                        &nip11_args,
+                        verbose,
+                    ).await {
+                        eprintln!("❌ Failed to rotate cassette: {}", e);
+                    }
+                }
+            }
+        })
+    };
+    
+    // Accept connections
+    loop {
+        tokio::select! {
+            Ok((stream, addr)) = listener.accept() => {
+                if verbose {
+                    println!("📡 New connection from: {}", addr);
+                }
+                let cassettes = active_cassettes.clone();
+                let recording = recording_state.clone();
+                let skip_val = skip_validation;
+                tokio::spawn(handle_deck_relay_connection(stream, cassettes, recording, skip_val, verbose));
+            }
+            _ = &mut rotation_handle => {
+                eprintln!("⚠️  Rotation handler stopped");
+                break;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!("\n⏹️  Shutting down cassette deck...");
+                
+                // Final rotation if there are pending events
+                let state = recording_state.read().await;
+                if state.event_count > 0 {
+                    println!("💾 Saving final cassette...");
+                    drop(state);
+                    rotate_cassette(
+                        &recording_state,
+                        &active_cassettes,
+                        &output_dir,
+                        &base_name,
+                        _nip_11,
+                        nip_45,
+                        nip_50,
+                        &nip11_args,
+                        verbose,
+                    ).await?;
+                }
+                break;
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+// Helper function to handle relay mode connections (writable relay)
+async fn handle_deck_relay_connection(
+    stream: TcpStream,
+    active_cassettes: Arc<RwLock<Vec<(PathBuf, Module, Engine)>>>,
+    recording_state: Arc<RwLock<RecordingState>>,
+    skip_validation: bool,
+    verbose: bool,
+) -> Result<()> {
+    use tokio_tungstenite::tungstenite::Message;
+    
+    // Check if this is an HTTP request for NIP-11
+    let mut buf = [0u8; 1024];
+    let n = stream.peek(&mut buf).await?;
+    let peek_data = &buf[..n];
+    
+    if peek_data.starts_with(b"GET ") {
+        // Parse the HTTP request to check headers
+        let request = String::from_utf8_lossy(peek_data);
+        
+        // Check if this is a NIP-11 request by looking for the Accept header
+        let has_nip11_header = request.lines().any(|line| {
+            line.to_lowercase().starts_with("accept:") && 
+            line.contains("application/nostr+json")
+        });
+        
+        if has_nip11_header {
+            // Handle HTTP request for NIP-11
+            let cassettes = active_cassettes.read().await;
+            if let Some((_, module, engine)) = cassettes.first() {
+                let mut store = Store::new(engine, ());
+                let instance = Instance::new(&mut store, module, &[])?;
+                
+                if let Ok(info_func) = instance.get_typed_func::<(), i32>(&mut store, "info") {
+                    let info_ptr = info_func.call(&mut store, ())?;
+                    if info_ptr != 0 {
+                        let memory = instance.get_memory(&mut store, "memory").unwrap();
+                        let info_str = read_string_from_memory(&mut store, &instance, &memory, info_ptr)?;
+                        
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/nostr+json\r\nContent-Length: {}\r\n\r\n{}",
+                            info_str.len(),
+                            info_str
+                        );
+                        
+                        stream.try_write(response.as_bytes())?;
+                        return Ok(());
+                    }
+                }
+            }
+            // If we can't provide NIP-11 info, return 404
+            let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+            stream.try_write(response.as_bytes())?;
+            return Ok(());
+        } else {
+            // Not a NIP-11 request, return 400 Bad Request
+            let response = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: 51\r\n\r\nHTTP not supported. Use WebSocket or NIP-11 request";
+            stream.try_write(response.as_bytes())?;
+            return Ok(());
+        }
+    }
+    
+    // Handle WebSocket connection
+    let ws_stream = accept_async(stream).await?;
+    let (mut write, mut read) = ws_stream.split();
+    
+    // Track subscriptions for this connection
+    let mut subscriptions: HashMap<String, Value> = HashMap::new();
+    
+    while let Some(msg) = read.next().await {
+        match msg {
+            Ok(Message::Text(text)) => {
+                if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
+                    if let Some(arr) = parsed.as_array() {
+                        if arr.is_empty() {
+                            continue;
+                        }
+                        
+                        match arr[0].as_str() {
+                            Some("EVENT") => {
+                                // Handle incoming EVENT
+                                if arr.len() >= 2 {
+                                    if let Some(event) = arr.get(1) {
+                                        // Validate event if needed
+                                        if !skip_validation {
+                                            if let Err(e) = validate_event(event) {
+                                                let notice = json!(["NOTICE", format!("Invalid event: {}", e)]);
+                                                write.send(Message::Text(notice.to_string())).await?;
+                                                continue;
+                                            }
+                                        }
+                                        
+                                        // Add to recording state
+                                        let event_size = serde_json::to_string(event)?.len();
+                                        let mut state = recording_state.write().await;
+                                        state.current_events.push(event.clone());
+                                        state.event_count += 1;
+                                        state.current_size += event_size;
+                                        
+                                        if verbose {
+                                            println!("📥 EVENT received: {} (total: {})", 
+                                                event.get("id").and_then(|i| i.as_str()).unwrap_or("?"),
+                                                state.event_count
+                                            );
+                                        }
+                                        
+                                        // Send OK response
+                                        let event_id = event.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                                        let ok_msg = json!(["OK", event_id, true, ""]);
+                                        write.send(Message::Text(ok_msg.to_string())).await?;
+                                    }
+                                }
+                            }
+                            Some("REQ") => {
+                                // Handle REQ - query both current recording and archived cassettes
+                                if arr.len() >= 3 {
+                                    let sub_id = arr[1].as_str().unwrap_or("");
+                                    let filters = &arr[2..];
+                                    
+                                    // Store subscription
+                                    subscriptions.insert(sub_id.to_string(), json!(filters));
+                                    
+                                    // Query current recording buffer
+                                    let current_events = {
+                                        let state = recording_state.read().await;
+                                        state.current_events.clone()
+                                    };
+                                    
+                                    // Send matching events from current buffer
+                                    for event in &current_events {
+                                        if event_matches_filters(event, filters) {
+                                            let event_msg = json!(["EVENT", sub_id, event]);
+                                            write.send(Message::Text(event_msg.to_string())).await?;
+                                        }
+                                    }
+                                    
+                                    // Query archived cassettes
+                                    let cassettes = active_cassettes.read().await;
+                                    for (_path, module, engine) in cassettes.iter() {
+                                        let mut store = Store::new(engine, ());
+                                        let instance = Instance::new(&mut store, module, &[])?;
+                                        
+                                        // Send REQ to cassette and process responses
+                                        if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send") {
+                                            if let Ok(alloc_func) = instance.get_typed_func::<i32, i32>(&mut store, "alloc_buffer") {
+                                                let memory = instance.get_memory(&mut store, "memory").unwrap();
+                                                let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string").ok();
+                                                
+                                                // Keep sending REQ until we get EOSE
+                                                let mut got_eose = false;
+                                                while !got_eose {
+                                                    let req_msg = if filters.is_empty() {
+                                                        json!(["REQ", sub_id, {}])
+                                                    } else {
+                                                        let mut msg_arr = vec![json!("REQ"), json!(sub_id)];
+                                                        msg_arr.extend(filters.iter().cloned());
+                                                        json!(msg_arr)
+                                                    };
+                                                    let msg_bytes = req_msg.to_string().into_bytes();
+                                                    let msg_ptr = alloc_func.call(&mut store, msg_bytes.len() as i32)?;
+                                                    
+                                                    if msg_ptr == 0 {
+                                                        break;
+                                                    }
+                                                    
+                                                    memory.write(&mut store, msg_ptr as usize, &msg_bytes)?;
+                                                    let result_ptr = send_func.call(&mut store, (msg_ptr, msg_bytes.len() as i32))?;
+                                                    
+                                                    if let Some(dealloc) = &dealloc_func {
+                                                        dealloc.call(&mut store, (msg_ptr, msg_bytes.len() as i32))?;
+                                                    }
+                                                    
+                                                    if result_ptr == 0 {
+                                                        break;
+                                                    }
+                                                    
+                                                    let result = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
+                                                    
+                                                    // Parse the response
+                                                    if let Ok(parsed) = serde_json::from_str::<Vec<Value>>(&result) {
+                                                        if parsed.len() >= 2 {
+                                                            match parsed[0].as_str() {
+                                                                Some("EVENT") => {
+                                                                    // Validate event if needed before sending
+                                                                    if !skip_validation && parsed.len() >= 3 {
+                                                                        if let Some(event) = parsed.get(2) {
+                                                                            if let Err(e) = validate_event(event) {
+                                                                                if verbose {
+                                                                                    println!("⚠️  Skipping invalid event from cassette: {}", e);
+                                                                                }
+                                                                                continue;
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    write.send(Message::Text(result)).await?;
+                                                                }
+                                                                Some("EOSE") => {
+                                                                    got_eose = true;
+                                                                    // Don't forward EOSE yet, we might have more cassettes
+                                                                }
+                                                                _ => {
+                                                                    // Forward other messages
+                                                                    write.send(Message::Text(result)).await?;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Send EOSE
+                                    let eose_msg = json!(["EOSE", sub_id]);
+                                    write.send(Message::Text(eose_msg.to_string())).await?;
+                                }
+                            }
+                            Some("CLOSE") => {
+                                // Handle CLOSE
+                                if arr.len() >= 2 {
+                                    let sub_id = arr[1].as_str().unwrap_or("");
+                                    subscriptions.remove(sub_id);
+                                }
+                            }
+                            Some("COUNT") => {
+                                // Handle COUNT if NIP-45 is enabled
+                                // Similar to REQ but return counts
+                                if arr.len() >= 3 {
+                                    let sub_id = arr[1].as_str().unwrap_or("");
+                                    let filters = &arr[2..];
+                                    
+                                    let mut total_count = 0;
+                                    
+                                    // Count in current buffer
+                                    let current_events = {
+                                        let state = recording_state.read().await;
+                                        state.current_events.clone()
+                                    };
+                                    
+                                    for event in &current_events {
+                                        if event_matches_filters(event, filters) {
+                                            total_count += 1;
+                                        }
+                                    }
+                                    
+                                    // Count in cassettes
+                                    let cassettes = active_cassettes.read().await;
+                                    for (_path, module, engine) in cassettes.iter() {
+                                        let mut store = Store::new(engine, ());
+                                        let instance = Instance::new(&mut store, module, &[])?;
+                                        
+                                        // Send COUNT to cassette
+                                        if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send") {
+                                            if let Ok(alloc_func) = instance.get_typed_func::<i32, i32>(&mut store, "alloc_buffer") {
+                                                let memory = instance.get_memory(&mut store, "memory").unwrap();
+                                                let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string").ok();
+                                                
+                                                let count_msg = if filters.is_empty() {
+                                                    json!(["COUNT", sub_id, {}])
+                                                } else {
+                                                    let mut msg_arr = vec![json!("COUNT"), json!(sub_id)];
+                                                    msg_arr.extend(filters.iter().cloned());
+                                                    json!(msg_arr)
+                                                };
+                                                let msg_bytes = count_msg.to_string().into_bytes();
+                                                let msg_ptr = alloc_func.call(&mut store, msg_bytes.len() as i32)?;
+                                                
+                                                if msg_ptr != 0 {
+                                                    memory.write(&mut store, msg_ptr as usize, &msg_bytes)?;
+                                                    let result_ptr = send_func.call(&mut store, (msg_ptr, msg_bytes.len() as i32))?;
+                                                    
+                                                    if let Some(dealloc) = &dealloc_func {
+                                                        dealloc.call(&mut store, (msg_ptr, msg_bytes.len() as i32))?;
+                                                    }
+                                                    
+                                                    if result_ptr != 0 {
+                                                        let result = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
+                                                        
+                                                        // Parse count response
+                                                        if let Ok(parsed) = serde_json::from_str::<Vec<Value>>(&result) {
+                                                            if parsed.len() >= 3 && parsed[0].as_str() == Some("COUNT") {
+                                                                if let Some(count_obj) = parsed[2].as_object() {
+                                                                    if let Some(count) = count_obj.get("count").and_then(|c| c.as_u64()) {
+                                                                        total_count += count as usize;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    let count_msg = json!(["COUNT", sub_id, {"count": total_count}]);
+                                    write.send(Message::Text(count_msg.to_string())).await?;
+                                }
+                            }
+                            _ => {
+                                let notice = json!(["NOTICE", "Unknown command"]);
+                                write.send(Message::Text(notice.to_string())).await?;
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Message::Close(_)) => break,
+            _ => {}
+        }
+    }
+    
+    Ok(())
+}
+
+// Helper function to check if an event matches filters
+fn event_matches_filters(event: &Value, filters: &[Value]) -> bool {
+    // Simple filter matching - this could be expanded
+    for filter in filters {
+        if let Some(filter_obj) = filter.as_object() {
+            // Check kinds
+            if let Some(kinds) = filter_obj.get("kinds").and_then(|k| k.as_array()) {
+                if let Some(event_kind) = event.get("kind").and_then(|k| k.as_i64()) {
+                    if !kinds.iter().any(|k| k.as_i64() == Some(event_kind)) {
+                        continue;
+                    }
+                }
+            }
+            
+            // Check authors
+            if let Some(authors) = filter_obj.get("authors").and_then(|a| a.as_array()) {
+                if let Some(event_author) = event.get("pubkey").and_then(|p| p.as_str()) {
+                    if !authors.iter().any(|a| {
+                        if let Some(author_prefix) = a.as_str() {
+                            event_author.starts_with(author_prefix)
+                        } else {
+                            false
+                        }
+                    }) {
+                        continue;
+                    }
+                }
+            }
+            
+            // If we get here, the event matches this filter
+            return true;
+        }
+    }
+    
+    false
+}
+
+// Helper function to validate an event
+fn validate_event(event: &Value) -> Result<()> {
+    // Basic validation
+    if !event.is_object() {
+        return Err(anyhow!("Event must be an object"));
+    }
+    
+    // Check required fields
+    let required_fields = ["id", "pubkey", "created_at", "kind", "tags", "content", "sig"];
+    for field in &required_fields {
+        if event.get(field).is_none() {
+            return Err(anyhow!("Missing required field: {}", field));
+        }
+    }
+    
+    // TODO: Add signature verification
+    
+    Ok(())
+}
+
+/// Process the deck command in record mode - continuously record from relays and serve cassettes
+async fn process_deck_record_mode(
+    relay_urls: &[String],
+    base_name: &str,
+    output_dir: &PathBuf,
+    port: u16,
+    bind_address: &str,
+    event_limit: usize,
+    size_limit: usize,
+    duration: u64,
+    filter_json: Option<&str>,
+    kinds: &[i64],
+    authors: &[String],
+    _nip_11: bool,
+    nip_45: bool,
+    nip_50: bool,
+    verbose: bool,
+    _skip_validation: bool,
+    nip11_args: &Nip11Args,
+) -> Result<()> {
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use tokio::net::TcpListener;
+    use std::time::SystemTime;
+    
+    println!("🎛️  Starting Cassette Deck");
+    println!("📡 Recording from: {:?}", relay_urls);
+    println!("🌐 Serving on: {}:{}", bind_address, port);
+    println!("📼 Output directory: {}", output_dir.display());
+    
+    // Create output directory
+    fs::create_dir_all(output_dir)?;
+    
+    // Shared state for hot-loading cassettes
+    let active_cassettes: Arc<RwLock<Vec<(PathBuf, Module, Engine)>>> = Arc::new(RwLock::new(Vec::new()));
+    let recording_state = Arc::new(RwLock::new(RecordingState {
+        current_events: Vec::new(),
+        event_count: 0,
+        start_time: SystemTime::now(),
+        current_size: 0,
+    }));
+    
+    // Start the WebSocket server
+    let server_handle = {
+        let active_cassettes = active_cassettes.clone();
+        let addr = format!("{}:{}", bind_address, port);
+        tokio::spawn(async move {
+            let listener = TcpListener::bind(&addr).await?;
+            println!("🌐 Deck server listening on ws://{}", addr);
+            
+            while let Ok((stream, _)) = listener.accept().await {
+                let cassettes = active_cassettes.clone();
+                tokio::spawn(handle_deck_connection(stream, cassettes));
+            }
+            
+            Ok::<(), anyhow::Error>(())
+        })
+    };
+    
+    // Start recording from relays
+    let recorder_handle = {
+        let active_cassettes = active_cassettes.clone();
+        let recording_state = recording_state.clone();
+        let relay_urls = relay_urls.to_vec();
+        let filter_json = filter_json.map(|s| s.to_string());
+        let kinds = kinds.to_vec();
+        let authors = authors.to_vec();
+        let output_dir = output_dir.to_path_buf();
+        let base_name = base_name.to_string();
+        let nip11_args = nip11_args.clone();
+        tokio::spawn(async move {
+            loop {
+                // Connect to relays and start recording
+                let mut handles = vec![];
+                for relay_url in &relay_urls {
+                    let state = recording_state.clone();
+                    let url = relay_url.clone();
+                    let filter_json = filter_json.clone();
+                    let kinds = kinds.to_vec();
+                    let authors = authors.iter().cloned().collect::<Vec<_>>();
+                    
+                    let handle = tokio::spawn(async move {
+                        record_from_relay(
+                            &url,
+                            state,
+                            filter_json.as_deref(),
+                            &kinds,
+                            &authors,
+                        ).await
+                    });
+                    handles.push(handle);
+                }
+                
+                // Monitor recording state and trigger rotation
+                let rotation_handle = {
+                    let recording_state = recording_state.clone();
+                    let active_cassettes = active_cassettes.clone();
+                    let output_dir = output_dir.clone();
+                    let base_name = base_name.clone();
+                    let nip11_args = nip11_args.clone();
+                    
+                    tokio::spawn(async move {
+                        loop {
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                            
+                            let should_rotate = {
+                                let state = recording_state.read().await;
+                                state.event_count >= event_limit ||
+                                state.current_size >= size_limit * 1024 * 1024 ||
+                                (duration > 0 && state.start_time.elapsed().unwrap().as_secs() >= duration)
+                            };
+                            
+                            if should_rotate {
+                                // Rotate cassette
+                                if let Err(e) = rotate_cassette(
+                                    &recording_state,
+                                    &active_cassettes,
+                                    &output_dir,
+                                    &base_name,
+                                    _nip_11,
+                                    nip_45,
+                                    nip_50,
+                                    &nip11_args,
+                                    verbose,
+                                ).await {
+                                    eprintln!("❌ Failed to rotate cassette: {}", e);
+                                }
+                            }
+                        }
+                    })
+                };
+                
+                // Wait for any handle to complete (error condition)
+                tokio::select! {
+                    _ = futures_util::future::join_all(handles) => {
+                        eprintln!("⚠️  Relay connections lost, reconnecting...");
+                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    }
+                    _ = rotation_handle => {
+                        eprintln!("⚠️  Rotation handler stopped");
+                    }
+                }
+            }
+        })
+    };
+    
+    // Wait for both tasks
+    tokio::select! {
+        result = server_handle => {
+            eprintln!("❌ Server stopped: {:?}", result);
+        }
+        result = recorder_handle => {
+            eprintln!("❌ Recorder stopped: {:?}", result);
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("\n⏹️  Shutting down cassette deck...");
+        }
+    }
+    
+    Ok(())
+}
+
+// Helper struct for recording state
+struct RecordingState {
+    current_events: Vec<Value>,
+    event_count: usize,
+    start_time: SystemTime,
+    current_size: usize,
+}
+
+// Helper function to record from a single relay
+async fn record_from_relay(
+    relay_url: &str,
+    recording_state: Arc<RwLock<RecordingState>>,
+    filter_json: Option<&str>,
+    kinds: &[i64],
+    authors: &[String],
+) -> Result<()> {
+    use tokio_tungstenite::tungstenite::Message;
+    use futures_util::{StreamExt, SinkExt};
+    
+    let (ws_stream, _) = connect_async(relay_url).await?;
+    let (mut write, mut read) = ws_stream.split();
+    
+    // Create subscription filter
+    let mut filter = serde_json::Map::new();
+    if let Some(filter_str) = filter_json {
+        if let Ok(custom_filter) = serde_json::from_str::<serde_json::Map<String, Value>>(filter_str) {
+            for (k, v) in custom_filter {
+                filter.insert(k, v);
+            }
+        }
+    }
+    if !kinds.is_empty() {
+        filter.insert("kinds".to_string(), json!(kinds));
+    }
+    if !authors.is_empty() {
+        filter.insert("authors".to_string(), json!(authors));
+    }
+    
+    // Send subscription
+    let req_message = json!(["REQ", "deck-sub", filter]);
+    write.send(Message::Text(req_message.to_string())).await?;
+    
+    // Read events
+    while let Some(msg) = read.next().await {
+        match msg {
+            Ok(Message::Text(text)) => {
+                if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
+                    if let Some(arr) = parsed.as_array() {
+                        if arr.len() >= 3 && arr[0].as_str() == Some("EVENT") {
+                            if let Some(event) = arr.get(2) {
+                                let event_size = text.len();
+                                let mut state = recording_state.write().await;
+                                state.current_events.push(event.clone());
+                                state.event_count += 1;
+                                state.current_size += event_size;
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Message::Close(_)) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    
+    Ok(())
+}
+
+// Helper function to rotate and compile a new cassette
+async fn rotate_cassette(
+    recording_state: &Arc<RwLock<RecordingState>>,
+    active_cassettes: &Arc<RwLock<Vec<(PathBuf, Module, Engine)>>>,
+    output_dir: &PathBuf,
+    base_name: &str,
+    _nip_11: bool,
+    nip_45: bool,
+    nip_50: bool,
+    nip11_args: &Nip11Args,
+    verbose: bool,
+) -> Result<()> {
+    // Get events and reset state
+    let events = {
+        let mut state = recording_state.write().await;
+        let events = std::mem::take(&mut state.current_events);
+        state.event_count = 0;
+        state.current_size = 0;
+        state.start_time = SystemTime::now();
+        events
+    };
+    
+    if events.is_empty() {
+        return Ok(());
+    }
+    
+    // Generate cassette name with timestamp
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let cassette_name = format!("{}-{}", base_name, timestamp);
+    
+    println!("📼 Rotating cassette: {} ({} events)", cassette_name, events.len());
+    
+    // Spawn background compilation
+    let output_dir = output_dir.clone();
+    let active_cassettes = active_cassettes.clone();
+    let nip11_args = nip11_args.clone();
+    
+    tokio::task::spawn_blocking(move || {
+        // Create temporary directory for compilation
+        let temp_dir = TempDir::new()?;
+        let project_dir = temp_dir.path();
+        
+        // Build features list
+        let mut features = vec!["default"];
+        if _nip_11 { features.push("nip11"); }
+        if nip_45 { features.push("nip45"); }
+        if nip_50 { features.push("nip50"); }
+        
+        // Create generator
+        let mut generator = generator::CassetteGenerator::new(
+            output_dir.clone(),
+            &cassette_name,
+            project_dir,
+        );
+        
+        generator.set_var("events", &serde_json::to_string(&events)?);
+        generator.set_var("features_array", &serde_json::to_string(&features)?);
+        generator.set_var("version", env!("CARGO_PKG_VERSION"));
+        
+        if let Some(relay_name) = &nip11_args.relay_name {
+            generator.set_var("relay_name", relay_name);
+        }
+        if let Some(desc) = &nip11_args.relay_description {
+            generator.set_var("relay_description", desc);
+        }
+        if let Some(contact) = &nip11_args.relay_contact {
+            generator.set_var("relay_contact", contact);
+        }
+        if let Some(pubkey) = &nip11_args.relay_pubkey {
+            generator.set_var("relay_pubkey", pubkey);
+        }
+        
+        generator.set_verbose(verbose);
+        
+        // Generate cassette
+        let cassette_path = generator.generate()?;
+        
+        // Hot-load the new cassette
+        let engine = Engine::default();
+        let module = Module::from_file(&engine, &cassette_path)?;
+        
+        // Add to active cassettes
+        tokio::runtime::Handle::current().block_on(async {
+            let mut cassettes = active_cassettes.write().await;
+            cassettes.push((cassette_path.clone(), module, engine));
+            println!("✅ Hot-loaded cassette: {}", cassette_path.display());
+        });
+        
+        Ok::<(), anyhow::Error>(())
+    });
+    
+    Ok(())
+}
+
+// Helper function to handle deck connections
+async fn handle_deck_connection(
+    stream: TcpStream,
+    active_cassettes: Arc<RwLock<Vec<(PathBuf, Module, Engine)>>>,
+) -> Result<()> {
+    // Check if this is an HTTP request for NIP-11
+    let mut buf = [0u8; 1024];
+    let n = stream.peek(&mut buf).await?;
+    let peek_data = &buf[..n];
+    
+    if peek_data.starts_with(b"GET ") {
+        // Handle HTTP request for NIP-11
+        let cassettes = active_cassettes.read().await;
+        if let Some((_, module, engine)) = cassettes.first() {
+            let mut store = Store::new(engine, ());
+            let instance = Instance::new(&mut store, module, &[])?;
+            
+            if let Ok(info_func) = instance.get_typed_func::<(), i32>(&mut store, "info") {
+                let info_ptr = info_func.call(&mut store, ())?;
+                if info_ptr != 0 {
+                    let memory = instance.get_memory(&mut store, "memory").unwrap();
+                    let info_str = read_string_from_memory(&mut store, &instance, &memory, info_ptr)?;
+                    
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/nostr+json\r\nContent-Length: {}\r\n\r\n{}",
+                        info_str.len(),
+                        info_str
+                    );
+                    
+                    stream.try_write(response.as_bytes())?;
+                }
+            }
+        }
+        return Ok(());
+    }
+    
+    // Handle WebSocket connection
+    let ws_stream = accept_async(stream).await?;
+    let (mut write, mut read) = ws_stream.split();
+    
+    while let Some(msg) = read.next().await {
+        match msg {
+            Ok(Message::Text(text)) => {
+                // Process message against all active cassettes
+                let cassettes = active_cassettes.read().await;
+                let mut all_responses = Vec::new();
+                
+                for (_path, module, engine) in cassettes.iter() {
+                    let mut store = Store::new(engine, ());
+                    let instance = Instance::new(&mut store, module, &[])?;
+                    
+                    // Process the message
+                    if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send") {
+                        if let Ok(alloc_func) = instance.get_typed_func::<i32, i32>(&mut store, "alloc_buffer") {
+                            let memory = instance.get_memory(&mut store, "memory").unwrap();
+                            
+                            let msg_bytes = text.as_bytes();
+                            let msg_ptr = alloc_func.call(&mut store, msg_bytes.len() as i32)?;
+                            
+                            if msg_ptr != 0 {
+                                memory.write(&mut store, msg_ptr as usize, msg_bytes)?;
+                                let result_ptr = send_func.call(&mut store, (msg_ptr, msg_bytes.len() as i32))?;
+                                
+                                if result_ptr != 0 {
+                                    let result = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
+                                    all_responses.push(result);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Aggregate and send responses
+                for response in all_responses {
+                    write.send(Message::Text(response)).await?;
+                }
+            }
+            Ok(Message::Close(_)) => break,
+            _ => {}
         }
     }
     
@@ -1971,11 +3038,10 @@ async fn handle_connection(
     cassettes: Arc<Vec<(PathBuf, Arc<Module>, Arc<wasmtime::Engine>)>>,
     verbose: bool,
 ) -> Result<()> {
-    use tokio::io::AsyncReadExt;
     
     // Peek at the request to determine type
     let mut buffer = vec![0; 1024];
-    let mut stream = stream;
+    let stream = stream;
     let n = stream.peek(&mut buffer).await?;
     let request = String::from_utf8_lossy(&buffer[..n]);
     
@@ -2097,7 +3163,7 @@ async fn handle_websocket_connection(
                                 let mut sent_eose = false;
                                 
                                 // Create fresh instances for each message to avoid state issues
-                                for (path, module, engine) in cassettes.iter() {
+                                for (_path, module, engine) in cassettes.iter() {
                                     let mut store = Store::new(engine, ());
                                     let instance = Instance::new(&mut store, module, &[])?;
                                     if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send") {
@@ -2184,7 +3250,8 @@ async fn handle_websocket_connection(
     Ok(())
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
@@ -2196,8 +3263,8 @@ fn main() -> Result<()> {
             no_bindings,
             interactive,
             verbose,
-            skip_validation,
-            nip_11,
+            _skip_validation,
+            _nip_11,
             nip_42,
             nip_45,
             nip_50,
@@ -2221,8 +3288,8 @@ fn main() -> Result<()> {
                     *no_bindings,
                     *interactive,
                     *verbose,
-                    !*skip_validation,
-                    *nip_11,
+                    !*_skip_validation,
+                    *_nip_11,
                     *nip_42,
                     *nip_45,
                     *nip_50,
@@ -2263,8 +3330,8 @@ fn main() -> Result<()> {
                     *no_bindings,
                     *interactive,
                     *verbose,
-                    !*skip_validation,
-                    *nip_11,
+                    !*_skip_validation,
+                    *_nip_11,
                     *nip_42,
                     *nip_45,
                     *nip_50,
@@ -2290,9 +3357,41 @@ fn main() -> Result<()> {
             verbose,
             nip11,
         } => {
+            // Check if required parameters are missing
+            if cassettes.is_empty() || output.is_none() {
+                if cassettes.is_empty() {
+                    eprintln!("Error: Missing required cassette input files\n");
+                } else {
+                    eprintln!("Error: Missing required output file path\n");
+                }
+                eprintln!("Usage: cassette dub <CASSETTES...> <OUTPUT> [OPTIONS]\n");
+                eprintln!("Combine multiple cassettes into a new cassette (dubbing/mixing)\n");
+                eprintln!("Arguments:");
+                eprintln!("  <CASSETTES...>  Input cassette files to combine");
+                eprintln!("  <OUTPUT>        Output cassette file path\n");
+                eprintln!("Options:");
+                eprintln!("  -n, --name <NAME>           Name for the generated cassette");
+                eprintln!("  -f, --filter <JSON>         Filter JSON (can be specified multiple times)");
+                eprintln!("  -k, --kinds <KINDS>         Event kinds to filter");
+                eprintln!("      --authors <AUTHORS>     Authors to filter");
+                eprintln!("  -l, --limit <LIMIT>         Limit number of events");
+                eprintln!("      --since <TIMESTAMP>     Events after timestamp");
+                eprintln!("      --until <TIMESTAMP>     Events before timestamp");
+                eprintln!("  -i, --interactive           Enable interactive mode");
+                eprintln!("  -v, --verbose               Show verbose output");
+                eprintln!("  -h, --help                  Print help\n");
+                eprintln!("Examples:");
+                eprintln!("  # Merge multiple cassettes");
+                eprintln!("  cassette dub alice.wasm bob.wasm combined.wasm");
+                eprintln!("  ");
+                eprintln!("  # Merge with filters");
+                eprintln!("  cassette dub *.wasm filtered.wasm --kinds 1 --since 1700000000");
+                return Ok(());
+            }
+            
             process_dub_command(
                 cassettes,
-                output,
+                output.as_ref().unwrap(),
                 name.as_deref(),
                 filter,
                 kinds,
@@ -2317,12 +3416,48 @@ fn main() -> Result<()> {
             output,
             interactive,
             verbose,
-            skip_validation,
+            _skip_validation,
             info,
             count,
             search,
             nip11,
         } => {
+            // Check if cassette is provided
+            if cassette.is_none() {
+                eprintln!("Error: Missing required cassette file\n");
+                eprintln!("Usage: cassette scrub <CASSETTE> [OPTIONS]\n");
+                eprintln!("Scrub through cassette events (send REQ messages and get events)\n");
+                eprintln!("Arguments:");
+                eprintln!("  <CASSETTE>  Path to the cassette WASM file\n");
+                eprintln!("Options:");
+                eprintln!("  -s, --subscription <ID>     Subscription ID (default: sub1)");
+                eprintln!("  -f, --filter <JSON>         Filter JSON (can be specified multiple times)");
+                eprintln!("  -k, --kinds <KINDS>         Event kinds to filter");
+                eprintln!("  -a, --authors <AUTHORS>     Authors to filter");
+                eprintln!("  -l, --limit <LIMIT>         Limit number of events");
+                eprintln!("      --since <TIMESTAMP>     Events after timestamp");
+                eprintln!("      --until <TIMESTAMP>     Events before timestamp");
+                eprintln!("  -o, --output <FORMAT>       Output format: json or ndjson (default: json)");
+                eprintln!("      --info                  Show NIP-11 relay information");
+                eprintln!("      --count                 Perform COUNT query (NIP-45)");
+                eprintln!("      --search <QUERY>        Search query for NIP-50");
+                eprintln!("  -i, --interactive           Enable interactive mode");
+                eprintln!("  -v, --verbose               Show verbose output");
+                eprintln!("  -h, --help                  Print help\n");
+                eprintln!("Examples:");
+                eprintln!("  # Get all events");
+                eprintln!("  cassette scrub my-notes.wasm");
+                eprintln!("  ");
+                eprintln!("  # Filter by kind");
+                eprintln!("  cassette scrub my-notes.wasm --kinds 1");
+                eprintln!("  ");
+                eprintln!("  # Search events");
+                eprintln!("  cassette scrub my-notes.wasm --search \"bitcoin\"");
+                return Ok(());
+            }
+            
+            let cassette = cassette.as_ref().unwrap();
+            
             if *info {
                 // Just show NIP-11 info
                 process_info_command(cassette, nip11)
@@ -2354,13 +3489,13 @@ fn main() -> Result<()> {
                     output,
                     *interactive,
                     *verbose,
-                    *skip_validation,
+                    *_skip_validation,
                     nip11,
                     search.as_deref(),
                 )
             }
         }
-        Commands::Cast {
+        Commands::Play {
             cassettes,
             relays,
             concurrency,
@@ -2371,9 +3506,39 @@ fn main() -> Result<()> {
             verbose: _,
             nip11,
         } => {
-            // Use tokio runtime for async operations
-            let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(process_cast_command(
+            // Check if required parameters are missing
+            if cassettes.is_empty() || relays.is_empty() {
+                if cassettes.is_empty() {
+                    eprintln!("Error: Missing required cassette files\n");
+                } else {
+                    eprintln!("Error: Missing required --relays option\n");
+                }
+                eprintln!("Usage: cassette play <CASSETTES...> --relays <RELAYS...> [OPTIONS]\n");
+                eprintln!("Play events from cassettes to Nostr relays\n");
+                eprintln!("Arguments:");
+                eprintln!("  <CASSETTES...>  Input cassette files to broadcast\n");
+                eprintln!("Options:");
+                eprintln!("  -r, --relays <RELAYS>       Target relay URLs (required)");
+                eprintln!("  -c, --concurrency <N>       Max concurrent connections (default: 5)");
+                eprintln!("  -t, --throttle <MS>         Delay between events in ms (default: 100)");
+                eprintln!("      --timeout <SECS>        Connection timeout in seconds (default: 30)");
+                eprintln!("      --dry-run               Preview without sending");
+                eprintln!("  -i, --interactive           Enable interactive mode");
+                eprintln!("  -v, --verbose               Show verbose output");
+                eprintln!("  -h, --help                  Print help\n");
+                eprintln!("Examples:");
+                eprintln!("  # Play to single relay");
+                eprintln!("  cassette play events.wasm --relays wss://relay.damus.io");
+                eprintln!("  ");
+                eprintln!("  # Play to multiple relays");
+                eprintln!("  cassette play *.wasm --relays wss://nos.lol wss://relay.nostr.band");
+                eprintln!("  ");
+                eprintln!("  # Test with dry-run");
+                eprintln!("  cassette play archive.wasm --relays ws://localhost:7000 --dry-run");
+                return Ok(());
+            }
+            
+            process_play_command(
                 cassettes,
                 relays,
                 *concurrency,
@@ -2381,9 +3546,9 @@ fn main() -> Result<()> {
                 *timeout,
                 *dry_run,
                 nip11,
-            ))
+            ).await
         }
-        Commands::Play {
+        Commands::DeprecatedPlay {
             cassette,
             subscription,
             filter,
@@ -2395,7 +3560,7 @@ fn main() -> Result<()> {
             output,
             interactive,
             verbose,
-            skip_validation,
+            _skip_validation,
             info,
             count,
             search,
@@ -2405,6 +3570,16 @@ fn main() -> Result<()> {
             eprintln!("⚠️  WARNING: The 'play' command is deprecated and will be removed in a future version.");
             eprintln!("⚠️  Please use 'scrub' instead, which better reflects the analog tape metaphor.");
             eprintln!("");
+            
+            // Check if cassette is provided
+            if cassette.is_none() {
+                eprintln!("Error: Missing required cassette file\n");
+                eprintln!("Usage: cassette scrub <CASSETTE> [OPTIONS]  (use 'scrub' instead of 'play')\n");
+                eprintln!("Please use the 'scrub' command instead of the deprecated 'play' command.");
+                return Ok(());
+            }
+            
+            let cassette = cassette.as_ref().unwrap();
             
             // Pass through to the same logic as scrub
             if *info {
@@ -2438,7 +3613,7 @@ fn main() -> Result<()> {
                     output,
                     *interactive,
                     *verbose,
-                    *skip_validation,
+                    *_skip_validation,
                     nip11,
                     search.as_deref(),
                 )
@@ -2453,9 +3628,34 @@ fn main() -> Result<()> {
             tls_key,
             verbose,
         } => {
-            // Use tokio runtime for async operations
-            let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(process_listen_command(
+            // Check if required parameters are missing
+            if cassettes.is_empty() {
+                eprintln!("Error: Missing required cassette files\n");
+                eprintln!("Usage: cassette listen <CASSETTES...> [OPTIONS]\n");
+                eprintln!("Start a WebSocket server to serve cassettes as a Nostr relay\n");
+                eprintln!("Arguments:");
+                eprintln!("  <CASSETTES...>  Cassette files to serve (supports globs like \"*.wasm\")\n");
+                eprintln!("Options:");
+                eprintln!("  -p, --port <PORT>           Port to listen on (auto-selects if not specified)");
+                eprintln!("      --bind <ADDRESS>        Bind address (default: 127.0.0.1)");
+                eprintln!("      --tls                   Enable HTTPS/WSS");
+                eprintln!("      --tls-cert <PATH>       Path to TLS certificate");
+                eprintln!("      --tls-key <PATH>        Path to TLS key");
+                eprintln!("  -v, --verbose               Show verbose output");
+                eprintln!("  -h, --help                  Print help\n");
+                eprintln!("Examples:");
+                eprintln!("  # Serve single cassette");
+                eprintln!("  cassette listen my-notes.wasm");
+                eprintln!("  ");
+                eprintln!("  # Serve on specific port");
+                eprintln!("  cassette listen *.wasm --port 8080");
+                eprintln!("  ");
+                eprintln!("  # Listen on all interfaces");
+                eprintln!("  cassette listen cassettes/*.wasm --bind 0.0.0.0 --port 7777");
+                return Ok(());
+            }
+            
+            process_listen_command(
                 cassettes,
                 *port,
                 bind,
@@ -2463,7 +3663,129 @@ fn main() -> Result<()> {
                 tls_cert.as_deref(),
                 tls_key.as_deref(),
                 *verbose,
-            ))
+            ).await
+        }
+        Commands::Deck {
+            mode,
+            relays,
+            name,
+            output,
+            port,
+            bind,
+            event_limit,
+            size_limit,
+            duration,
+            filter,
+            kinds,
+            authors,
+            _nip_11,
+            nip_45,
+            nip_50,
+            verbose,
+            _skip_validation,
+            nip11,
+        } => {
+            match mode.as_str() {
+                "relay" => {
+                    process_deck_relay_mode(
+                        name,
+                        output,
+                        *port,
+                        bind,
+                        *event_limit,
+                        *size_limit,
+                        *duration,
+                        *_nip_11,
+                        *nip_45,
+                        *nip_50,
+                        *verbose,
+                        *_skip_validation,
+                        nip11,
+                    ).await
+                }
+                "record" => {
+                    if relays.is_empty() {
+                        eprintln!("Error: --relays is required for record mode\n");
+                        eprintln!("Usage: cassette deck --mode record --relays <RELAYS...> [OPTIONS]\n");
+                        eprintln!("Continuously record events from other relays and serve cassettes\n");
+                        eprintln!("Required Options:");
+                        eprintln!("  -r, --relays <RELAYS>       Relay URLs to record from\n");
+                        eprintln!("Options:");
+                        eprintln!("  -n, --name <NAME>           Base name for cassettes (default: deck)");
+                        eprintln!("  -o, --output <DIR>          Output directory (default: ./deck)");
+                        eprintln!("  -p, --port <PORT>           Port to serve on (default: 7777)");
+                        eprintln!("      --bind <ADDRESS>        Bind address (default: 127.0.0.1)");
+                        eprintln!("  -e, --event-limit <N>       Max events per cassette (default: 10000)");
+                        eprintln!("  -s, --size-limit <MB>       Max cassette size in MB (default: 100)");
+                        eprintln!("  -d, --duration <SECS>       Recording duration per cassette (default: 3600)");
+                        eprintln!("  -f, --filter <JSON>         Filter JSON for recording");
+                        eprintln!("  -k, --kinds <KINDS>         Event kinds to record");
+                        eprintln!("      --authors <AUTHORS>     Authors to filter");
+                        eprintln!("      --nip-11                Enable NIP-11 support");
+                        eprintln!("      --nip-45                Enable NIP-45 (COUNT) support");
+                        eprintln!("      --nip-50                Enable NIP-50 (search) support");
+                        eprintln!("  -v, --verbose               Show verbose output");
+                        eprintln!("  -h, --help                  Print help\n");
+                        eprintln!("Examples:");
+                        eprintln!("  # Record from single relay");
+                        eprintln!("  cassette deck --mode record --relays wss://relay.damus.io");
+                        eprintln!("  ");
+                        eprintln!("  # Record specific kinds from multiple relays");
+                        eprintln!("  cassette deck --mode record --relays wss://nos.lol wss://relay.nostr.band --kinds 1 --kinds 30023");
+                        eprintln!("  ");
+                        eprintln!("  # Custom rotation settings");
+                        eprintln!("  cassette deck --mode record --relays wss://relay.damus.io --event-limit 50000 --duration 7200");
+                        return Ok(());
+                    }
+                    process_deck_record_mode(
+                        relays,
+                        name,
+                        output,
+                        *port,
+                        bind,
+                        *event_limit,
+                        *size_limit,
+                        *duration,
+                        filter.as_deref(),
+                        kinds,
+                        authors,
+                        *_nip_11,
+                        *nip_45,
+                        *nip_50,
+                        *verbose,
+                        *_skip_validation,
+                        nip11,
+                    ).await
+                }
+                _ => Err(anyhow!("Invalid mode: {}. Use 'relay' or 'record'", mode))
+            }
+        }
+        Commands::Cast {
+            cassettes,
+            relays,
+            concurrency,
+            throttle,
+            timeout,
+            dry_run,
+            interactive: _,
+            verbose: _,
+            nip11,
+        } => {
+            // Print deprecation warning
+            eprintln!("⚠️  WARNING: The 'cast' command is deprecated and will be removed in a future version.");
+            eprintln!("⚠️  Please use 'play' instead, which better reflects the analog tape metaphor.");
+            eprintln!("");
+            
+            // Pass through to process_cast_command with same parameters
+            process_play_command(
+                cassettes,
+                relays,
+                *concurrency,
+                *throttle,
+                *timeout,
+                *dry_run,
+                nip11,
+            ).await
         }
     }
 }
@@ -2620,7 +3942,7 @@ fn parse_events_from_file(input_file: &str) -> Result<Vec<Value>> {
     }
 }
 
-pub fn process_events(
+fn process_events(
     input_file: &str,
     name: &str,
     output_dir: &PathBuf,
@@ -2628,7 +3950,7 @@ pub fn process_events(
     interactive: bool,
     verbose: bool,
     validate: bool,
-    nip_11: bool,
+    _nip_11: bool,
     nip_42: bool,
     nip_45: bool,
     nip_50: bool,
@@ -2846,7 +4168,7 @@ pub fn process_events(
         }
     }
 }
-// Cast command implementation
+// Play command implementation
 
 #[derive(Clone)]
 struct RelayStatus {
@@ -2857,7 +4179,7 @@ struct RelayStatus {
     failed: usize,
 }
 
-async fn process_cast_command(
+async fn process_play_command(
     cassette_paths: &[std::path::PathBuf],
     relay_urls: &[String],
     concurrency: usize,
@@ -2874,7 +4196,7 @@ async fn process_cast_command(
         return Err(anyhow!("No relays specified"));
     }
     
-    println!("🎯 Casting events from {} cassette(s) to {} relay(s)", 
+    println!("🎯 Playing events from {} cassette(s) to {} relay(s)", 
         cassette_paths.len(), relay_urls.len());
     
     if dry_run {
@@ -2913,11 +4235,11 @@ async fn process_cast_command(
         return Err(anyhow!("No events found in cassettes"));
     }
     
-    println!("\n📊 Total unique events to cast: {}", all_events.len());
+    println!("\n📊 Total unique events to play: {}", all_events.len());
     
     // Initialize relay status tracking
     let relay_statuses = Arc::new(Mutex::new(
-        relay_urls.iter().enumerate().map(|(idx, url)| RelayStatus {
+        relay_urls.iter().enumerate().map(|(_idx, url)| RelayStatus {
             url: url.clone(),
             connected: false,
             total: all_events.len(),
@@ -2952,7 +4274,7 @@ async fn process_cast_command(
         
         tokio::spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
-            broadcast_to_relay(idx, relay_url, events, statuses, timeout, throttle).await
+            play_to_relay(idx, relay_url, events, statuses, timeout, throttle).await
         })
     }).collect();
     
@@ -3030,7 +4352,7 @@ fn extract_all_events_from_cassette(cassette_path: &std::path::PathBuf, nip11_ar
     let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string").ok();
     
     // Request all events
-    let req_message = json!(["REQ", "cast-extract", {}]);
+    let req_message = json!(["REQ", "play-extract", {}]);
     let req_string = serde_json::to_string(&req_message)?;
     let req_bytes = req_string.as_bytes();
     
@@ -3082,8 +4404,8 @@ fn extract_all_events_from_cassette(cassette_path: &std::path::PathBuf, nip11_ar
     Ok(events)
 }
 
-/// Broadcast events to a single relay
-async fn broadcast_to_relay(
+/// Play events to a single relay
+async fn play_to_relay(
     idx: usize,
     relay_url: String,
     events: Vec<Value>,
@@ -3172,7 +4494,7 @@ async fn display_relay_status(statuses: &Arc<Mutex<Vec<RelayStatus>>>) {
     let lines = statuses.len() + 2;
     print!("\x1b[{}A", lines);
     
-    println!("\n🎯 Broadcasting Progress:");
+    println!("\n🎯 Playing Progress:");
     for status in statuses.iter() {
         let progress = if status.total > 0 {
             (status.successful + status.failed) as f64 / status.total as f64 * 100.0
