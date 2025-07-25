@@ -24,7 +24,7 @@ int main(int argc, char* argv[]) {
         // Loop to get all events
         int event_count = 0;
         while (true) {
-            std::string result = cassette.req(req);
+            std::string result = cassette.send(req);
             
             if (result.empty()) {
                 std::cout << "No more events" << std::endl;
@@ -47,10 +47,10 @@ int main(int argc, char* argv[]) {
         
         std::cout << std::endl << "Total events received: " << event_count << std::endl;
         
-        // Test CLOSE
+        // Test CLOSE using send()
         std::string close_msg = R"(["CLOSE", "example-sub"])";
         std::cout << std::endl << "Sending CLOSE: " << close_msg << std::endl;
-        std::string close_result = cassette.close(close_msg);
+        std::string close_result = cassette.send(close_msg);
         std::cout << "CLOSE result: " << close_result << std::endl;
         
     } catch (const std::exception& e) {

@@ -39,7 +39,7 @@ func main() {
     
     // Loop to get all events
     for {
-        result, err := c.Req(req)
+        result, err := c.Send(req)
         if err != nil {
             log.Fatal(err)
         }

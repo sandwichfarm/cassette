@@ -95,22 +95,16 @@ Cassette::Cassette(const std::string& path, bool debug)
     event_tracker = std::make_unique<EventTracker>();
     
     // Get required functions
-    auto req_export = instance.get(store, "req");
-    if (!req_export || !std::holds_alternative<wasmtime::Func>(*req_export)) {
-        throw std::runtime_error("req function not found");
+    auto send_export = instance.get(store, "send");
+    if (!send_export || !std::holds_alternative<wasmtime::Func>(*send_export)) {
+        throw std::runtime_error("send function not found");
     }
-    req_func = std::get<wasmtime::Func>(*req_export);
-    
-    auto describe_export = instance.get(store, "describe");
-    if (!describe_export || !std::holds_alternative<wasmtime::Func>(*describe_export)) {
-        throw std::runtime_error("describe function not found");
-    }
-    describe_func = std::get<wasmtime::Func>(*describe_export);
+    send_func = std::get<wasmtime::Func>(*send_export);
     
     // Optional functions
-    if (auto close_export = instance.get(store, "close")) {
-        if (std::holds_alternative<wasmtime::Func>(*close_export)) {
-            close_func = std::get<wasmtime::Func>(*close_export);
+    if (auto describe_export = instance.get(store, "describe")) {
+        if (std::holds_alternative<wasmtime::Func>(*describe_export)) {
+            describe_func = std::get<wasmtime::Func>(*describe_export);
         }
     }
     
@@ -136,24 +130,54 @@ Cassette::Cassette(const std::string& path, bool debug)
 std::string Cassette::describe() {
     std::lock_guard<std::mutex> lock(mutex);
     
-    auto results = describe_func.call(store, {});
-    if (results.empty() || !results[0].i32()) {
-        throw std::runtime_error("describe function failed");
+    // If describe function exists, use it
+    if (describe_func) {
+        auto results = describe_func->call(store, {});
+        if (results.empty() || !results[0].i32()) {
+            throw std::runtime_error("describe function failed");
+        }
+        
+        int32_t ptr = *results[0].i32();
+        std::string desc = memory_manager->read_string(ptr);
+        
+        // Try to deallocate
+        if (dealloc_func) {
+            std::vector<wasmtime::Val> args = {
+                wasmtime::Val::i32(ptr),
+                wasmtime::Val::i32(static_cast<int32_t>(desc.length()))
+            };
+            dealloc_func->call(store, args);
+        }
+        
+        return desc;
     }
     
-    int32_t ptr = *results[0].i32();
-    std::string desc = memory_manager->read_string(ptr);
-    
-    // Try to deallocate
-    if (dealloc_func) {
-        std::vector<wasmtime::Val> args = {
-            wasmtime::Val::i32(ptr),
-            wasmtime::Val::i32(static_cast<int32_t>(desc.length()))
-        };
-        dealloc_func->call(store, args);
+    // Otherwise, synthesize from info()
+    std::string info_str = info();
+    try {
+        auto info_json = json::parse(info_str);
+        std::string description = "Cassette";
+        
+        if (info_json.contains("name") && info_json["name"].is_string()) {
+            description = info_json["name"].get<std::string>();
+        }
+        
+        if (info_json.contains("supported_nips") && info_json["supported_nips"].is_array()) {
+            auto nips = info_json["supported_nips"];
+            if (!nips.empty()) {
+                description += " (supports NIPs: ";
+                for (size_t i = 0; i < nips.size(); ++i) {
+                    if (i > 0) description += ", ";
+                    description += std::to_string(nips[i].get<int>());
+                }
+                description += ")";
+            }
+        }
+        
+        return description;
+    } catch (...) {
+        return "Cassette module";
     }
-    
-    return desc;
 }
 
 std::vector<std::string> Cassette::process_messages(const std::string& result) {
@@ -247,42 +271,50 @@ bool Cassette::is_duplicate_event(const json& parsed) {
     return false;
 }
 
-std::string Cassette::req(const std::string& request) {
+std::string Cassette::send(const std::string& message) {
     std::lock_guard<std::mutex> lock(mutex);
     
-    // Parse request to check for new REQ
+    // Parse message to check for REQ or CLOSE
     try {
-        auto req_data = json::parse(request);
-        if (req_data.is_array() && req_data.size() >= 2 && req_data[0] == "REQ") {
-            event_tracker->reset();
-            if (debug) {
-                std::cerr << "[Cassette] New REQ, resetting event tracker\n";
+        auto msg_data = json::parse(message);
+        if (msg_data.is_array() && msg_data.size() >= 2) {
+            std::string msg_type = msg_data[0].get<std::string>();
+            if (msg_type == "REQ") {
+                event_tracker->reset();
+                if (debug) {
+                    std::cerr << "[Cassette] New REQ, resetting event tracker\n";
+                }
+            } else if (msg_type == "CLOSE") {
+                // Handle CLOSE message if needed
+                if (debug) {
+                    std::cerr << "[Cassette] Processing CLOSE message\n";
+                }
             }
         }
     } catch (...) {}
     
-    // Write request to memory
-    int32_t req_ptr = memory_manager->write_string(request);
+    // Write message to memory
+    int32_t msg_ptr = memory_manager->write_string(message);
     
-    // Call req function
+    // Call send function
     std::vector<wasmtime::Val> args = {
-        wasmtime::Val::i32(req_ptr),
-        wasmtime::Val::i32(static_cast<int32_t>(request.length()))
+        wasmtime::Val::i32(msg_ptr),
+        wasmtime::Val::i32(static_cast<int32_t>(message.length()))
     };
-    auto results = req_func.call(store, args);
+    auto results = send_func.call(store, args);
     
-    // Deallocate request
+    // Deallocate message
     if (dealloc_func) {
         dealloc_func->call(store, args);
     }
     
     if (results.empty() || !results[0].i32()) {
-        return R"(["NOTICE", "req() failed"])";
+        return R"(["NOTICE", "send() failed"])";
     }
     
     int32_t result_ptr = *results[0].i32();
     if (result_ptr == 0) {
-        return R"(["NOTICE", "req() returned null pointer"])";
+        return R"(["NOTICE", "send() returned null pointer"])";
     }
     
     // Read result
@@ -317,50 +349,6 @@ std::string Cassette::req(const std::string& request) {
     }
 }
 
-std::string Cassette::close(const std::string& close_msg) {
-    std::lock_guard<std::mutex> lock(mutex);
-    
-    if (!close_func) {
-        return R"(["NOTICE", "close function not implemented"])";
-    }
-    
-    // Write close message to memory
-    int32_t close_ptr = memory_manager->write_string(close_msg);
-    
-    // Call close function
-    std::vector<wasmtime::Val> args = {
-        wasmtime::Val::i32(close_ptr),
-        wasmtime::Val::i32(static_cast<int32_t>(close_msg.length()))
-    };
-    auto results = close_func->call(store, args);
-    
-    // Deallocate close message
-    if (dealloc_func) {
-        dealloc_func->call(store, args);
-    }
-    
-    if (results.empty() || !results[0].i32()) {
-        return R"(["NOTICE", "close() failed"])";
-    }
-    
-    int32_t result_ptr = *results[0].i32();
-    if (result_ptr == 0) {
-        return R"(["NOTICE", "close() returned null pointer"])";
-    }
-    
-    // Read result
-    std::string result_str = memory_manager->read_string(result_ptr);
-    
-    // Deallocate result
-    if (dealloc_func) {
-        dealloc_func->call(store, {
-            wasmtime::Val::i32(result_ptr), 
-            wasmtime::Val::i32(static_cast<int32_t>(result_str.length()))
-        });
-    }
-    
-    return result_str;
-}
 
 std::string Cassette::info() {
     std::lock_guard<std::mutex> lock(mutex);

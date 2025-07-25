@@ -77,9 +77,7 @@ class Cassette {
   late final WasmInstance _instance;
   late final MemoryManager _memoryManager;
   late final EventTracker _eventTracker;
-  late final WasmFunction _reqFunc;
-  late final WasmFunction _describeFunc;
-  WasmFunction? _closeFunc;
+  late final WasmFunction _sendFunc;
   WasmFunction? _infoFunc;
   WasmFunction? _deallocFunc;
   WasmFunction? _getSizeFunc;
@@ -103,22 +101,12 @@ class Cassette {
     _eventTracker = EventTracker();
 
     // Get required functions
-    _reqFunc = _instance.exports.whereType<WasmFunction>().firstWhere(
-      (export) => export.name == 'req',
-      orElse: () => throw Exception('req function not found'),
-    );
-
-    _describeFunc = _instance.exports.whereType<WasmFunction>().firstWhere(
-      (export) => export.name == 'describe',
-      orElse: () => throw Exception('describe function not found'),
+    _sendFunc = _instance.exports.whereType<WasmFunction>().firstWhere(
+      (export) => export.name == 'send',
+      orElse: () => throw Exception('send function not found'),
     );
 
     // Get optional functions
-    try {
-      _closeFunc = _instance.exports.whereType<WasmFunction>().firstWhere(
-        (export) => export.name == 'close',
-      );
-    } catch (_) {}
 
     try {
       _infoFunc = _instance.exports.whereType<WasmFunction>().firstWhere(
@@ -155,39 +143,61 @@ class Cassette {
 
   /// Get cassette description
   String describe() {
-    final ptr = _describeFunc.call([]) as int;
-    final desc = _memoryManager.readString(ptr);
-    
-    // Try to deallocate
-    _deallocFunc?.call([ptr, desc.length]);
-    
-    return desc;
+    // Use info() to synthesize a description
+    final infoStr = info();
+    try {
+      final infoData = jsonDecode(infoStr) as Map<String, dynamic>;
+      final supportedNips = infoData['supported_nips'] as List<dynamic>? ?? [];
+      final name = infoData['name'] as String? ?? 'Cassette';
+      final description = infoData['description'] as String?;
+      
+      if (description != null) {
+        return description;
+      }
+      
+      if (supportedNips.isNotEmpty) {
+        return '$name - Supports NIPs: ${supportedNips.join(', ')}';
+      }
+      
+      return name;
+    } catch (_) {
+      return 'Cassette';
+    }
   }
 
-  /// Process a REQ message
-  String req(String request) {
-    // Parse request to check for new REQ
+  /// Send any NIP-01 message
+  String send(String message) {
+    // Parse message to check if it's REQ or CLOSE to handle event tracking
     try {
-      final reqData = jsonDecode(request) as List;
-      if (reqData.length >= 2 && reqData[0] == 'REQ') {
-        _eventTracker.reset();
-        if (debug) {
-          print('[Cassette] New REQ, resetting event tracker');
+      final msgData = jsonDecode(message) as List;
+      if (msgData.length >= 2) {
+        final msgType = msgData[0] as String;
+        
+        if (msgType == 'REQ') {
+          _eventTracker.reset();
+          if (debug) {
+            print('[Cassette] New REQ, resetting event tracker');
+          }
+        } else if (msgType == 'CLOSE') {
+          // Handle CLOSE messages if needed
+          if (debug) {
+            print('[Cassette] Processing CLOSE message');
+          }
         }
       }
     } catch (_) {}
 
-    // Write request to memory
-    final reqPtr = _memoryManager.writeString(request);
+    // Write message to memory
+    final msgPtr = _memoryManager.writeString(message);
 
-    // Call req function
-    final resultPtr = _reqFunc.call([reqPtr, request.length]) as int;
+    // Call send function
+    final resultPtr = _sendFunc.call([msgPtr, message.length]) as int;
 
-    // Deallocate request
-    _deallocFunc?.call([reqPtr, request.length]);
+    // Deallocate message
+    _deallocFunc?.call([msgPtr, message.length]);
 
     if (resultPtr == 0) {
-      return jsonEncode(['NOTICE', 'req() returned null pointer']);
+      return jsonEncode(['NOTICE', 'send() returned null pointer']);
     }
 
     // Read result
@@ -272,33 +282,6 @@ class Cassette {
     return resultStr;
   }
 
-  /// Process a CLOSE message
-  String close(String closeMsg) {
-    if (_closeFunc == null) {
-      return jsonEncode(['NOTICE', 'close function not implemented']);
-    }
-
-    // Write close message to memory
-    final closePtr = _memoryManager.writeString(closeMsg);
-
-    // Call close function
-    final resultPtr = _closeFunc!.call([closePtr, closeMsg.length]) as int;
-
-    // Deallocate close message
-    _deallocFunc?.call([closePtr, closeMsg.length]);
-
-    if (resultPtr == 0) {
-      return jsonEncode(['NOTICE', 'close() returned null pointer']);
-    }
-
-    // Read result
-    final resultStr = _memoryManager.readString(resultPtr);
-
-    // Deallocate result
-    _deallocFunc?.call([resultPtr, resultStr.length]);
-
-    return resultStr;
-  }
 
   /// Get NIP-11 relay information
   String info() {

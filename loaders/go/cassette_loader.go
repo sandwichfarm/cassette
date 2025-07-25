@@ -153,13 +153,21 @@ func LoadCassette(path string, debug bool) (*Cassette, error) {
 
 	// Get exported functions
 	exports := make(map[string]*wasmtime.Func)
-	requiredFuncs := []string{"req", "describe", "close", "dealloc_string"}
+	requiredFuncs := []string{"send", "info", "dealloc_string"}
+	optionalFuncs := []string{"describe"}
 	
 	for _, name := range requiredFuncs {
 		fn := instance.GetFunc(store, name)
-		if fn == nil && name != "close" && name != "dealloc_string" {
+		if fn == nil && name != "dealloc_string" {
 			return nil, fmt.Errorf("required function %s not found", name)
 		}
+		if fn != nil {
+			exports[name] = fn
+		}
+	}
+	
+	for _, name := range optionalFuncs {
+		fn := instance.GetFunc(store, name)
 		if fn != nil {
 			exports[name] = fn
 		}
@@ -181,72 +189,141 @@ func (c *Cassette) Describe() (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	descFunc, ok := c.exports["describe"]
-	if !ok {
-		return "", fmt.Errorf("describe function not found")
+	// First check if there's a describe function
+	descFunc, hasDescribe := c.exports["describe"]
+	if hasDescribe {
+		result, err := descFunc.Call(c.store)
+		if err != nil {
+			return "", err
+		}
+
+		ptr := result.(int32)
+		desc, err := c.memory.ReadString(ptr)
+		if err != nil {
+			return "", err
+		}
+
+		// Try to deallocate
+		if deallocFunc, ok := c.exports["dealloc_string"]; ok {
+			deallocFunc.Call(c.store, ptr, int32(len(desc)))
+		}
+
+		return desc, nil
 	}
 
-	result, err := descFunc.Call(c.store)
+	// Otherwise, synthesize from Info()
+	infoFunc, ok := c.exports["info"]
+	if !ok {
+		return "Cassette with no description", nil
+	}
+
+	result, err := infoFunc.Call(c.store)
 	if err != nil {
 		return "", err
 	}
 
 	ptr := result.(int32)
-	desc, err := c.memory.ReadString(ptr)
+	if ptr == 0 {
+		return "Cassette with no description", nil
+	}
+
+	infoStr, err := c.memory.ReadString(ptr)
 	if err != nil {
 		return "", err
 	}
 
 	// Try to deallocate
 	if deallocFunc, ok := c.exports["dealloc_string"]; ok {
-		deallocFunc.Call(c.store, ptr, int32(len(desc)))
+		deallocFunc.Call(c.store, ptr, int32(len(infoStr)))
 	}
 
-	return desc, nil
+	// Parse info JSON to create description
+	var info map[string]interface{}
+	if err := json.Unmarshal([]byte(infoStr), &info); err != nil {
+		return "Cassette (invalid info)", nil
+	}
+
+	// Build description from info
+	var parts []string
+	if name, ok := info["name"].(string); ok && name != "" {
+		parts = append(parts, name)
+	}
+	if desc, ok := info["description"].(string); ok && desc != "" {
+		parts = append(parts, desc)
+	}
+	if nips, ok := info["supported_nips"].([]interface{}); ok && len(nips) > 0 {
+		nipStrs := make([]string, 0, len(nips))
+		for _, nip := range nips {
+			if nipNum, ok := nip.(float64); ok {
+				nipStrs = append(nipStrs, fmt.Sprintf("NIP-%02d", int(nipNum)))
+			}
+		}
+		if len(nipStrs) > 0 {
+			parts = append(parts, fmt.Sprintf("Supports: %s", strings.Join(nipStrs, ", ")))
+		}
+	}
+
+	if len(parts) > 0 {
+		return strings.Join(parts, " - "), nil
+	}
+
+	return "Cassette with no description", nil
 }
 
-// Req processes a REQ message
-func (c *Cassette) Req(request string) (string, error) {
+// Send processes any NIP-01 message
+func (c *Cassette) Send(message string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Parse request to check for new REQ
-	var reqData []interface{}
-	if err := json.Unmarshal([]byte(request), &reqData); err == nil {
-		if len(reqData) >= 2 && reqData[0] == "REQ" {
-			// New REQ, reset event tracker
-			c.eventTracker.Reset()
-			if c.debug {
-				fmt.Println("[Cassette] New REQ, resetting event tracker")
+	// Parse message to check type
+	var msgData []interface{}
+	if err := json.Unmarshal([]byte(message), &msgData); err == nil {
+		if len(msgData) >= 1 {
+			msgType, ok := msgData[0].(string)
+			if ok {
+				switch msgType {
+				case "REQ":
+					// New REQ, reset event tracker
+					c.eventTracker.Reset()
+					if c.debug {
+						fmt.Println("[Cassette] New REQ, resetting event tracker")
+					}
+				case "CLOSE":
+					// CLOSE message, reset event tracker for that subscription
+					c.eventTracker.Reset()
+					if c.debug {
+						fmt.Println("[Cassette] CLOSE message, resetting event tracker")
+					}
+				}
 			}
 		}
 	}
 
-	// Write request to memory
-	reqPtr, err := c.memory.WriteString(request)
+	// Write message to memory
+	msgPtr, err := c.memory.WriteString(message)
 	if err != nil {
 		return "", err
 	}
 
-	// Call req function
-	reqFunc, ok := c.exports["req"]
+	// Call send function
+	sendFunc, ok := c.exports["send"]
 	if !ok {
-		return "", fmt.Errorf("req function not found")
+		return "", fmt.Errorf("send function not found")
 	}
 
-	result, err := reqFunc.Call(c.store, reqPtr, int32(len(request)))
+	result, err := sendFunc.Call(c.store, msgPtr, int32(len(message)))
 	if err != nil {
 		return "", err
 	}
 
-	// Deallocate request
+	// Deallocate message
 	if deallocFunc, ok := c.exports["dealloc_string"]; ok {
-		deallocFunc.Call(c.store, reqPtr, int32(len(request)))
+		deallocFunc.Call(c.store, msgPtr, int32(len(message)))
 	}
 
 	resultPtr := result.(int32)
 	if resultPtr == 0 {
-		return `["NOTICE", "req() returned null pointer"]`, nil
+		return `["NOTICE", "send() returned null pointer"]`, nil
 	}
 
 	// Read result
@@ -292,7 +369,7 @@ func (c *Cassette) Req(request string) (string, error) {
 			}
 
 			msgType, ok := parsed[0].(string)
-			if !ok || (msgType != "NOTICE" && msgType != "EVENT" && msgType != "EOSE") {
+			if !ok || (msgType != "NOTICE" && msgType != "EVENT" && msgType != "EOSE" && msgType != "OK" && msgType != "AUTH") {
 				if c.debug {
 					fmt.Printf("[Cassette] Unknown message type: %v\n", parsed[0])
 				}
@@ -342,51 +419,6 @@ func (c *Cassette) Req(request string) (string, error) {
 	return resultStr, nil
 }
 
-// Close processes a CLOSE message
-func (c *Cassette) Close(closeMsg string) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	closeFunc, ok := c.exports["close"]
-	if !ok {
-		return `["NOTICE", "close function not implemented"]`, nil
-	}
-
-	// Write close message to memory
-	closePtr, err := c.memory.WriteString(closeMsg)
-	if err != nil {
-		return "", err
-	}
-
-	// Call close function
-	result, err := closeFunc.Call(c.store, closePtr, int32(len(closeMsg)))
-	if err != nil {
-		return "", err
-	}
-
-	// Deallocate close message
-	if deallocFunc, ok := c.exports["dealloc_string"]; ok {
-		deallocFunc.Call(c.store, closePtr, int32(len(closeMsg)))
-	}
-
-	resultPtr := result.(int32)
-	if resultPtr == 0 {
-		return `["NOTICE", "close() returned null pointer"]`, nil
-	}
-
-	// Read result
-	resultStr, err := c.memory.ReadString(resultPtr)
-	if err != nil {
-		return "", err
-	}
-
-	// Deallocate result
-	if deallocFunc, ok := c.exports["dealloc_string"]; ok {
-		deallocFunc.Call(c.store, resultPtr, int32(len(resultStr)))
-	}
-
-	return resultStr, nil
-}
 
 // Info returns NIP-11 relay information
 func (c *Cassette) Info() (string, error) {

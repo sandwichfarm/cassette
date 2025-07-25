@@ -108,19 +108,14 @@ export interface Cassette {
    */
   methods: {
     /**
+     * Universal send method for all NIP-01 messages
+     */
+    send: (messageStr: string) => string;
+    
+    /**
      * Get description and metadata for the cassette
      */
     describe: () => string;
-    
-    /**
-     * Process a request and return a response
-     */
-    req: (requestStr: string) => string;
-    
-    /**
-     * Process a close command (optional)
-     */
-    close?: (closeStr: string) => string;
     
     /**
      * Get JSON schema for the cassette (optional)
@@ -260,14 +255,11 @@ export class CassetteLoadError extends Error {
  * Object containing available methods for interacting with a cassette
  */
 export interface CassetteMethods {
+  /** Universal send method for all NIP-01 messages */
+  send: (messageStr: string) => string;
+  
   /** Get metadata about the cassette */
   describe: () => string;
-  
-  /** Process a request and return a response */
-  req: (requestStr: string) => string;
-  
-  /** Close a subscription (optional) */
-  close?: (closeStr: string) => string;
   
   /** Get JSON schema for the cassette (optional) */
   getSchema?: () => string;

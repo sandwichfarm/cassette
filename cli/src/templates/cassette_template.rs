@@ -108,30 +108,9 @@ thread_local! {
     static DEBUG_MSGS: RefCell<Vec<String>> = RefCell::new(Vec::new());
 }
 
-// Core interface functions
+// Single entry point for all NIP-01 messages
 #[no_mangle]
-pub extern "C" fn describe() -> *mut u8 {
-    // Collect any debug messages
-    let debug_messages = DEBUG_MSGS.with(|msgs| {
-        let msgs = msgs.borrow();
-        msgs.join("\n")
-    });
-
-    let metadata = json!({
-        "name": "{{ cassette_name }}",
-        "description": "{{ cassette_description }}",
-        "version": "{{ cassette_version }}",
-        "author": "{{ cassette_author }}",
-        "created": "{{ cassette_created }}",
-        "event_count": {{ event_count }},
-        "debug_log": debug_messages
-    });
-
-    string_to_ptr(metadata.to_string())
-}
-
-#[no_mangle]
-pub extern "C" fn req(ptr: *const u8, len: usize) -> *mut u8 {
+pub extern "C" fn send(ptr: *const u8, len: usize) -> *mut u8 {
     if ptr.is_null() {
         return string_to_ptr(json!(["NOTICE", "Error: Null request pointer"]).to_string());
     }
@@ -178,6 +157,7 @@ pub extern "C" fn req(ptr: *const u8, len: usize) -> *mut u8 {
         "EVENT" => handle_event_command(&arr),
         "COUNT" => handle_count_command(&arr),
         "REQ" => handle_req_command(&arr),
+        "CLOSE" => handle_close_command(&arr),
         _ => {
             DEBUG_MSGS.with(|msgs| {
                 let mut msgs = msgs.borrow_mut();
@@ -411,58 +391,10 @@ fn handle_req_command(arr: &[Value]) -> *mut u8 {
     })
 }
 
-#[no_mangle]
-pub extern "C" fn close(close_ptr: *const u8, close_len: usize) -> *mut u8 {
-    // Safety check for null pointer
-    if close_ptr.is_null() {
-        return string_to_ptr(json!(["NOTICE", "Error: Null close pointer"]).to_string());
-    }
-    
-    // Get the close request string from the pointer and validate it
-    let close_str = ptr_to_string(close_ptr, close_len);
-    
-    // Add debug log
-    DEBUG_MSGS.with(|msgs| {
-        let mut msgs = msgs.borrow_mut();
-        msgs.push(format!("CLOSE received: {}", close_str));
-    });
-    
-    // Parse the close request
-    let close_value = match serde_json::from_str::<Value>(&close_str) {
-        Ok(val) => val,
-        Err(e) => {
-            DEBUG_MSGS.with(|msgs| {
-                let mut msgs = msgs.borrow_mut();
-                msgs.push(format!("CLOSE JSON parse error: {} in: {}", e, close_str));
-            });
-            return string_to_ptr(json!(["NOTICE", format!("Invalid JSON in close request: {}", e)]).to_string());
-        }
-    };
-    
-    // Validate the close request format
-    if !close_value.is_array() {
-        DEBUG_MSGS.with(|msgs| {
-            let mut msgs = msgs.borrow_mut();
-            msgs.push(format!("CLOSE is not an array: {}", close_value));
-        });
-        return string_to_ptr(json!(["NOTICE", "CLOSE message must be an array"]).to_string());
-    }
-    
-    let arr = close_value.as_array().unwrap();
+// Handle CLOSE command
+fn handle_close_command(arr: &[Value]) -> *mut u8 {
     if arr.len() < 2 {
-        DEBUG_MSGS.with(|msgs| {
-            let mut msgs = msgs.borrow_mut();
-            msgs.push("CLOSE array too short".to_string());
-        });
         return string_to_ptr(json!(["NOTICE", "CLOSE must contain command and subscription ID"]).to_string());
-    }
-    
-    if arr[0].as_str().unwrap_or("") != "CLOSE" {
-        DEBUG_MSGS.with(|msgs| {
-            let mut msgs = msgs.borrow_mut();
-            msgs.push(format!("First element is not 'CLOSE': {}", arr[0]));
-        });
-        return string_to_ptr(json!(["NOTICE", "First element must be CLOSE"]).to_string());
     }
     
     let subscription_id = arr[1].as_str().unwrap_or("").to_string();
