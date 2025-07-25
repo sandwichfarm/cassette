@@ -378,13 +378,11 @@ cassette/
 
 ## WebAssembly Interface
 
-Cassettes implement a standardized WebAssembly interface:
+Cassettes implement a simplified WebAssembly interface:
 
 ```rust
-// Required exports
-fn describe() -> String         // Metadata about the cassette
-fn req(ptr, len) -> ptr        // Handle REQ and COUNT messages  
-fn close(ptr, len) -> ptr      // Handle CLOSE messages
+// Core export (v0.5.0+)
+fn send(ptr, len) -> ptr       // Handle all NIP-01 messages (REQ, CLOSE, EVENT, COUNT)
 
 // NIP-11 support (always available)
 fn info() -> ptr               // Relay information document
@@ -398,7 +396,13 @@ fn dealloc_string(ptr, len)
 fn get_allocation_size(ptr) -> size
 ```
 
-This allows cassettes to be loaded by any compatible runtime without language-specific bindings.
+The `send` method accepts any NIP-01 protocol message in JSON format, including:
+- `["REQ", subscription_id, filters...]` - Query events
+- `["CLOSE", subscription_id]` - Close subscription
+- `["EVENT", subscription_id, event]` - Submit event (for compatible cassettes)
+- `["COUNT", subscription_id, filters...]` - Count events (NIP-45)
+
+This unified interface allows cassettes to be loaded by any compatible runtime without language-specific bindings.
 
 ## Advanced Usage
 
@@ -422,9 +426,20 @@ Beyond recording existing events, you can create cassettes programmatically usin
 use cassette_tools::{string_to_ptr, ptr_to_string};
 
 #[no_mangle]
-pub extern "C" fn req(ptr: *const u8, len: usize) -> *mut u8 {
-    let request = ptr_to_string(ptr, len);
-    // Process request, return response
+pub extern "C" fn send(ptr: *const u8, len: usize) -> *mut u8 {
+    let message = ptr_to_string(ptr, len);
+    
+    // Parse the message to determine type
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&message).unwrap();
+    let command = parsed[0].as_str().unwrap();
+    
+    let response = match command {
+        "REQ" => handle_req_command(&parsed),
+        "CLOSE" => handle_close_command(&parsed),
+        "COUNT" => handle_count_command(&parsed),
+        _ => json!(["NOTICE", "Unknown command"]).to_string(),
+    };
+    
     string_to_ptr(response)
 }
 ```
