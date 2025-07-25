@@ -2,9 +2,9 @@
 
 # Cassette
 
-Modular NIP-compatible, portable WebAssembly read-only relays with support for NIP-01, NIP-11, NIP-42, NIP-45, and NIP-50
+A place for your notes. 
 
-## NIP Implementation Status
+## NIPs Look:
 
 - [x] **NIP-01** - Basic Relay Protocol (REQ/EVENT/EOSE/CLOSE)
 - [x] **NIP-11** - Relay Information Document (relay metadata and capabilities)
