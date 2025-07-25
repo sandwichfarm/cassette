@@ -1905,17 +1905,25 @@ async fn handle_connection(
     cassettes: Arc<Vec<(PathBuf, Arc<Module>, Arc<wasmtime::Engine>)>>,
     verbose: bool,
 ) -> Result<()> {
-    // Read the first few bytes to determine if it's HTTP or WebSocket
-    let mut buf = [0u8; 4];
-    let stream = stream;
-    stream.peek(&mut buf).await?;
+    use tokio::io::AsyncReadExt;
     
-    // Check if it's an HTTP request (starts with "GET " or "POST")
-    let is_http = buf.starts_with(b"GET ") || buf.starts_with(b"POST") || buf.starts_with(b"HEAD");
+    // Peek at the request to determine type
+    let mut buffer = vec![0; 1024];
+    let mut stream = stream;
+    let n = stream.peek(&mut buffer).await?;
+    let request = String::from_utf8_lossy(&buffer[..n]);
     
-    if is_http {
+    // Check if it's a NIP-11 request (has application/nostr+json accept header)
+    let is_nip11_request = request.lines().any(|line| {
+        line.to_lowercase().contains("accept") && 
+        line.contains("application/nostr+json")
+    });
+    
+    if is_nip11_request {
+        // Serve NIP-11 JSON
         handle_http_request(stream, cassettes, verbose).await
     } else {
+        // Everything else is WebSocket upgrade
         handle_websocket_connection(stream, cassettes, verbose).await
     }
 }
@@ -1945,7 +1953,7 @@ async fn handle_http_request(
         line.contains("application/nostr+json")
     });
     
-    if has_nip11_header || request.contains("GET /") {
+    if has_nip11_header {
         // Get NIP-11 info from the first cassette (or merge from all)
         if let Some((_, module, engine)) = cassettes.first() {
             let mut store = Store::new(engine, ());
@@ -2034,20 +2042,37 @@ async fn handle_websocket_connection(
                                     if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut *store, "send") {
                                         let memory = instance.get_memory(&mut *store, "memory")
                                             .ok_or_else(|| anyhow!("Memory export not found"))?;
-                                        
-                                        // Allocate and write request
-                                        let bytes = text.as_bytes();
                                         let alloc_func = instance.get_typed_func::<i32, i32>(&mut *store, "alloc_buffer")?;
-                                        let req_ptr = alloc_func.call(&mut *store, bytes.len() as i32)?;
-                                        memory.write(&mut *store, req_ptr as usize, bytes)?;
+                                        let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut *store, "dealloc_string")?;
                                         
-                                        // Call send function
-                                        let result_ptr = send_func.call(&mut *store, (req_ptr, bytes.len() as i32))?;
-                                        
-                                        if result_ptr != 0 {
+                                        // Keep calling send until we get EOSE or no more events
+                                        loop {
+                                            // Allocate and write request
+                                            let bytes = text.as_bytes();
+                                            let req_ptr = alloc_func.call(&mut *store, bytes.len() as i32)?;
+                                            memory.write(&mut *store, req_ptr as usize, bytes)?;
+                                            
+                                            // Call send function
+                                            let result_ptr = send_func.call(&mut *store, (req_ptr, bytes.len() as i32))?;
+                                            
+                                            // Deallocate request memory
+                                            dealloc_func.call(&mut *store, (req_ptr, bytes.len() as i32))?;
+                                            
+                                            if result_ptr == 0 {
+                                                break; // No more events from this cassette
+                                            }
+                                            
                                             let response = read_string_from_memory(&mut *store, instance, &memory, result_ptr)?;
                                             
-                                            // Parse response and filter out duplicate EOSEs
+                                            // Try to deallocate the result
+                                            if let Ok(get_size_func) = instance.get_typed_func::<i32, i32>(&mut *store, "get_allocation_size") {
+                                                let size = get_size_func.call(&mut *store, result_ptr)?;
+                                                if size > 0 {
+                                                    let _ = dealloc_func.call(&mut *store, (result_ptr, size));
+                                                }
+                                            }
+                                            
+                                            // Parse response
                                             if let Ok(parsed_response) = serde_json::from_str::<Value>(&response) {
                                                 if let Some(arr) = parsed_response.as_array() {
                                                     if arr.len() >= 1 && arr[0].as_str() == Some("EOSE") {
@@ -2055,8 +2080,14 @@ async fn handle_websocket_connection(
                                                             all_events.push(parsed_response);
                                                             sent_eose = true;
                                                         }
-                                                    } else {
+                                                        break; // End of events from this cassette
+                                                    } else if arr.len() >= 1 && arr[0].as_str() == Some("EVENT") {
                                                         all_events.push(parsed_response);
+                                                    } else if arr.len() >= 1 && arr[0].as_str() == Some("NOTICE") {
+                                                        all_events.push(parsed_response);
+                                                        if response.contains("No more events") {
+                                                            break;
+                                                        }
                                                     }
                                                 }
                                             }
