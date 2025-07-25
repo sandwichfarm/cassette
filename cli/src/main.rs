@@ -823,8 +823,6 @@ fn process_dub_command(
     cassette_paths: &[PathBuf],
     output_path: &PathBuf,
     name: Option<&str>,
-    description: Option<&str>,
-    author: Option<&str>,
     filter_args: &[String],
     kinds: &[i64],
     authors: &[String],
@@ -1076,8 +1074,6 @@ fn process_dub_command(
     process_events(
         temp_file.to_str().unwrap(),
         cassette_name,
-        "", // description not used anymore
-        "", // author not used anymore
         &output_dir,
         false, // no_bindings
         false, // interactive
@@ -1262,17 +1258,9 @@ enum Commands {
         /// Path to input events.json file (if not provided, reads from stdin)
         input_file: Option<PathBuf>,
 
-        /// Name for the generated cassette
+        /// Name for the generated cassette (used for filename)
         #[arg(short, long)]
         name: Option<String>,
-
-        /// Description for the generated cassette
-        #[arg(short, long)]
-        description: Option<String>,
-
-        /// Author of the cassette
-        #[arg(short, long)]
-        author: Option<String>,
 
         /// Output directory for the generated WASM module
         #[arg(short, long)]
@@ -1324,17 +1312,9 @@ enum Commands {
         /// Output cassette file path
         output: PathBuf,
         
-        /// Name for the generated cassette
+        /// Name for the generated cassette (used for filename)
         #[arg(short, long)]
         name: Option<String>,
-        
-        /// Description for the generated cassette
-        #[arg(short, long)]
-        description: Option<String>,
-        
-        /// Author of the cassette
-        #[arg(short, long)]
-        author: Option<String>,
         
         /// Filter JSON (can be specified multiple times)
         #[arg(short, long, value_name = "JSON")]
@@ -1538,8 +1518,6 @@ fn main() -> Result<()> {
         Commands::Record { 
             input_file, 
             name, 
-            description, 
-            author, 
             output,
             generate: _,
             no_bindings,
@@ -1553,8 +1531,6 @@ fn main() -> Result<()> {
         } => {
             // Set default values if not provided
             let name_value = name.clone().unwrap_or_else(|| "cassette".to_string());
-            let desc_value = description.clone().unwrap_or_else(|| "Generated cassette".to_string());
-            let author_value = author.clone().unwrap_or_else(|| "Cassette CLI".to_string());
             let output_value = output.clone().unwrap_or_else(|| PathBuf::from("./cassettes"));
             
             // Either process from file or stdin
@@ -1566,8 +1542,6 @@ fn main() -> Result<()> {
                 process_events(
                     path.to_str().unwrap(),
                     &name_value,
-                    &desc_value,
-                    &author_value,
                     &output_value,
                     *no_bindings,
                     *interactive,
@@ -1609,8 +1583,6 @@ fn main() -> Result<()> {
                 process_events(
                     temp_file_path_str,
                     &name_value,
-                    &desc_value,
-                    &author_value,
                     &output_value,
                     *no_bindings,
                     *interactive,
@@ -1631,8 +1603,6 @@ fn main() -> Result<()> {
             cassettes,
             output,
             name,
-            description,
-            author,
             filter,
             kinds,
             authors,
@@ -1647,8 +1617,6 @@ fn main() -> Result<()> {
                 cassettes,
                 output,
                 name.as_deref(),
-                description.as_deref(),
-                author.as_deref(),
                 filter,
                 kinds,
                 authors,
@@ -1894,8 +1862,6 @@ fn parse_events_from_file(input_file: &str) -> Result<Vec<Value>> {
 pub fn process_events(
     input_file: &str,
     name: &str,
-    description: &str,
-    author: &str,
     output_dir: &PathBuf,
     _no_bindings: bool,
     interactive: bool,
@@ -1987,8 +1953,6 @@ pub fn process_events(
     
     debugln!(verbose, "\n📦 Cassette Information:");
     debugln!(verbose, "  Name: {}", name);
-    debugln!(verbose, "  Description: {}", description);
-    debugln!(verbose, "  Author: {}", author);
     debugln!(verbose, "  Created: {}", cassette_created);
 
     // Create a temporary directory for building
