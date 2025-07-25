@@ -1240,20 +1240,20 @@ struct Cli {
 /// Common NIP-11 arguments for commands that load cassettes
 #[derive(clap::Args, Clone)]
 struct Nip11Args {
-    /// Relay name for NIP-11
-    #[arg(long = "relay-name")]
+    /// Name for NIP-11
+    #[arg(long = "name")]
     relay_name: Option<String>,
     
-    /// Relay description for NIP-11
-    #[arg(long = "relay-description")]
+    /// Description for NIP-11
+    #[arg(long = "description")]
     relay_description: Option<String>,
     
-    /// Relay owner pubkey for NIP-11
-    #[arg(long = "relay-pubkey")]
+    /// Owner pubkey for NIP-11
+    #[arg(long = "pubkey")]
     relay_pubkey: Option<String>,
     
-    /// Relay contact for NIP-11
-    #[arg(long = "relay-contact")]
+    /// Contact for NIP-11
+    #[arg(long = "contact")]
     relay_contact: Option<String>,
 }
 

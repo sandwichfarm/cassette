@@ -40,7 +40,7 @@ cassette record events.json --name my-notes --nip-50
 
 # Full-featured with relay info (NIP-11 + NIP-45 + NIP-50)
 cassette record events.json --name my-relay --nip-11 --nip-45 --nip-50 \
-  --relay-name "My Archive" --relay-description "Personal event archive"
+  --description "Personal event archive"
 
 # Output: my-notes.wasm
 ```
@@ -76,7 +76,7 @@ cassette play my-notes.wasm --search "nostr" --kinds 1 --limit 10
 
 # COUNT with custom relay info
 cassette play my-notes.wasm --count --kinds 1 \
-  --relay-name "Archive" --relay-description "Event archive"
+  --name "Archive" --description "Event archive"
 ```
 
 ### Dub a Mixtape
@@ -131,15 +131,19 @@ cassette record [OPTIONS] [INPUT_FILE]
 #   --nip-42           Enable NIP-42 (Authentication)
 #   --nip-45           Enable NIP-45 (Event Counts)
 #   --nip-50           Enable NIP-50 (Search Capability)
-#   --relay-name       Relay name for NIP-11
-#   --relay-description Relay description for NIP-11
+#   --name             Name for NIP-11
+#   --description      Description for NIP-11
+#   --contact          Contact for NIP-11
+#   --pubkey           Owner pubkey for NIP-11
+#   --relay-pubkey     Relay owner pubkey for NIP-11
+#   --relay-contact    Relay contact for NIP-11
 
 # Examples:
 nak req -k 30023 wss://relay.nostr.band | cassette record -n "long-form"
 cassette record my-events.json --name "my-backup"
 cassette record events.json --nip-45 --name "countable" # With COUNT support
 cassette record events.json --nip-50 --name "searchable" # With search support
-cassette record events.json --nip-11 --nip-45 --nip-50 --relay-name "Archive"
+cassette record events.json --nip-11 --nip-45 --nip-50 --name "Archive"
 ```
 
 ### `play` - Play cassettes (send a `req`)
@@ -159,7 +163,10 @@ cassette play [OPTIONS] <CASSETTE>
 #   --info             Show NIP-11 relay information
 #   --count            Perform COUNT query (NIP-45)
 #   --search           Search query for NIP-50 text search
-#   --relay-name       Set relay name for dynamic info
+#   --name             Set name for dynamic NIP-11 info
+#   --description      Set description for dynamic NIP-11 info
+#   --contact          Set contact for dynamic NIP-11 info
+#   --pubkey           Set owner pubkey for dynamic NIP-11 info
 
 # Examples:
 cassette play my-notes.wasm --kinds 1 --limit 50
@@ -227,17 +234,17 @@ Always available for basic info. Enables dynamic relay metadata and capability d
 ```bash
 # With static relay information
 cassette record events.json --name my-relay --nip-11 \
-  --relay-name "Personal Archive" \
-  --relay-description "My curated event collection" \
-  --relay-contact "npub1abc..."
+  --description "My curated event collection" \
+  --contact "contact@example.com" \
+  --pubkey "npub1abc..."
 
 # View relay information
 cassette play my-relay.wasm --info
 
 # Dynamic relay info at runtime
 cassette play any-cassette.wasm --info \
-  --relay-name "Custom Name" \
-  --relay-description "Runtime description"
+  --name "Custom Name" \
+  --description "Runtime description"
 ```
 
 #### NIP-45 (Event Counts)
@@ -287,9 +294,9 @@ You can combine multiple NIPs for full-featured cassettes:
 # Full-featured cassette
 cassette record events.json --name full-relay \
   --nip-11 --nip-42 --nip-45 --nip-50 \
-  --relay-name "Complete Archive" \
-  --relay-description "Full-featured Nostr archive" \
-  --relay-contact "contact@example.com"
+  --description "Full-featured Nostr archive" \
+  --contact "contact@example.com" \
+  --pubkey "npub1abc..."
 
 # Test all features
 cassette play full-relay.wasm --info                    # Show relay info
