@@ -13,6 +13,8 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use futures_util::{StreamExt, SinkExt};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use secp256k1::{XOnlyPublicKey, Secp256k1, Message as Secp256k1Message};
+use sha2::{Sha256, Digest};
 
 mod ui;
 
@@ -44,6 +46,204 @@ fn sanitize_filename(name: &str) -> String {
         "bruh".to_string()
     } else {
         sanitized
+    }
+}
+
+/// Validate a Nostr event using rust-nostr
+/// Returns true if the event is valid, false otherwise
+fn validate_nostr_event(event_json: &Value, verbose: bool) -> bool {
+    // Extract required fields from the event JSON
+    let id = match event_json.get("id").and_then(|v| v.as_str()) {
+        Some(id) => id,
+        None => {
+            if verbose {
+                println!("❌ Event missing 'id' field");
+            }
+            return false;
+        }
+    };
+    
+    let pubkey = match event_json.get("pubkey").and_then(|v| v.as_str()) {
+        Some(pk) => pk,
+        None => {
+            if verbose {
+                println!("❌ Event {} missing 'pubkey' field", id);
+            }
+            return false;
+        }
+    };
+    
+    let sig = match event_json.get("sig").and_then(|v| v.as_str()) {
+        Some(sig) => sig,
+        None => {
+            if verbose {
+                println!("❌ Event {} missing 'sig' field", id);
+            }
+            return false;
+        }
+    };
+    
+    let created_at = match event_json.get("created_at").and_then(|v| v.as_i64()) {
+        Some(ts) => ts,
+        None => {
+            if verbose {
+                println!("❌ Event {} missing 'created_at' field", id);
+            }
+            return false;
+        }
+    };
+    
+    let kind = match event_json.get("kind").and_then(|v| v.as_i64()) {
+        Some(k) => k,
+        None => {
+            if verbose {
+                println!("❌ Event {} missing 'kind' field", id);
+            }
+            return false;
+        }
+    };
+    
+    let content = event_json.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    let tags = event_json.get("tags").and_then(|v| v.as_array()).map(|arr| {
+        arr.iter().filter_map(|tag| {
+            if let Some(tag_arr) = tag.as_array() {
+                let tag_strs: Vec<String> = tag_arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
+                if !tag_strs.is_empty() {
+                    Some(tag_strs)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }).collect::<Vec<_>>()
+    }).unwrap_or_default();
+    
+    // Recreate the event ID to verify it matches
+    // Format: [0, pubkey, created_at, kind, tags, content]
+    let mut id_input = format!("[0,\"{}\",{},{},[", pubkey, created_at, kind);
+    
+    for (i, tag) in tags.iter().enumerate() {
+        if i > 0 {
+            id_input.push(',');
+        }
+        id_input.push_str(&serde_json::to_string(tag).unwrap_or_default());
+    }
+    id_input.push_str("],");
+    id_input.push_str(&serde_json::to_string(content).unwrap_or_default());
+    id_input.push(']');
+    
+    // Calculate SHA256 hash
+    let mut hasher = Sha256::new();
+    hasher.update(id_input.as_bytes());
+    let computed_id = hex::encode(hasher.finalize());
+    
+    // Debug output for troubleshooting
+    if verbose {
+        println!("🔍 Event validation debug:");
+        println!("  Input string: {}", id_input);
+        println!("  Expected ID:  {}", id);
+        println!("  Computed ID:  {}", computed_id);
+        println!("  Match: {}", computed_id == id);
+    }
+    
+    // Verify the ID matches
+    if computed_id != id {
+        if verbose {
+            println!("❌ Event {} has invalid ID (computed: {})", id, computed_id);
+        }
+        return false;
+    }
+    
+    // Verify the signature
+    let secp = Secp256k1::new();
+    
+    // Parse pubkey
+    let pubkey_bytes = match hex::decode(pubkey) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            if verbose {
+                println!("❌ Event {} has invalid pubkey format", id);
+            }
+            return false;
+        }
+    };
+    
+    let xonly_pubkey = match XOnlyPublicKey::from_slice(&pubkey_bytes) {
+        Ok(pk) => pk,
+        Err(_) => {
+            if verbose {
+                println!("❌ Event {} has invalid pubkey", id);
+            }
+            return false;
+        }
+    };
+    
+    // Parse signature
+    let sig_bytes = match hex::decode(sig) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            if verbose {
+                println!("❌ Event {} has invalid signature format", id);
+            }
+            return false;
+        }
+    };
+    
+    if sig_bytes.len() != 64 {
+        if verbose {
+            println!("❌ Event {} has invalid signature length", id);
+        }
+        return false;
+    }
+    
+    let signature = match secp256k1::schnorr::Signature::from_slice(&sig_bytes) {
+        Ok(sig) => sig,
+        Err(_) => {
+            if verbose {
+                println!("❌ Event {} has invalid signature", id);
+            }
+            return false;
+        }
+    };
+    
+    // Create message hash for verification
+    let id_bytes = match hex::decode(id) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            if verbose {
+                println!("❌ Event {} has invalid ID format", id);
+            }
+            return false;
+        }
+    };
+    
+    let message = match Secp256k1Message::from_slice(&id_bytes) {
+        Ok(msg) => msg,
+        Err(_) => {
+            if verbose {
+                println!("❌ Event {} cannot create message from ID", id);
+            }
+            return false;
+        }
+    };
+    
+    // Verify signature
+    match secp.verify_schnorr(&signature, &message, &xonly_pubkey) {
+        Ok(_) => {
+            if verbose {
+                println!("✅ Event {} is valid", id);
+            }
+            true
+        }
+        Err(_) => {
+            if verbose {
+                println!("❌ Event {} has invalid signature", id);
+            }
+            false
+        }
     }
 }
 
@@ -497,6 +697,7 @@ fn process_req_command(
     output_format: &str,
     interactive: bool,
     verbose: bool,
+    skip_validation: bool,
     nip11_args: &Nip11Args,
     search_query: Option<&str>,
 ) -> Result<()> {
@@ -634,6 +835,14 @@ fn process_req_command(
                 match arr[0].as_str() {
                     Some("EVENT") => {
                         if arr.len() >= 3 {
+                            // Validate event if validation is not skipped
+                            if !skip_validation {
+                                if !validate_nostr_event(&arr[2], verbose) {
+                                    // Skip invalid event
+                                    continue;
+                                }
+                            }
+                            
                             event_count += 1;
                             all_events.push(arr[2].clone());
                             
@@ -1111,6 +1320,7 @@ fn process_dub_command(
         false, // no_bindings
         false, // interactive
         false, // verbose
+        true, // validate (enabled by default)
         false, // nip_11
         false, // nip_42
         false, // nip_45
@@ -1269,19 +1479,19 @@ struct Cli {
 #[derive(clap::Args, Clone)]
 struct Nip11Args {
     /// Name for NIP-11
-    #[arg(long = "name")]
+    #[arg(long = "relay-name")]
     relay_name: Option<String>,
     
     /// Description for NIP-11
-    #[arg(long = "description")]
+    #[arg(long = "relay-description")]
     relay_description: Option<String>,
     
     /// Owner pubkey for NIP-11
-    #[arg(long = "pubkey")]
+    #[arg(long = "relay-pubkey")]
     relay_pubkey: Option<String>,
     
     /// Contact for NIP-11
-    #[arg(long = "contact")]
+    #[arg(long = "relay-contact")]
     relay_contact: Option<String>,
 }
 
@@ -1317,6 +1527,10 @@ enum Commands {
         /// Show verbose output including compilation details
         #[arg(short, long)]
         verbose: bool,
+        
+        /// Skip validation of Nostr events (validation is enabled by default)
+        #[arg(long)]
+        skip_validation: bool,
         
         /// Enable NIP-11 (Relay Information Document)
         #[arg(long)]
@@ -1426,6 +1640,10 @@ enum Commands {
         /// Show verbose output including compilation details
         #[arg(short, long)]
         verbose: bool,
+        
+        /// Skip validation of returned Nostr events (validation is enabled by default)
+        #[arg(long)]
+        skip_validation: bool,
         
         /// Show NIP-11 relay information instead of playing events
         #[arg(long)]
@@ -1557,6 +1775,7 @@ fn main() -> Result<()> {
             no_bindings,
             interactive,
             verbose,
+            skip_validation,
             nip_11,
             nip_42,
             nip_45,
@@ -1581,6 +1800,7 @@ fn main() -> Result<()> {
                     *no_bindings,
                     *interactive,
                     *verbose,
+                    !*skip_validation,
                     *nip_11,
                     *nip_42,
                     *nip_45,
@@ -1622,6 +1842,7 @@ fn main() -> Result<()> {
                     *no_bindings,
                     *interactive,
                     *verbose,
+                    !*skip_validation,
                     *nip_11,
                     *nip_42,
                     *nip_45,
@@ -1675,6 +1896,7 @@ fn main() -> Result<()> {
             output,
             interactive,
             verbose,
+            skip_validation,
             info,
             count,
             search,
@@ -1711,6 +1933,7 @@ fn main() -> Result<()> {
                     output,
                     *interactive,
                     *verbose,
+                    *skip_validation,
                     nip11,
                     search.as_deref(),
                 )
@@ -1901,6 +2124,7 @@ pub fn process_events(
     _no_bindings: bool,
     interactive: bool,
     verbose: bool,
+    validate: bool,
     nip_11: bool,
     nip_42: bool,
     nip_45: bool,
@@ -1954,10 +2178,35 @@ pub fn process_events(
     
     // Preprocess events to handle replaceable and addressable events
     debugln!(verbose, "\n🔍 Preprocessing events according to NIP-01...");
-    let processed_events = preprocess_events(original_events);
+    let mut processed_events = preprocess_events(original_events);
+    
+    // Validate events if validation is enabled
+    if validate {
+        debugln!(verbose, "\n🔍 Validating Nostr events...");
+        let original_count = processed_events.len();
+        processed_events = processed_events.into_iter()
+            .filter(|event| validate_nostr_event(event, verbose))
+            .collect();
+        let valid_count = processed_events.len();
+        let invalid_count = original_count - valid_count;
+        
+        if verbose {
+            println!("✅ Valid events: {}", valid_count);
+            if invalid_count > 0 {
+                println!("❌ Invalid events filtered out: {}", invalid_count);
+            }
+        }
+        
+        if invalid_count > 0 {
+            println!("⚠️  Filtered out {} invalid events", invalid_count);
+        }
+    }
     
     debugln!(verbose, "\n📊 Final Event Summary:");
-    debugln!(verbose, "  Total events after preprocessing: {}", processed_events.len());
+    debugln!(verbose, "  Total events after preprocessing{}: {}", 
+        if validate { " and validation" } else { "" }, 
+        processed_events.len()
+    );
     
     // Sample of events
     if verbose {
