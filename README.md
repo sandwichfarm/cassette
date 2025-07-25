@@ -1,3 +1,5 @@
+> ATTENTION: Alpha! WASM interface is being standardized, cassettes you make today might be broken tomorrow.
+
 # Cassette
 
 Modular NIP-compatible, portable WebAssembly read-only relays with support for NIP-01, NIP-11, NIP-42, NIP-45, and NIP-50
