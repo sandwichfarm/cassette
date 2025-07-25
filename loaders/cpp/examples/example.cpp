@@ -12,9 +12,9 @@ int main(int argc, char* argv[]) {
         // Load cassette with debug enabled
         cassette::Cassette cassette(argv[1], true);
         
-        // Get and display description
-        std::string desc = cassette.describe();
-        std::cout << "Cassette Description:" << std::endl;
+        // Get and display info
+        std::string desc = cassette.info();
+        std::cout << "Cassette Info:" << std::endl;
         std::cout << desc << std::endl << std::endl;
         
         // Create a REQ message
