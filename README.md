@@ -1,4 +1,4 @@
-> ATTENTION: Alpha! WASM interface is being standardized, cassettes you make today might be broken tomorrow.
+> ATTENTION: Alpha! WASM interface is being standardized, cassettes you make today might be broken tomorrow. 
 
 # Cassette
 
@@ -434,6 +434,10 @@ See `cassette-tools/` for the full API.
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+AI Tips:
+1. Use BDD! Write tests and Docs First. The default agent on this repo uses tests and docs as its North Star.
+2. Use Context Programming for mission critical features. AKA Don't vibe API or business logic, but yes vibe interfaces, SPAs and prototypes.
 
 ## License
 
