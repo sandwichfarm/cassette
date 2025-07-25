@@ -3,7 +3,7 @@ use super::components::{Counter, ProgressBar, EventTypeIndicator};
 use super::colors;
 use crossterm::{
     execute,
-    style::{Color, Print, ResetColor, SetForegroundColor, Stylize},
+    style::{Color, Print, ResetColor, SetForegroundColor},
     cursor,
     terminal::{self, ClearType},
 };

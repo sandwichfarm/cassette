@@ -1,6 +1,5 @@
-use crossterm::style::{Color, Stylize, StyledContent};
+use crossterm::style::{Color, Stylize};
 use super::colors;
-use std::time::Duration;
 
 pub struct Counter {
     value: u64,

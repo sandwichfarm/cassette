@@ -2,27 +2,57 @@
 
 # Cassette 📼
 
-Portable WASM nostr relays. Read-only. Protocol Compliant. Happy place for notes.
+Portable nostr relays that you can scrub, dub and cast notes from. Mostly rust, compiled to WASM.
+
+## What is a Cassette?
+
+A cassette is a WebAssembly module containing Nostr events that implements the Nostr relay protocol. Think of it as a portable, queryable database that runs anywhere WebAssembly does - browsers, servers, edge workers, or CLI tools.
+
+### Use Cases
+
+- **Archival**: Store important events in a portable format
+- **Testing**: Create deterministic test fixtures for Nostr clients
+- **Offline**: Query events without network access
+- **Distribution**: Share curated event collections
+- **Privacy**: Keep events local while maintaining relay compatibility
+
+## What's New in v0.6.2
+
+- **🎚️ Renamed commands for better tape metaphor**:
+  - `play` → `scrub` (moving through cassette content)
+  - `cast` → `play` (playing cassette to relays)
+- **🌐 Enhanced `listen` command**: Serve cassettes as a WebSocket relay with NIP-11 support
+- **🎛️ New `deck` command**: Run a full Nostr relay with cassette storage backend, or continuously record from other relays
+- **🔧 NIP-11 improvements**: Added `software` and `version` fields to relay information
+- **🐛 Bug fixes**: Fixed WebSocket connection state issues in the server
+
+> **Note**: The old commands (`play`, `cast`, `listen`) are deprecated but still work with warnings. Please use the new commands.
+
+## NIPs Look:
+
+- [x] **NIP-01** - Basic Relay Protocol (REQ/EVENT/EOSE/CLOSE)
+- [x] **NIP-11** - Relay Information Document (relay metadata and capabilities)
+- [ ] **NIP-42** - Authentication (framework implemented, functionality planned)
+- [x] **NIP-45** - Event Counts (COUNT queries for efficient event counting)
+- [x] **NIP-50** - Search Capability (text search with relevance ranking)
 
 ## Table of Contents
 
-- [What's New](#whats-new-in-v062)
-- [NIPs Support](#nips-look)
 - [Quick Start](#quick-start)
   - [Prerequisites](#prerequisites)
   - [Record a cassette](#record-a-cassette)
   - [Scrub through a cassette](#scrub-through-a-cassette)
   - [Dub a Mixtape](#dub-a-mixtape)
-  - [Cast to Relays](#cast-to-relays)
-  - [Listen - Serve cassettes as a relay](#listen---serve-cassettes-as-a-relay)
-- [What is a Cassette?](#what-is-a-cassette)
-  - [Use Cases](#use-cases)
+  - [Play to Relays](#play-to-relays)
+  - [Listen - Serve cassettes as relay](#listen---serve-cassettes-as-relay)
+  - [Deck - Continuous record and serve](#deck---continuous-record-and-serve)
 - [CLI Commands](#cli-commands)
   - [`record`](#record---record-events-onto-cassettes)
   - [`scrub`](#scrub---scrub-through-cassettes-send-a-req)
   - [`dub`](#dub---combine-cassettes-into-a-mixtape)
-  - [`cast`](#cast---broadcast-events-to-nostr-relays)
-  - [`listen`](#listen---serve-cassettes-as-a-websocket-relay)
+  - [`play`](#play---play-events-to-nostr-relays)
+  - [`listen`](#listen---serve-cassettes-as-websocket-relay)
+  - [`deck`](#deck---continuous-record-and-serve)
 - [Advanced Configuration](#advanced-configuration)
   - [Modular NIP Support](#modular-nip-support)
     - [NIP-01 (Basic Relay Protocol)](#nip-01-basic-relay-protocol)
@@ -36,30 +66,13 @@ Portable WASM nostr relays. Read-only. Protocol Compliant. Happy place for notes
 - [Building from Source](#building-from-source)
 - [Project Structure](#project-structure)
 - [WebAssembly Interface](#webassembly-interface)
-- [Language Loaders](#language-loaders)
+- [Tape Decks](#tape-decks)
 - [Advanced Usage](#advanced-usage)
   - [Running Cassettes as Relays](#running-cassettes-as-relays)
   - [Creating Custom Cassettes](#creating-custom-cassettes)
 - [Contributing](#contributing)
 - [Migration Guide](#migration-guide)
 - [License](#license)
-
-## What's New in v0.6.2
-
-- **🎚️ Renamed `play` to `scrub`**: Better reflects the analog tape metaphor of moving through content
-- **🌐 New `listen` command**: Serve cassettes as a WebSocket relay with NIP-11 support
-- **🔧 NIP-11 improvements**: Added `software` and `version` fields to relay information
-- **🐛 Bug fixes**: Fixed WebSocket connection state issues in the listen server
-
-> **Note**: The `play` command is deprecated but still works with a warning. Please use `scrub` instead.
-
-## NIPs Look:
-
-- [x] **NIP-01** - Basic Relay Protocol (REQ/EVENT/EOSE/CLOSE)
-- [x] **NIP-11** - Relay Information Document (relay metadata and capabilities)
-- [ ] **NIP-42** - Authentication (framework implemented, functionality planned)
-- [x] **NIP-45** - Event Counts (COUNT queries for efficient event counting)
-- [x] **NIP-50** - Search Capability (text search with relevance ranking)
 
 ## Quick Start
 
@@ -72,31 +85,17 @@ _**Knowledge is power:** The `cli` includes an ability to both `record` and `scr
 
 ### Record a cassette
 
-_Pipe the events or provide the path to a json file with events._
-
 ```bash
-# Basic cassette (NIP-01 only)
+# From a relay
 nak req -k 1 -l 100 wss://nos.lol | cassette record --name my-notes
 
 # From a file
 cassette record events.json --name my-notes
 
-# With COUNT support (NIP-45)
-cassette record events.json --name my-notes --nip-45
-
-# With search support (NIP-50)
-cassette record events.json --name my-notes --nip-50
-
-# Full-featured with relay info (NIP-11 + NIP-45 + NIP-50)
-cassette record events.json --name my-relay --nip-11 --nip-45 --nip-50 \
-  --relay-description "Personal event archive"
-
 # Output: my-notes.wasm
 ```
 
 ### Scrub through a cassette
-
-_Scrub through events like rewinding an analog tape - dump all events or use filters_
 
 ```bash
 # Get all events
@@ -105,82 +104,45 @@ cassette scrub my-notes.wasm
 # Filter by kind
 cassette scrub my-notes.wasm --kinds 1
 
-# Filter by author
-cassette scrub my-notes.wasm --authors npub1...
-
-# Multiple filters
-cassette scrub my-notes.wasm --kinds 1 --kinds 7 --limit 10
-
-# Get relay information (NIP-11)
-cassette scrub my-notes.wasm --info
-
-# COUNT events (NIP-45)
-cassette scrub my-notes.wasm --count --kinds 1
-
-# Search events (NIP-50)  
-cassette scrub my-notes.wasm --search "bitcoin lightning"
-
-# Search with filters
-cassette scrub my-notes.wasm --search "nostr" --kinds 1 --limit 10
-
-# COUNT with custom relay info
-cassette scrub my-notes.wasm --count --kinds 1 \
-  --name "Archive" --description "Event archive"
+# Search events
+cassette scrub my-notes.wasm --search "bitcoin"
 ```
 
 ### Dub a Mixtape
 
 ```bash
-# Merge cassettes
 cassette dub alice.wasm bob.wasm combined.wasm
-
-# Merge with filters
-cassette dub *.wasm filtered.wasm --kinds 1 --since 1700000000
 ```
 
-### Cast to Relays
+### Play to Relays
 
 ```bash
-# Broadcast events to a relay
-cassette cast my-notes.wasm --relays wss://relay.damus.io
-
-# Broadcast to multiple relays
-cassette cast *.wasm --relays wss://nos.lol wss://relay.nostr.band
-
-# Test with dry-run
-cassette cast archive.wasm --relays ws://localhost:7000 --dry-run
+cassette play my-notes.wasm --relays wss://relay.damus.io
 ```
 
-### Listen - Serve cassettes as a relay
+### Listen - Serve cassettes as relay
 
 ```bash
-# Serve a single cassette as a WebSocket relay (auto-selects port)
 cassette listen my-notes.wasm
-
-# Serve multiple cassettes on a specific port
-cassette listen *.wasm --port 8080
-
-# Serve cassettes from a directory on all interfaces
-cassette listen cassettes/*.wasm --bind 0.0.0.0 --port 1337
-
-# Verbose mode to see connections
-cassette listen archive.wasm --verbose
 
 # Connect with any Nostr client
 nak req ws://localhost:7777 -k 1 -l 10
 ```
 
-## What is a Cassette?
+### Deck - Full relay with cassette backend
 
-A cassette is a WebAssembly module containing Nostr events that implements the Nostr relay protocol. Cassettes support modular NIP implementations including NIP-01 (basic relay protocol), NIP-11 (relay information document), NIP-42 (authentication), and NIP-45 (event counts). Think of it as a portable, queryable database that runs anywhere WebAssembly does - browsers, servers, edge workers, or CLI tools.
+```bash
+# Run a writable relay (default mode)
+cassette deck --name my-relay
 
-### Use Cases
+# Record from other relays (record mode)
+cassette deck --mode record --relays wss://relay.damus.io
 
-- **Archival**: Store important events in a portable format
-- **Testing**: Create deterministic test fixtures for Nostr clients
-- **Offline**: Query events without network access
-- **Distribution**: Share curated event collections
-- **Privacy**: Keep events local while maintaining relay compatibility
+# Connect to your deck relay
+nak req ws://localhost:7777 -k 1 -l 10
+nak event ws://localhost:7777 '{"content": "Hello cassette deck!"}'
+```
+
 
 ## CLI Commands
 
@@ -205,11 +167,40 @@ cassette record [OPTIONS] [INPUT_FILE]
 #   --relay-pubkey     Owner pubkey for NIP-11
 
 # Examples:
+# Basic recording from relay
+nak req -k 1 -l 100 wss://nos.lol | cassette record --name "my-notes"
+
+# Record specific kinds from relay
 nak req -k 30023 wss://relay.nostr.band | cassette record -n "long-form"
+
+# From JSON file
 cassette record my-events.json --name "my-backup"
-cassette record events.json --nip-45 --name "countable" # With COUNT support
-cassette record events.json --nip-50 --name "searchable" # With search support
-cassette record events.json --nip-11 --nip-45 --nip-50 --name "Archive"
+
+# From NDJSON stream
+cat events.ndjson | cassette record --name "stream-backup"
+
+# With author metadata
+cassette record events.json --name "curated" --author "Alice" \
+  --description "Curated Bitcoin discussions"
+
+# Enable COUNT support (NIP-45)
+cassette record events.json --nip-45 --name "countable"
+
+# Enable search support (NIP-50)
+cassette record events.json --nip-50 --name "searchable"
+
+# Full-featured relay with all NIPs
+cassette record events.json --nip-11 --nip-45 --nip-50 --name "full-relay" \
+  --relay-name "My Archive" \
+  --relay-description "Personal event archive with search" \
+  --relay-contact "admin@example.com" \
+  --relay-pubkey "npub1..."
+
+# Record from multiple relays
+nak req -k 1 wss://relay.damus.io wss://nos.lol | cassette record -n "multi-relay"
+
+# Custom output directory
+cassette record events.json --name "backup" --output ./backups/2024
 ```
 
 ### `scrub` - Scrub through cassettes (send a `req`)
@@ -235,9 +226,45 @@ cassette scrub [OPTIONS] <CASSETTE>
 #   --relay-pubkey     Set owner pubkey for dynamic NIP-11 info
 
 # Examples:
-cassette scrub my-notes.wasm --kinds 1 --limit 50
+# Basic queries
+cassette scrub my-notes.wasm                        # Get all events
+cassette scrub my-notes.wasm --kinds 1 --limit 50   # Text notes only
+cassette scrub my-notes.wasm --kinds 0 --kinds 3    # Metadata and contacts
+
+# Filter by author
+cassette scrub archive.wasm --authors npub1abc... --authors npub1def...
+
+# Time-based filtering
+cassette scrub events.wasm --since 1700000000 --until 1700100000
+
+# Complex filter JSON
 cassette scrub archive.wasm --filter '{"#t": ["bitcoin", "lightning"]}'
+cassette scrub events.wasm --filter '{"#p": ["npub1..."], "kinds": [1, 7]}'
+
+# Output formats
 cassette scrub events.wasm --output ndjson | grep "pattern"
+cassette scrub events.wasm --output json | jq '.[] | select(.kind == 1)'
+
+# NIP-11 relay information
+cassette scrub relay.wasm --info
+cassette scrub any.wasm --info --relay-name "Custom Name" \
+  --relay-description "Runtime description"
+
+# COUNT queries (NIP-45)
+cassette scrub events.wasm --count --kinds 1        # Count text notes
+cassette scrub events.wasm --count --authors npub1... # Count by author
+cassette scrub events.wasm --count --since 1700000000 # Count recent
+
+# Search queries (NIP-50)
+cassette scrub search.wasm --search "bitcoin"
+cassette scrub search.wasm --search "nostr protocol" --kinds 1
+cassette scrub search.wasm --search "lightning" --limit 20
+
+# Combine search with filters
+cassette scrub data.wasm --search "bitcoin" --kinds 1 --authors npub1...
+
+# Interactive mode with visual UI
+cassette scrub my-notes.wasm --interactive
 ```
 
 ### `dub` - Combine cassettes into a Mixtape
@@ -257,15 +284,45 @@ cassette dub [OPTIONS] <CASSETTES...> <OUTPUT>
 #   --until            Events before timestamp
 
 # Examples:
+# Basic merge
 cassette dub cassette1.wasm cassette2.wasm combined.wasm
+
+# Merge all cassettes in directory
 cassette dub *.wasm all-events.wasm --name "Complete Archive"
+
+# Merge with metadata
+cassette dub alice.wasm bob.wasm carol.wasm team.wasm \
+  --name "Team Notes" \
+  --description "Combined notes from the team" \
+  --author "Team Lead"
+
+# Filter during merge
 cassette dub raw/*.wasm clean.wasm --kinds 1 --kinds 30023
+cassette dub *.wasm recent.wasm --since 1700000000
+cassette dub *.wasm limited.wasm --limit 1000
+
+# Merge specific authors only
+cassette dub full/*.wasm authors.wasm \
+  --authors npub1abc... --authors npub1def...
+
+# Time window merge
+cassette dub archive/*.wasm january.wasm \
+  --since 1704067200 --until 1706745600
+
+# Create curated collection
+cassette dub raw/*.wasm curated.wasm \
+  --filter '{"#t": ["bitcoin", "lightning"], "kinds": [1, 30023]}' \
+  --name "Bitcoin & Lightning Content" \
+  --description "Curated Bitcoin and Lightning discussions"
+
+# Merge and enable search
+cassette dub *.wasm searchable.wasm --nip-50 --name "Searchable Archive"
 ```
 
-### `cast` - Broadcast events to Nostr relays
+### `play` - Play events to Nostr relays
 
 ```bash
-cassette cast [OPTIONS] <CASSETTES...> --relays <RELAYS...>
+cassette play [OPTIONS] <CASSETTES...> --relays <RELAYS...>
 
 # Options:
 #   -r, --relays       Target relay URLs (required)
@@ -275,12 +332,38 @@ cassette cast [OPTIONS] <CASSETTES...> --relays <RELAYS...>
 #   --dry-run          Preview without sending
 
 # Examples:
-cassette cast events.wasm --relays wss://relay.damus.io
-cassette cast *.wasm --relays wss://nos.lol wss://relay.nostr.band
-cassette cast archive.wasm --relays ws://localhost:7000 --dry-run
+# Basic play to single relay
+cassette play events.wasm --relays wss://relay.damus.io
+
+# Play to multiple relays
+cassette play *.wasm --relays wss://nos.lol wss://relay.nostr.band
+
+# Play multiple cassettes
+cassette play alice.wasm bob.wasm --relays wss://relay.damus.io
+
+# Test with dry-run (preview without sending)
+cassette play archive.wasm --relays ws://localhost:7000 --dry-run
+
+# Adjust concurrency for large broadcasts
+cassette play huge-archive.wasm --relays wss://relay.damus.io \
+  --concurrency 10 --throttle 50
+
+# Set custom timeout for slow relays
+cassette play events.wasm --relays wss://slow-relay.example.com \
+  --timeout 60
+
+# Play from multiple directories
+cassette play 2023/*.wasm 2024/*.wasm --relays wss://archive.relay.io
+
+# Verbose output to see progress
+cassette play my-notes.wasm --relays wss://relay.damus.io --verbose
+
+# Play with custom NIP-11 metadata
+cassette play events.wasm --relays wss://relay.damus.io \
+  --relay-name "My Backup" --relay-description "Personal archive"
 ```
 
-### `listen` - Serve cassettes as a WebSocket relay
+### `listen` - Serve cassettes as WebSocket relay
 
 ```bash
 cassette listen [OPTIONS] <CASSETTES...>
@@ -294,10 +377,131 @@ cassette listen [OPTIONS] <CASSETTES...>
 #   -v, --verbose      Show connection details
 
 # Examples:
-cassette listen my-notes.wasm                                    # Auto-select port
-cassette listen *.wasm --port 8080                              # Serve all cassettes
-cassette listen dir/*.wasm --bind 0.0.0.0 --port 1337          # Listen on all interfaces
-cassette listen archive.wasm --verbose                          # Debug mode
+# Serve single cassette (auto-selects port)
+cassette listen my-notes.wasm
+
+# Serve on specific port
+cassette listen *.wasm --port 8080
+
+# Serve from multiple directories
+cassette listen cassettes/*.wasm archives/*.wasm --port 7777
+
+# Listen on all interfaces (accessible from network)
+cassette listen dir/*.wasm --bind 0.0.0.0 --port 1337
+
+# Enable HTTPS/WSS with auto-generated certificate
+cassette listen secure.wasm --tls --port 443
+
+# Use custom TLS certificate
+cassette listen relay.wasm --tls \
+  --tls-cert /path/to/cert.pem \
+  --tls-key /path/to/key.pem \
+  --port 443
+
+# Verbose mode to see connections
+cassette listen archive.wasm --verbose
+
+# Serve specific cassettes by name
+cassette listen alice.wasm bob.wasm carol.wasm --port 8080
+
+# Production deployment
+cassette listen /var/cassettes/*.wasm \
+  --bind 0.0.0.0 \
+  --port 80 \
+  --tls \
+  --verbose
+```
+
+### `deck` - Full relay with cassette backend
+
+```bash
+cassette deck [OPTIONS]
+
+# Options:
+#   -m, --mode         Mode: 'relay' (default) or 'record'
+#   -r, --relays       Relay URLs to record from (record mode only)
+#   -n, --name         Base name for cassettes (default: deck)
+#   -o, --output       Output directory (default: ./deck)
+#   -p, --port         Port to serve on (default: 7777)
+#   --bind             Bind address (default: 127.0.0.1)
+#   -e, --event-limit  Max events per cassette (default: 10000)
+#   -s, --size-limit   Max cassette size in MB (default: 100)
+#   -d, --duration     Recording duration per cassette in seconds (default: 3600)
+#   -f, --filter       Custom filter JSON (record mode only)
+#   -k, --kinds        Event kinds to record (record mode only)
+#   -a, --authors      Authors to filter (record mode only)
+#   --nip-11           Enable NIP-11 support
+#   --nip-45           Enable NIP-45 (COUNT) support
+#   --nip-50           Enable NIP-50 (search) support
+#   -v, --verbose      Show verbose output
+#   --skip-validation  Skip event validation (relay mode)
+
+# Examples:
+
+## RELAY MODE (default) - Run a full Nostr relay
+# Basic writable relay
+cassette deck
+
+# Custom configuration
+cassette deck --name my-relay --event-limit 50000 --port 8080
+
+# Production relay with all features
+cassette deck --name production \
+  --output /var/cassettes \
+  --bind 0.0.0.0 \
+  --port 443 \
+  --nip-11 --nip-45 --nip-50 \
+  --relay-name "My Cassette Relay" \
+  --relay-description "High-performance relay with cassette storage" \
+  --relay-contact "admin@example.com"
+
+# Test relay with validation disabled
+cassette deck --skip-validation --verbose
+
+# Custom rotation settings
+cassette deck --event-limit 100000 --size-limit 500 --duration 7200
+
+## RECORD MODE - Mirror and archive other relays
+# Record from single relay
+cassette deck --mode record --relays wss://relay.damus.io
+
+# Record from multiple relays
+cassette deck --mode record \
+  --relays wss://nos.lol wss://relay.nostr.band \
+  --name archive
+
+# Filter specific kinds
+cassette deck --mode record \
+  --relays wss://relay.damus.io \
+  --kinds 1 --kinds 30023
+
+# Record specific authors
+cassette deck --mode record \
+  --relays wss://relay.nostr.band \
+  --authors npub1alice... --authors npub1bob...
+
+# Custom filter JSON
+cassette deck --mode record \
+  --relays wss://relay.nostr.band \
+  --filter '{"#t": ["bitcoin", "lightning"]}'
+
+# Features:
+## Relay Mode:
+# - Full NIP-01 compliant Nostr relay
+# - Accepts and stores EVENT messages from clients
+# - Automatic cassette rotation based on limits
+# - Serves both current buffer and archived cassettes
+# - Hot-loads newly compiled cassettes
+# - Optional event validation
+# - NIP-11 relay information support
+
+## Record Mode:
+# - Connects to other relays as a client
+# - Records events matching filters
+# - Compiles cassettes in background
+# - Serves recorded cassettes via WebSocket
+# - Automatic reconnection on failure
+# - Supports complex filtering
 
 # Features:
 # - Serves cassettes as a NIP-01 compliant WebSocket relay
@@ -465,13 +669,13 @@ cargo build --release
 cassette/
 ├── cli/                    # Command-line interface
 ├── cassette-tools/         # Core WASM functionality and modular NIP support
-├── loaders/                # Language-specific cassette loaders
-│   ├── js/                 # JavaScript/TypeScript loader
-│   ├── py/                 # Python loader
-│   ├── rust/               # Rust loader
-│   ├── go/                 # Go loader
-│   ├── cpp/                # C++ loader
-│   └── dart/               # Dart loader
+├── loaders/                # Language-specific tape decks
+│   ├── js/                 # JavaScript/TypeScript deck
+│   ├── py/                 # Python deck
+│   ├── rust/               # Rust deck
+│   ├── go/                 # Go deck
+│   ├── cpp/                # C++ deck
+│   └── dart/               # Dart deck
 ├── boombox/               # WebSocket relay server for cassettes
 └── gui/                   # Web interface for testing
 ```
@@ -480,7 +684,7 @@ cassette/
 
 - **CLI**: Command-line tool for creating and querying cassettes
 - **Cassette Tools**: Rust library providing memory management and modular NIP implementations (NIP-01, NIP-11, NIP-42, NIP-45, NIP-50)
-- **Loaders**: Language-specific libraries for loading and executing cassettes in JavaScript/TypeScript, Python, Rust, Go, C++, and Dart
+- **Tape Decks**: Language-specific libraries for playing cassettes in JavaScript/TypeScript, Python, Rust, Go, C++, and Dart
 - **Boombox**: WebSocket server that serves cassettes as Nostr relays
 - **GUI**: Web interface for testing cassettes in the browser
 
@@ -512,17 +716,17 @@ The `send` method accepts any NIP-01 protocol message in JSON format, including:
 
 This unified interface allows cassettes to be loaded by any compatible runtime without language-specific bindings.
 
-## Language Loaders
+## Tape Decks
 
-Cassette provides official loaders for multiple programming languages, allowing you to integrate cassettes into your applications regardless of your tech stack. All loaders implement the same interface and provide consistent functionality across languages.
+Cassette provides official tape decks for multiple programming languages, allowing you to play cassettes in your applications regardless of your tech stack. All tape decks implement the same interface and provide consistent functionality across languages.
 
-### Available Loaders
+### Available Tape Decks
 
 #### JavaScript/TypeScript
 - **Package**: `cassette-loader`
 - **Installation**: `npm install cassette-loader`
 - **Features**: Browser and Node.js support, TypeScript definitions, event deduplication
-- **[Documentation](./loaders/js/README.md)**
+- **[Tape Deck Documentation](./loaders/js/README.md)**
 
 ```javascript
 import { loadCassette } from 'cassette-loader';
@@ -538,7 +742,7 @@ if (result.success) {
 - **Package**: `cassette-loader`
 - **Installation**: `pip install cassette-loader`
 - **Features**: Memory management, event deduplication, debug mode
-- **[Documentation](./loaders/py/README.md)**
+- **[Tape Deck Documentation](./loaders/py/README.md)**
 
 ```python
 from cassette_loader import load_cassette
@@ -553,7 +757,7 @@ if result['success']:
 - **Crate**: `cassette-loader`
 - **Installation**: Add to `Cargo.toml`
 - **Features**: Native performance, thread-safe event tracking, comprehensive error handling
-- **[Documentation](./loaders/rust/README.md)**
+- **[Tape Deck Documentation](./loaders/rust/README.md)**
 
 ```rust
 use cassette_loader::Cassette;
@@ -566,7 +770,7 @@ let response = cassette.send(r#"["REQ", "sub1", {"kinds": [1]}]"#)?;
 - **Package**: `github.com/cassette/loaders/go`
 - **Installation**: `go get github.com/cassette/loaders/go`
 - **Features**: Thread-safe operations, debug logging
-- **[Documentation](./loaders/go/README.md)**
+- **[Tape Deck Documentation](./loaders/go/README.md)**
 
 ```go
 import cassette "github.com/cassette/loaders/go"
@@ -579,7 +783,7 @@ result, err := c.Send(`["REQ", "sub1", {"kinds": [1]}]`)
 - **Library**: `cassette-loader`
 - **Installation**: CMake integration
 - **Features**: Exception-based error handling, MSGB format support
-- **[Documentation](./loaders/cpp/README.md)**
+- **[Tape Deck Documentation](./loaders/cpp/README.md)**
 
 ```cpp
 #include <cassette_loader.hpp>
@@ -592,7 +796,7 @@ std::string response = cassette.send(R"(["REQ", "sub1", {"kinds": [1]}])");
 - **Package**: `cassette_loader`
 - **Installation**: Add to `pubspec.yaml`
 - **Features**: Web support, async operations
-- **[Documentation](./loaders/dart/README.md)**
+- **[Tape Deck Documentation](./loaders/dart/README.md)**
 
 ```dart
 import 'package:cassette_loader/cassette_loader.dart';
@@ -603,23 +807,23 @@ final response = cassette.send('["REQ", "sub1", {"kinds": [1]}]');
 
 ### Common Features
 
-All loaders provide:
+All tape decks provide:
 - **Unified Interface**: Single `send()` method for all NIP-01 messages
 - **Event Deduplication**: Automatic filtering of duplicate events
 - **Memory Management**: Proper handling of WASM memory allocation/deallocation
 - **Debug Support**: Optional verbose logging for troubleshooting
 - **Error Handling**: Consistent error reporting across languages
 
-### Creating Your Own Loader
+### Creating Your Own Tape Deck
 
-If you need to create a loader for a language not listed above, implement these core functions:
+If you need to create a tape deck for a language not listed above, implement these core functions:
 
 1. **Load WASM module** - Instantiate the WebAssembly module
 2. **Memory management** - Handle string passing between host and WASM
 3. **Call `send()` function** - Pass messages and retrieve responses
 4. **Event tracking** - Implement deduplication for EVENT messages
 
-See the existing loader implementations for reference patterns.
+See the existing tape deck implementations for reference patterns.
 
 ## Advanced Usage
 
@@ -674,9 +878,11 @@ AI Tips:
 ## Migration Guide
 
 ### v0.6.2
-- The `play` command has been renamed to `scrub` to better reflect the analog tape metaphor
-- The old `play` command still works but shows a deprecation warning
-- Update your scripts to use `cassette scrub` instead of `cassette play`
+- Command renames for better analog tape metaphor:
+  - `cassette play` → `cassette scrub` (view cassette contents)
+  - `cassette cast` → `cassette play` (play to relays)
+- The old commands still work but show deprecation warnings
+- Update your scripts to use the new command names
 - NIP-11 relay info now includes `software` and `version` fields automatically
 
 ## License

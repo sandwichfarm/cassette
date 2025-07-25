@@ -1,4 +1,3 @@
-use std::time::Duration;
 use crossterm::style::{Color, Stylize};
 
 pub struct TapeReel {
@@ -133,7 +132,7 @@ impl Waveform {
     pub fn render(&self, color: Color) -> Vec<String> {
         let mut lines = vec![String::new(); self.height];
         
-        for (x, &value) in self.data.iter().enumerate() {
+        for (_x, &value) in self.data.iter().enumerate() {
             let y = ((1.0 - value) * self.height as f32 / 2.0) as usize;
             let y = y.clamp(0, self.height - 1);
             
