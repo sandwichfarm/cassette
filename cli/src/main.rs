@@ -16,6 +16,30 @@ use tokio::sync::Mutex;
 
 mod ui;
 
+/// Sanitize a name for use as a filename
+/// Converts to lowercase, replaces spaces with hyphens, removes special characters
+fn sanitize_filename(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else if c.is_whitespace() {
+                '-'
+            } else {
+                // Remove all other characters
+                '\0'
+            }
+        })
+        .filter(|&c| c != '\0')
+        .collect::<String>()
+        // Remove consecutive hyphens
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 // Macro for debug output that only prints in verbose mode
 macro_rules! debugln {
     ($verbose:expr, $($arg:tt)*) => {
@@ -35,6 +59,7 @@ mod generator {
     use handlebars::Handlebars;
     use serde_json::json;
     use std::process::Command;
+    use super::sanitize_filename;
     
     // Local macro for debug output
     macro_rules! debugln {
@@ -288,7 +313,8 @@ mod generator {
                 .context("Failed to create output directory")?;
 
             // Copy the WASM file to the output directory with a simple filename
-            let dest_path = self.output_dir.join(format!("{}.wasm", self.name));
+            let sanitized_name = sanitize_filename(&self.name);
+            let dest_path = self.output_dir.join(format!("{}.wasm", sanitized_name));
             
             // Debug output to diagnose any issues
             debugln!(self.verbose, "  Copying from: {:?}", wasm_path);
@@ -1055,7 +1081,7 @@ fn process_dub_command(
     debugln!(verbose, "  Final event count: {}", processed_events.len());
     
     // Generate the new cassette
-    let cassette_name = name.unwrap_or("dubbed_cassette");
+    let cassette_name = sanitize_filename(name.unwrap_or("dubbed_cassette"));
     
     // Create a temporary directory for building
     let temp_dir = tempdir()?;
@@ -1073,7 +1099,7 @@ fn process_dub_command(
     // Process events to create the new cassette
     process_events(
         temp_file.to_str().unwrap(),
-        cassette_name,
+        &cassette_name,
         &output_dir,
         false, // no_bindings
         false, // interactive
@@ -1086,7 +1112,8 @@ fn process_dub_command(
     )?;
     
     // Rename the generated file to the specified output name if needed
-    let generated_path = output_dir.join(format!("{}.wasm", cassette_name));
+    let sanitized_name = sanitize_filename(&cassette_name);
+    let generated_path = output_dir.join(format!("{}.wasm", sanitized_name));
     if generated_path != *output_path {
         fs::rename(&generated_path, output_path)
             .context("Failed to rename output file")?;
@@ -1531,6 +1558,7 @@ fn main() -> Result<()> {
         } => {
             // Set default values if not provided
             let name_value = name.clone().unwrap_or_else(|| "cassette".to_string());
+            let sanitized_name = sanitize_filename(&name_value);
             let output_value = output.clone().unwrap_or_else(|| PathBuf::from("./cassettes"));
             
             // Either process from file or stdin
@@ -1541,7 +1569,7 @@ fn main() -> Result<()> {
                 
                 process_events(
                     path.to_str().unwrap(),
-                    &name_value,
+                    &sanitized_name,
                     &output_value,
                     *no_bindings,
                     *interactive,
@@ -1582,7 +1610,7 @@ fn main() -> Result<()> {
                 // Process the temp file
                 process_events(
                     temp_file_path_str,
-                    &name_value,
+                    &sanitized_name,
                     &output_value,
                     *no_bindings,
                     *interactive,
@@ -2393,5 +2421,40 @@ async fn display_relay_status(statuses: &Arc<Mutex<Vec<RelayStatus>>>) {
         let connection_status = if status.connected { "🟢" } else { "🔴" };
         println!("{} {} - {}/{} ({:.1}%)", 
             connection_status, status.url, status.successful, status.total, progress);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_filename() {
+        // Basic cases
+        assert_eq!(sanitize_filename("Hello World"), "hello-world");
+        assert_eq!(sanitize_filename("My Relay!"), "my-relay");
+        assert_eq!(sanitize_filename("Test@#$%Name"), "testname");
+        
+        // With hyphens
+        assert_eq!(sanitize_filename("already-hyphenated"), "already-hyphenated");
+        assert_eq!(sanitize_filename("multiple   spaces"), "multiple-spaces");
+        assert_eq!(sanitize_filename("trailing-spaces  "), "trailing-spaces");
+        
+        // Special characters
+        assert_eq!(sanitize_filename("Special!@#$%^&*()Characters"), "specialcharacters");
+        assert_eq!(sanitize_filename("dots.and.periods"), "dotsandperiods");
+        assert_eq!(sanitize_filename("under_scores"), "underscores");
+        
+        // Edge cases
+        assert_eq!(sanitize_filename(""), "");
+        assert_eq!(sanitize_filename("   "), "");
+        assert_eq!(sanitize_filename("---"), "");
+        assert_eq!(sanitize_filename("a-b-c"), "a-b-c");
+        assert_eq!(sanitize_filename("UPPERCASE"), "uppercase");
+        
+        // Real examples
+        assert_eq!(sanitize_filename("Bitcoin & Lightning"), "bitcoin-lightning");
+        assert_eq!(sanitize_filename("Nostr (Notes & Other Stuff)"), "nostr-notes-other-stuff");
+        assert_eq!(sanitize_filename("My Archive 2024"), "my-archive-2024");
     }
 }
