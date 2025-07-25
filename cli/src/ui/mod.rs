@@ -3,7 +3,7 @@ pub mod animations;
 pub mod colors;
 pub mod terminal;
 pub mod record;
-pub mod play;
+pub mod scrub;
 pub mod dub;
 pub mod cast;
 

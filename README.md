@@ -1,8 +1,57 @@
 > ATTENTION: Alpha! WASM interface has not yet been standardized, cassettes you make today might be broken tomorrow. 
 
-# Cassette
+# Cassette 📼
 
 Portable WASM nostr relays. Read-only. Protocol Compliant. Happy place for notes.
+
+## Table of Contents
+
+- [What's New](#whats-new-in-v062)
+- [NIPs Support](#nips-look)
+- [Quick Start](#quick-start)
+  - [Prerequisites](#prerequisites)
+  - [Record a cassette](#record-a-cassette)
+  - [Scrub through a cassette](#scrub-through-a-cassette)
+  - [Dub a Mixtape](#dub-a-mixtape)
+  - [Cast to Relays](#cast-to-relays)
+  - [Listen - Serve cassettes as a relay](#listen---serve-cassettes-as-a-relay)
+- [What is a Cassette?](#what-is-a-cassette)
+  - [Use Cases](#use-cases)
+- [CLI Commands](#cli-commands)
+  - [`record`](#record---record-events-onto-cassettes)
+  - [`scrub`](#scrub---scrub-through-cassettes-send-a-req)
+  - [`dub`](#dub---combine-cassettes-into-a-mixtape)
+  - [`cast`](#cast---broadcast-events-to-nostr-relays)
+  - [`listen`](#listen---serve-cassettes-as-a-websocket-relay)
+- [Advanced Configuration](#advanced-configuration)
+  - [Modular NIP Support](#modular-nip-support)
+    - [NIP-01 (Basic Relay Protocol)](#nip-01-basic-relay-protocol)
+    - [NIP-11 (Relay Information Document)](#nip-11-relay-information-document)
+    - [NIP-45 (Event Counts)](#nip-45-event-counts)
+    - [NIP-42 (Authentication)](#nip-42-authentication)
+    - [NIP-50 (Search Capability)](#nip-50-search-capability)
+  - [Combining NIPs](#combining-nips)
+  - [Filtering and Querying](#filtering-and-querying)
+  - [Performance and Size Optimization](#performance-and-size-optimization)
+- [Building from Source](#building-from-source)
+- [Project Structure](#project-structure)
+- [WebAssembly Interface](#webassembly-interface)
+- [Language Loaders](#language-loaders)
+- [Advanced Usage](#advanced-usage)
+  - [Running Cassettes as Relays](#running-cassettes-as-relays)
+  - [Creating Custom Cassettes](#creating-custom-cassettes)
+- [Contributing](#contributing)
+- [Migration Guide](#migration-guide)
+- [License](#license)
+
+## What's New in v0.6.2
+
+- **🎚️ Renamed `play` to `scrub`**: Better reflects the analog tape metaphor of moving through content
+- **🌐 New `listen` command**: Serve cassettes as a WebSocket relay with NIP-11 support
+- **🔧 NIP-11 improvements**: Added `software` and `version` fields to relay information
+- **🐛 Bug fixes**: Fixed WebSocket connection state issues in the listen server
+
+> **Note**: The `play` command is deprecated but still works with a warning. Please use `scrub` instead.
 
 ## NIPs Look:
 
@@ -16,7 +65,7 @@ Portable WASM nostr relays. Read-only. Protocol Compliant. Happy place for notes
 
 Download the latest `cli` binary from [releases](https://github.com/dskvr/cassette/releases/latest).
 
-_**Knowledge is power:** The `cli` includes an ability to both `record` and `play` cassettes (create/read). Cassettes respond to `REQ` messages to `stdin` with `EVENT`, `NOTICE` and `EOSE` messages to `stdout`._
+_**Knowledge is power:** The `cli` includes an ability to both `record` and `scrub` cassettes (create/read). Cassettes respond to `REQ` messages to `stdin` with `EVENT`, `NOTICE` and `EOSE` messages to `stdout`._
 
 ### Prerequisites
 - [Rust and Cargo](https://www.rust-lang.org/)
@@ -40,42 +89,42 @@ cassette record events.json --name my-notes --nip-50
 
 # Full-featured with relay info (NIP-11 + NIP-45 + NIP-50)
 cassette record events.json --name my-relay --nip-11 --nip-45 --nip-50 \
-  --description "Personal event archive"
+  --relay-description "Personal event archive"
 
 # Output: my-notes.wasm
 ```
 
-### Play a cassette
+### Scrub through a cassette
 
-_Dump all the events, or use filters_
+_Scrub through events like rewinding an analog tape - dump all events or use filters_
 
 ```bash
 # Get all events
-cassette play my-notes.wasm
+cassette scrub my-notes.wasm
 
 # Filter by kind
-cassette play my-notes.wasm --kinds 1
+cassette scrub my-notes.wasm --kinds 1
 
 # Filter by author
-cassette play my-notes.wasm --authors npub1...
+cassette scrub my-notes.wasm --authors npub1...
 
 # Multiple filters
-cassette play my-notes.wasm --kinds 1 --kinds 7 --limit 10
+cassette scrub my-notes.wasm --kinds 1 --kinds 7 --limit 10
 
 # Get relay information (NIP-11)
-cassette play my-notes.wasm --info
+cassette scrub my-notes.wasm --info
 
 # COUNT events (NIP-45)
-cassette play my-notes.wasm --count --kinds 1
+cassette scrub my-notes.wasm --count --kinds 1
 
 # Search events (NIP-50)  
-cassette play my-notes.wasm --search "bitcoin lightning"
+cassette scrub my-notes.wasm --search "bitcoin lightning"
 
 # Search with filters
-cassette play my-notes.wasm --search "nostr" --kinds 1 --limit 10
+cassette scrub my-notes.wasm --search "nostr" --kinds 1 --limit 10
 
 # COUNT with custom relay info
-cassette play my-notes.wasm --count --kinds 1 \
+cassette scrub my-notes.wasm --count --kinds 1 \
   --name "Archive" --description "Event archive"
 ```
 
@@ -105,17 +154,20 @@ cassette cast archive.wasm --relays ws://localhost:7000 --dry-run
 ### Listen - Serve cassettes as a relay
 
 ```bash
-# Serve a single cassette as a WebSocket relay
+# Serve a single cassette as a WebSocket relay (auto-selects port)
 cassette listen my-notes.wasm
 
 # Serve multiple cassettes on a specific port
 cassette listen *.wasm --port 8080
 
-# Serve cassettes from a directory
+# Serve cassettes from a directory on all interfaces
 cassette listen cassettes/*.wasm --bind 0.0.0.0 --port 1337
 
 # Verbose mode to see connections
 cassette listen archive.wasm --verbose
+
+# Connect with any Nostr client
+nak req ws://localhost:7777 -k 1 -l 10
 ```
 
 ## What is a Cassette?
@@ -147,12 +199,10 @@ cassette record [OPTIONS] [INPUT_FILE]
 #   --nip-42           Enable NIP-42 (Authentication)
 #   --nip-45           Enable NIP-45 (Event Counts)
 #   --nip-50           Enable NIP-50 (Search Capability)
-#   --name             Name for NIP-11
-#   --description      Description for NIP-11
-#   --contact          Contact for NIP-11
-#   --pubkey           Owner pubkey for NIP-11
-#   --relay-pubkey     Relay owner pubkey for NIP-11
-#   --relay-contact    Relay contact for NIP-11
+#   --relay-name       Name for NIP-11
+#   --relay-description Description for NIP-11
+#   --relay-contact    Contact for NIP-11
+#   --relay-pubkey     Owner pubkey for NIP-11
 
 # Examples:
 nak req -k 30023 wss://relay.nostr.band | cassette record -n "long-form"
@@ -162,10 +212,10 @@ cassette record events.json --nip-50 --name "searchable" # With search support
 cassette record events.json --nip-11 --nip-45 --nip-50 --name "Archive"
 ```
 
-### `play` - Play cassettes (send a `req`)
+### `scrub` - Scrub through cassettes (send a `req`)
 
 ```bash
-cassette play [OPTIONS] <CASSETTE>
+cassette scrub [OPTIONS] <CASSETTE>
 
 # Options:
 #   -s, --subscription  Subscription ID (default: sub1)
@@ -179,15 +229,15 @@ cassette play [OPTIONS] <CASSETTE>
 #   --info             Show NIP-11 relay information
 #   --count            Perform COUNT query (NIP-45)
 #   --search           Search query for NIP-50 text search
-#   --name             Set name for dynamic NIP-11 info
-#   --description      Set description for dynamic NIP-11 info
-#   --contact          Set contact for dynamic NIP-11 info
-#   --pubkey           Set owner pubkey for dynamic NIP-11 info
+#   --relay-name       Set name for dynamic NIP-11 info
+#   --relay-description Set description for dynamic NIP-11 info
+#   --relay-contact    Set contact for dynamic NIP-11 info
+#   --relay-pubkey     Set owner pubkey for dynamic NIP-11 info
 
 # Examples:
-cassette play my-notes.wasm --kinds 1 --limit 50
-cassette play archive.wasm --filter '{"#t": ["bitcoin", "lightning"]}'
-cassette play events.wasm --output ndjson | grep "pattern"
+cassette scrub my-notes.wasm --kinds 1 --limit 50
+cassette scrub archive.wasm --filter '{"#t": ["bitcoin", "lightning"]}'
+cassette scrub events.wasm --output ndjson | grep "pattern"
 ```
 
 ### `dub` - Combine cassettes into a Mixtape
@@ -255,6 +305,7 @@ cassette listen archive.wasm --verbose                          # Debug mode
 # - Handles multiple cassettes - aggregates responses from all loaded cassettes
 # - Auto-selects available port if not specified (tries 7777, 8080, 8888, etc.)
 # - Compatible with all Nostr clients (nak, nostcat, web clients, etc.)
+# - Each connection gets a fresh state to prevent cross-connection contamination
 ```
 
 ## Advanced Configuration
@@ -277,18 +328,21 @@ Always available for basic info. Enables dynamic relay metadata and capability d
 ```bash
 # With static relay information
 cassette record events.json --name my-relay --nip-11 \
-  --description "My curated event collection" \
-  --contact "contact@example.com" \
-  --pubkey "npub1abc..."
+  --relay-name "My Relay" \
+  --relay-description "My curated event collection" \
+  --relay-contact "contact@example.com" \
+  --relay-pubkey "npub1abc..."
 
 # View relay information
-cassette play my-relay.wasm --info
+cassette scrub my-relay.wasm --info
 
 # Dynamic relay info at runtime
-cassette play any-cassette.wasm --info \
-  --name "Custom Name" \
-  --description "Runtime description"
+cassette scrub any-cassette.wasm --info \
+  --relay-name "Custom Name" \
+  --relay-description "Runtime description"
 ```
+
+> **Note**: NIP-11 info automatically includes `software: "@sandwichfarm/cassette"` and the current CLI version.
 
 #### NIP-45 (Event Counts)
 Adds COUNT query support for efficient event counting without retrieving full events.
@@ -298,9 +352,9 @@ Adds COUNT query support for efficient event counting without retrieving full ev
 cassette record events.json --name countable --nip-45
 
 # Query event counts
-cassette play countable.wasm --count --kinds 1        # Count kind 1 events
-cassette play countable.wasm --count --authors npub1...  # Count by author
-cassette play countable.wasm --count --since 1700000000 # Count recent events
+cassette scrub countable.wasm --count --kinds 1        # Count kind 1 events
+cassette scrub countable.wasm --count --authors npub1...  # Count by author
+cassette scrub countable.wasm --count --since 1700000000 # Count recent events
 ```
 
 #### NIP-42 (Authentication)
@@ -319,14 +373,14 @@ Adds text search functionality with relevance-based ranking instead of chronolog
 cassette record events.json --name searchable --nip-50
 
 # Basic text search
-cassette play searchable.wasm --search "bitcoin lightning"
+cassette scrub searchable.wasm --search "bitcoin lightning"
 
 # Search with additional filters
-cassette play searchable.wasm --search "nostr protocol" --kinds 1 --limit 20
+cassette scrub searchable.wasm --search "nostr protocol" --kinds 1 --limit 20
 
 # Search supports extensions (advanced)
-cassette play searchable.wasm --search "bitcoin domain:example.com"
-cassette play searchable.wasm --search "news language:en"
+cassette scrub searchable.wasm --search "bitcoin domain:example.com"
+cassette scrub searchable.wasm --search "news language:en"
 ```
 
 ### Combining NIPs
@@ -342,10 +396,10 @@ cassette record events.json --name full-relay \
   --pubkey "npub1abc..."
 
 # Test all features
-cassette play full-relay.wasm --info                    # Show relay info
-cassette play full-relay.wasm --count --kinds 1         # Count events
-cassette play full-relay.wasm --search "bitcoin"        # Search events
-cassette play full-relay.wasm --kinds 1 --limit 10      # Get events
+cassette scrub full-relay.wasm --info                    # Show relay info
+cassette scrub full-relay.wasm --count --kinds 1         # Count events
+cassette scrub full-relay.wasm --search "bitcoin"        # Search events
+cassette scrub full-relay.wasm --kinds 1 --limit 10      # Get events
 ```
 
 ### Filtering and Querying
@@ -354,22 +408,22 @@ Cassettes support comprehensive NIP-01 filtering:
 
 ```bash
 # By event kind
-cassette play relay.wasm --kinds 1 --kinds 30023
+cassette scrub relay.wasm --kinds 1 --kinds 30023
 
 # By author (accepts npub, hex, or partial)
-cassette play relay.wasm --authors npub1abc... --authors npub1def...
+cassette scrub relay.wasm --authors npub1abc... --authors npub1def...
 
 # Time-based filtering
-cassette play relay.wasm --since 1700000000 --until 1700100000
+cassette scrub relay.wasm --since 1700000000 --until 1700100000
 
 # Combination filters
-cassette play relay.wasm --kinds 1 --authors npub1abc... --limit 50
+cassette scrub relay.wasm --kinds 1 --authors npub1abc... --limit 50
 
 # Custom JSON filters (advanced)
-cassette play relay.wasm --filter '{"#t": ["bitcoin"], "#p": ["npub1..."]}'
+cassette scrub relay.wasm --filter '{"#t": ["bitcoin"], "#p": ["npub1..."]}'
 
 # Output formats
-cassette play relay.wasm --kinds 1 --output ndjson | jq .
+cassette scrub relay.wasm --kinds 1 --output ndjson | jq .
 ```
 
 ### Performance and Size Optimization
@@ -616,6 +670,14 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 AI Tips:
 1. Use BDD! Write tests and Docs First. The default agent on this repo uses tests and docs as its North Star.
 2. Use Context Programming for mission critical features. AKA Don't vibe API or business logic, but yes vibe interfaces, SPAs and prototypes.
+
+## Migration Guide
+
+### v0.6.2
+- The `play` command has been renamed to `scrub` to better reflect the analog tape metaphor
+- The old `play` command still works but shows a deprecation warning
+- Update your scripts to use `cassette scrub` instead of `cassette play`
+- NIP-11 relay info now includes `software` and `version` fields automatically
 
 ## License
 

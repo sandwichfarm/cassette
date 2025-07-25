@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::collections::{HashMap, HashSet};
 use super::{colors, components::Counter, animations::TapeReel};
 
-pub struct PlayUI {
+pub struct ScrubUI {
     tape_reel: TapeReel,
     event_counter: Counter,
     total_events: u64,
@@ -19,7 +19,7 @@ pub struct PlayUI {
     max_timestamp: Option<u64>,
 }
 
-impl PlayUI {
+impl ScrubUI {
     pub fn new() -> Self {
         Self {
             tape_reel: TapeReel::new(8),

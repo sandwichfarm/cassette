@@ -705,7 +705,7 @@ fn process_req_command(
 ) -> Result<()> {
     // Initialize interactive UI if enabled
     let mut play_ui = if interactive {
-        let ui = ui::play::PlayUI::new();
+        let ui = ui::scrub::ScrubUI::new();
         ui.init()?;
         ui.show_loading(&cassette_path.display().to_string())?;
         Some(ui)
@@ -1600,8 +1600,8 @@ enum Commands {
         nip11: Nip11Args,
     },
     
-    /// Send a REQ message to a cassette and get events
-    Play {
+    /// Scrub through cassette events (send REQ messages and get events)
+    Scrub {
         /// Path to the cassette WASM file
         cassette: PathBuf,
         
@@ -1639,6 +1639,72 @@ enum Commands {
         /// Enable interactive mode with visual feedback
         #[arg(short = 'i', long)]
         interactive: bool,
+        /// Show verbose output including compilation details
+        #[arg(short, long)]
+        verbose: bool,
+        
+        /// Skip validation of returned Nostr events (validation is enabled by default)
+        #[arg(long)]
+        skip_validation: bool,
+        
+        /// Show NIP-11 relay information instead of playing events
+        #[arg(long)]
+        info: bool,
+        
+        /// Perform COUNT query instead of REQ (NIP-45)
+        #[arg(long)]
+        count: bool,
+        
+        /// Search query for NIP-50 text search
+        #[arg(long)]
+        search: Option<String>,
+        
+        #[command(flatten)]
+        nip11: Nip11Args,
+    },
+    
+    /// [DEPRECATED] Use 'scrub' command instead - Play cassette events
+    #[command(hide = true)]
+    Play {
+        /// Path to the cassette WASM file
+        cassette: PathBuf,
+        
+        /// Subscription ID
+        #[arg(short, long, default_value = "sub1")]
+        subscription: String,
+        
+        /// Filter JSON (can be specified multiple times)
+        #[arg(short, long, value_name = "JSON")]
+        filter: Vec<String>,
+        
+        /// Kinds to filter (can be specified multiple times)
+        #[arg(short, long)]
+        kinds: Vec<i64>,
+        
+        /// Authors to filter (can be specified multiple times)
+        #[arg(short, long)]
+        authors: Vec<String>,
+        
+        /// Limit number of events
+        #[arg(short, long)]
+        limit: Option<usize>,
+        
+        /// Since timestamp
+        #[arg(long)]
+        since: Option<i64>,
+        
+        /// Until timestamp
+        #[arg(long)]
+        until: Option<i64>,
+        
+        /// Output format: json (default) or ndjson
+        #[arg(short, long, default_value = "json")]
+        output: String,
+        
+        /// Enable interactive mode with visual feedback
+        #[arg(short = 'i', long)]
+        interactive: bool,
+        
         /// Show verbose output including compilation details
         #[arg(short, long)]
         verbose: bool,
@@ -2239,7 +2305,7 @@ fn main() -> Result<()> {
                 nip11,
             )
         }
-        Commands::Play {
+        Commands::Scrub {
             cassette,
             subscription,
             filter,
@@ -2316,6 +2382,67 @@ fn main() -> Result<()> {
                 *dry_run,
                 nip11,
             ))
+        }
+        Commands::Play {
+            cassette,
+            subscription,
+            filter,
+            kinds,
+            authors,
+            limit,
+            since,
+            until,
+            output,
+            interactive,
+            verbose,
+            skip_validation,
+            info,
+            count,
+            search,
+            nip11,
+        } => {
+            // Print deprecation warning
+            eprintln!("⚠️  WARNING: The 'play' command is deprecated and will be removed in a future version.");
+            eprintln!("⚠️  Please use 'scrub' instead, which better reflects the analog tape metaphor.");
+            eprintln!("");
+            
+            // Pass through to the same logic as scrub
+            if *info {
+                // Just show NIP-11 info
+                process_info_command(cassette, nip11)
+            } else if *count {
+                // Perform COUNT query
+                process_count_command(
+                    cassette,
+                    subscription,
+                    filter,
+                    kinds,
+                    authors,
+                    *limit,
+                    *since,
+                    *until,
+                    *verbose,
+                    nip11,
+                    search.as_deref(),
+                )
+            } else {
+                process_req_command(
+                    cassette,
+                    subscription,
+                    filter,
+                    kinds,
+                    authors,
+                    *limit,
+                    *since,
+                    *until,
+                    output,
+                    *interactive,
+                    *verbose,
+                    *skip_validation,
+                    nip11,
+                    search.as_deref(),
+                )
+            }
         }
         Commands::Listen {
             cassettes,
