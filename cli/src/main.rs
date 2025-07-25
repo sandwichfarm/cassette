@@ -152,7 +152,7 @@ mod generator {
             let cargo_data = json!({
                 "crate_name": self.name,
                 "version": "0.1.0",
-                "description": self.template_vars.get("cassette_description").unwrap_or(&"Generated Cassette".to_string()),
+                "description": "Generated Cassette",
                 "cassette_tools_path": cassette_tools_path,
                 "features_array": self.template_vars.get("features_array").unwrap_or(&"[\"default\"]".to_string())
             });
@@ -1058,8 +1058,6 @@ fn process_dub_command(
     
     // Generate the new cassette
     let cassette_name = name.unwrap_or("dubbed_cassette");
-    let cassette_desc = description.unwrap_or("Combined cassette created by dubbing multiple cassettes");
-    let cassette_author = author.unwrap_or("Cassette CLI Dub");
     
     // Create a temporary directory for building
     let temp_dir = tempdir()?;
@@ -1078,8 +1076,8 @@ fn process_dub_command(
     process_events(
         temp_file.to_str().unwrap(),
         cassette_name,
-        cassette_desc,
-        cassette_author,
+        "", // description not used anymore
+        "", // author not used anymore
         &output_dir,
         false, // no_bindings
         false, // interactive
@@ -2017,12 +2015,7 @@ pub fn process_events(
     );
     
     // Set template variables
-    generator.set_var("cassette_name", name);
-    generator.set_var("cassette_description", description);
-    generator.set_var("cassette_author", author);
-    generator.set_var("cassette_created", &cassette_created);
     generator.set_var("event_count", &event_count.to_string());
-    generator.set_var("cassette_version", "0.1.0");
     
     // Properly escape the JSON for template insertion
     // Note: We're not double-escaping anymore, just using the raw JSON
