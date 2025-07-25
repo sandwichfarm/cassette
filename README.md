@@ -370,7 +370,11 @@ cassette/
 ├── cassette-tools/         # Core WASM functionality and modular NIP support
 ├── loaders/                # Language-specific cassette loaders
 │   ├── js/                 # JavaScript/TypeScript loader
-│   └── py/                 # Python loader
+│   ├── py/                 # Python loader
+│   ├── rust/               # Rust loader
+│   ├── go/                 # Go loader
+│   ├── cpp/                # C++ loader
+│   └── dart/               # Dart loader
 ├── boombox/               # WebSocket relay server for cassettes
 └── gui/                   # Web interface for testing
 ```
@@ -379,7 +383,7 @@ cassette/
 
 - **CLI**: Command-line tool for creating and querying cassettes
 - **Cassette Tools**: Rust library providing memory management and modular NIP implementations (NIP-01, NIP-11, NIP-42, NIP-45, NIP-50)
-- **Loaders**: Language-specific libraries for loading and executing cassettes
+- **Loaders**: Language-specific libraries for loading and executing cassettes in JavaScript/TypeScript, Python, Rust, Go, C++, and Dart
 - **Boombox**: WebSocket server that serves cassettes as Nostr relays
 - **GUI**: Web interface for testing cassettes in the browser
 
@@ -410,6 +414,115 @@ The `send` method accepts any NIP-01 protocol message in JSON format, including:
 - `["COUNT", subscription_id, filters...]` - Count events (NIP-45)
 
 This unified interface allows cassettes to be loaded by any compatible runtime without language-specific bindings.
+
+## Language Loaders
+
+Cassette provides official loaders for multiple programming languages, allowing you to integrate cassettes into your applications regardless of your tech stack. All loaders implement the same interface and provide consistent functionality across languages.
+
+### Available Loaders
+
+#### JavaScript/TypeScript
+- **Package**: `cassette-loader`
+- **Installation**: `npm install cassette-loader`
+- **Features**: Browser and Node.js support, TypeScript definitions, event deduplication
+- **[Documentation](./loaders/js/README.md)**
+
+```javascript
+import { loadCassette } from 'cassette-loader';
+
+const result = await loadCassette('/path/to/cassette.wasm');
+if (result.success) {
+    const response = result.cassette.methods.send('["REQ", "sub1", {"kinds": [1]}]');
+    console.log(response);
+}
+```
+
+#### Python
+- **Package**: `cassette-loader`
+- **Installation**: `pip install cassette-loader`
+- **Features**: Memory management, event deduplication, debug mode
+- **[Documentation](./loaders/py/README.md)**
+
+```python
+from cassette_loader import load_cassette
+
+result = load_cassette(wasm_bytes, name='my-cassette')
+if result['success']:
+    cassette = result['cassette']
+    response = cassette.send('["REQ", "sub1", {"kinds": [1]}]')
+```
+
+#### Rust
+- **Crate**: `cassette-loader`
+- **Installation**: Add to `Cargo.toml`
+- **Features**: Native performance, thread-safe event tracking, comprehensive error handling
+- **[Documentation](./loaders/rust/README.md)**
+
+```rust
+use cassette_loader::Cassette;
+
+let mut cassette = Cassette::load("path/to/cassette.wasm", true)?;
+let response = cassette.send(r#"["REQ", "sub1", {"kinds": [1]}]"#)?;
+```
+
+#### Go
+- **Package**: `github.com/cassette/loaders/go`
+- **Installation**: `go get github.com/cassette/loaders/go`
+- **Features**: Thread-safe operations, debug logging
+- **[Documentation](./loaders/go/README.md)**
+
+```go
+import cassette "github.com/cassette/loaders/go"
+
+c, err := cassette.LoadCassette("path/to/cassette.wasm", true)
+result, err := c.Send(`["REQ", "sub1", {"kinds": [1]}]`)
+```
+
+#### C++
+- **Library**: `cassette-loader`
+- **Installation**: CMake integration
+- **Features**: Exception-based error handling, MSGB format support
+- **[Documentation](./loaders/cpp/README.md)**
+
+```cpp
+#include <cassette_loader.hpp>
+
+cassette::Cassette cassette("path/to/cassette.wasm", true);
+std::string response = cassette.send(R"(["REQ", "sub1", {"kinds": [1]}])");
+```
+
+#### Dart
+- **Package**: `cassette_loader`
+- **Installation**: Add to `pubspec.yaml`
+- **Features**: Web support, async operations
+- **[Documentation](./loaders/dart/README.md)**
+
+```dart
+import 'package:cassette_loader/cassette_loader.dart';
+
+final cassette = await Cassette.load('path/to/cassette.wasm');
+final response = cassette.send('["REQ", "sub1", {"kinds": [1]}]');
+```
+
+### Common Features
+
+All loaders provide:
+- **Unified Interface**: Single `send()` method for all NIP-01 messages
+- **Event Deduplication**: Automatic filtering of duplicate events
+- **Memory Management**: Proper handling of WASM memory allocation/deallocation
+- **Debug Support**: Optional verbose logging for troubleshooting
+- **Error Handling**: Consistent error reporting across languages
+
+### Creating Your Own Loader
+
+If you need to create a loader for a language not listed above, implement these core functions:
+
+1. **Load WASM module** - Instantiate the WebAssembly module
+2. **Memory management** - Handle string passing between host and WASM
+3. **Call `send()` function** - Pass messages and retrieve responses
+4. **Event tracking** - Implement deduplication for EVENT messages
+
+See the existing loader implementations for reference patterns.
 
 ## Advanced Usage
 
