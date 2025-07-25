@@ -2013,14 +2013,6 @@ async fn handle_websocket_connection(
     let ws_stream = accept_async(stream).await?;
     let (mut write, mut read) = ws_stream.split();
     
-    // Create a store and instance for each cassette
-    let mut cassette_instances = Vec::new();
-    for (path, module, engine) in cassettes.iter() {
-        let mut store = Store::new(engine, ());
-        let instance = Instance::new(&mut store, module, &[])?;
-        cassette_instances.push((path.clone(), store, instance));
-    }
-    
     // Handle incoming messages
     while let Some(msg) = read.next().await {
         match msg {
@@ -2038,37 +2030,40 @@ async fn handle_websocket_connection(
                                 let mut all_events = Vec::new();
                                 let mut sent_eose = false;
                                 
-                                for (_path, store, instance) in &mut cassette_instances {
-                                    if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut *store, "send") {
-                                        let memory = instance.get_memory(&mut *store, "memory")
+                                // Create fresh instances for each message to avoid state issues
+                                for (path, module, engine) in cassettes.iter() {
+                                    let mut store = Store::new(engine, ());
+                                    let instance = Instance::new(&mut store, module, &[])?;
+                                    if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send") {
+                                        let memory = instance.get_memory(&mut store, "memory")
                                             .ok_or_else(|| anyhow!("Memory export not found"))?;
-                                        let alloc_func = instance.get_typed_func::<i32, i32>(&mut *store, "alloc_buffer")?;
-                                        let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut *store, "dealloc_string")?;
+                                        let alloc_func = instance.get_typed_func::<i32, i32>(&mut store, "alloc_buffer")?;
+                                        let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string")?;
                                         
                                         // Keep calling send until we get EOSE or no more events
                                         loop {
                                             // Allocate and write request
                                             let bytes = text.as_bytes();
-                                            let req_ptr = alloc_func.call(&mut *store, bytes.len() as i32)?;
-                                            memory.write(&mut *store, req_ptr as usize, bytes)?;
+                                            let req_ptr = alloc_func.call(&mut store, bytes.len() as i32)?;
+                                            memory.write(&mut store, req_ptr as usize, bytes)?;
                                             
                                             // Call send function
-                                            let result_ptr = send_func.call(&mut *store, (req_ptr, bytes.len() as i32))?;
+                                            let result_ptr = send_func.call(&mut store, (req_ptr, bytes.len() as i32))?;
                                             
                                             // Deallocate request memory
-                                            dealloc_func.call(&mut *store, (req_ptr, bytes.len() as i32))?;
+                                            dealloc_func.call(&mut store, (req_ptr, bytes.len() as i32))?;
                                             
                                             if result_ptr == 0 {
                                                 break; // No more events from this cassette
                                             }
                                             
-                                            let response = read_string_from_memory(&mut *store, instance, &memory, result_ptr)?;
+                                            let response = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
                                             
                                             // Try to deallocate the result
-                                            if let Ok(get_size_func) = instance.get_typed_func::<i32, i32>(&mut *store, "get_allocation_size") {
-                                                let size = get_size_func.call(&mut *store, result_ptr)?;
+                                            if let Ok(get_size_func) = instance.get_typed_func::<i32, i32>(&mut store, "get_allocation_size") {
+                                                let size = get_size_func.call(&mut store, result_ptr)?;
                                                 if size > 0 {
-                                                    let _ = dealloc_func.call(&mut *store, (result_ptr, size));
+                                                    let _ = dealloc_func.call(&mut store, (result_ptr, size));
                                                 }
                                             }
                                             
@@ -2680,6 +2675,9 @@ pub fn process_events(
     if let Some(relay_contact) = &nip11_args.relay_contact {
         generator.set_var("relay_contact", relay_contact);
     }
+    
+    // Add version from Cargo.toml
+    generator.set_var("version", env!("CARGO_PKG_VERSION"));
 
     // Set verbose mode on generator
     generator.set_verbose(verbose);

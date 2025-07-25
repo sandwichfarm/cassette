@@ -102,6 +102,22 @@ cassette cast *.wasm --relays wss://nos.lol wss://relay.nostr.band
 cassette cast archive.wasm --relays ws://localhost:7000 --dry-run
 ```
 
+### Listen - Serve cassettes as a relay
+
+```bash
+# Serve a single cassette as a WebSocket relay
+cassette listen my-notes.wasm
+
+# Serve multiple cassettes on a specific port
+cassette listen *.wasm --port 8080
+
+# Serve cassettes from a directory
+cassette listen cassettes/*.wasm --bind 0.0.0.0 --port 1337
+
+# Verbose mode to see connections
+cassette listen archive.wasm --verbose
+```
+
 ## What is a Cassette?
 
 A cassette is a WebAssembly module containing Nostr events that implements the Nostr relay protocol. Cassettes support modular NIP implementations including NIP-01 (basic relay protocol), NIP-11 (relay information document), NIP-42 (authentication), and NIP-45 (event counts). Think of it as a portable, queryable database that runs anywhere WebAssembly does - browsers, servers, edge workers, or CLI tools.
@@ -212,6 +228,33 @@ cassette cast [OPTIONS] <CASSETTES...> --relays <RELAYS...>
 cassette cast events.wasm --relays wss://relay.damus.io
 cassette cast *.wasm --relays wss://nos.lol wss://relay.nostr.band
 cassette cast archive.wasm --relays ws://localhost:7000 --dry-run
+```
+
+### `listen` - Serve cassettes as a WebSocket relay
+
+```bash
+cassette listen [OPTIONS] <CASSETTES...>
+
+# Options:
+#   -p, --port         Port to listen on (auto-selects if not specified)
+#   --bind             Bind address (default: 127.0.0.1)
+#   --tls              Enable TLS/WSS
+#   --tls-cert         Path to TLS certificate
+#   --tls-key          Path to TLS key
+#   -v, --verbose      Show connection details
+
+# Examples:
+cassette listen my-notes.wasm                                    # Auto-select port
+cassette listen *.wasm --port 8080                              # Serve all cassettes
+cassette listen dir/*.wasm --bind 0.0.0.0 --port 1337          # Listen on all interfaces
+cassette listen archive.wasm --verbose                          # Debug mode
+
+# Features:
+# - Serves cassettes as a NIP-01 compliant WebSocket relay
+# - Supports NIP-11 relay information via HTTP with Accept: application/nostr+json
+# - Handles multiple cassettes - aggregates responses from all loaded cassettes
+# - Auto-selects available port if not specified (tries 7777, 8080, 8888, etc.)
+# - Compatible with all Nostr clients (nak, nostcat, web clients, etc.)
 ```
 
 ## Advanced Configuration

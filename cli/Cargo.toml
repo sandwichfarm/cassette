@@ -1,6 +1,6 @@
 [package]
 name = "cassette-cli"
-version = "0.6.0"
+version = "0.6.2"
 edition = "2021"
 description = "CLI tool for creating and managing Cassette platform modules"
 

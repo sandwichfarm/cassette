@@ -11,6 +11,8 @@ const EMBEDDED_RELAY_INFO: &str = r#"{
 {{#if relay_description}}"description": "{{relay_description}}",{{/if}}
 {{#if relay_pubkey}}"pubkey": "{{relay_pubkey}}",{{/if}}
 {{#if relay_contact}}"contact": "{{relay_contact}}",{{/if}}
+"software": "@sandwichfarm/cassette",
+"version": "{{version}}",
 "supported_nips": []
 }"#;
 
