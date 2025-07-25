@@ -2,7 +2,7 @@
 
 # Cassette 📼
 
-Portable WASM nostr relays. Read-only. Protocol Compliant. Happy place for notes.
+Portable nostr relays that you can scrub, dub and cast notes from. Mostly rust, compiled to WASM. 
 
 ## Table of Contents
 
