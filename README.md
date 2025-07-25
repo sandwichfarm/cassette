@@ -2,7 +2,7 @@
 
 # Cassette
 
-A place for your notes. 
+Portable WASM nostr relays. Read-only. Protocol Compliant. Happy place for notes.
 
 ## NIPs Look:
 
