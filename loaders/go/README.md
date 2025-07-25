@@ -36,24 +36,34 @@ func main() {
     
     // Send a REQ message
     req := `["REQ", "sub1", {"limit": 10}]`
+    result, err := c.Send(req)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("REQ Result:", result)
     
-    // Loop to get all events
-    for {
-        result, err := c.Send(req)
-        if err != nil {
-            log.Fatal(err)
-        }
-        
-        if result == "" {
-            break
-        }
-        
-        fmt.Println("Result:", result)
-        
-        // Check for EOSE
-        if strings.Contains(result, `"EOSE"`) {
-            break
-        }
+    // Send a CLOSE message
+    closeMsg := `["CLOSE", "sub1"]`
+    closeResult, err := c.Send(closeMsg)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("CLOSE Result:", closeResult)
+    
+    // Send a COUNT message (NIP-45)
+    countMsg := `["COUNT", "count-sub", {"kinds": [1]}]`
+    countResult, err := c.Send(countMsg)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("COUNT Result:", countResult)
+    
+    // Get relay info (NIP-11)
+    info, err := c.Info()
+    if err != nil {
+        log.Println("Info not available:", err)
+    } else {
+        fmt.Println("Relay Info:", info)
     }
 }
 ```
@@ -61,11 +71,13 @@ func main() {
 ## Features
 
 - Full WebAssembly support via wasmtime-go
+- Unified `Send` method for all NIP-01 messages (v0.5.0+)
 - MSGB format support for memory operations
-- Event deduplication
+- Event deduplication (automatically reset on new REQ messages)
 - Newline-separated message handling
 - Thread-safe operations
 - Debug logging support
+- Automatic synthesis of `Describe()` from `Info()` method
 
 ## Requirements
 

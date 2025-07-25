@@ -27,21 +27,25 @@ void main() async {
   
   // Send a REQ message
   final req = jsonEncode(['REQ', 'sub1', {'limit': 10}]);
+  final result = cassette.send(req);
+  print('REQ Result: $result');
   
-  // Loop to get all events
-  while (true) {
-    final result = cassette.req(req);
-    
-    if (result.isEmpty) {
-      break;
-    }
-    
-    print('Result: $result');
-    
-    // Check for EOSE
-    if (result.contains('"EOSE"')) {
-      break;
-    }
+  // Send a CLOSE message
+  final closeMsg = jsonEncode(['CLOSE', 'sub1']);
+  final closeResult = cassette.send(closeMsg);
+  print('CLOSE Result: $closeResult');
+  
+  // Send a COUNT message (NIP-45)
+  final countMsg = jsonEncode(['COUNT', 'count-sub', {'kinds': [1]}]);
+  final countResult = cassette.send(countMsg);
+  print('COUNT Result: $countResult');
+  
+  // Get relay info (NIP-11)
+  try {
+    final info = cassette.info();
+    print('Relay Info: $info');
+  } catch (e) {
+    print('Info not available: $e');
   }
 }
 ```
@@ -49,11 +53,13 @@ void main() async {
 ## Features
 
 - Full WebAssembly support via dart:wasm
+- Unified `send` method for all NIP-01 messages (v0.5.0+)
 - MSGB format support for memory operations
-- Event deduplication
+- Event deduplication (automatically reset on new REQ messages)
 - Newline-separated message handling
 - Async file loading support
 - Debug logging support
+- Automatic synthesis of `describe()` from `info()` method
 
 ## Web Support
 

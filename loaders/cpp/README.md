@@ -54,26 +54,26 @@ int main() {
         
         // Send a REQ message
         std::string req = R"(["REQ", "sub1", {"limit": 10}])";
-        
-        // Loop to get all events
-        while (true) {
-            std::string result = cassette.send(req);
-            
-            if (result.empty()) {
-                break;
-            }
-            
-            std::cout << "Result: " << result << std::endl;
-            
-            // Check for EOSE
-            if (result.find("\"EOSE\"") != std::string::npos) {
-                break;
-            }
-        }
+        std::string result = cassette.send(req);
+        std::cout << "REQ Result: " << result << std::endl;
         
         // Send a CLOSE message
         std::string close_msg = R"(["CLOSE", "sub1"])";
-        cassette.send(close_msg);
+        std::string close_result = cassette.send(close_msg);
+        std::cout << "CLOSE Result: " << close_result << std::endl;
+        
+        // Send a COUNT message (NIP-45)
+        std::string count_msg = R"(["COUNT", "count-sub", {"kinds": [1]}])";
+        std::string count_result = cassette.send(count_msg);
+        std::cout << "COUNT Result: " << count_result << std::endl;
+        
+        // Get relay info (NIP-11)
+        try {
+            std::string info = cassette.info();
+            std::cout << "Relay Info: " << info << std::endl;
+        } catch (const std::exception& e) {
+            std::cout << "Info not available: " << e.what() << std::endl;
+        }
         
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
@@ -87,12 +87,14 @@ int main() {
 ## Features
 
 - Full WebAssembly support via wasmtime C++ API
+- Unified `send` method for all NIP-01 messages (v0.5.0+)
 - MSGB format support for memory operations
-- Event deduplication
+- Event deduplication (automatically reset on new REQ messages)
 - Newline-separated message handling
 - Thread-safe operations
 - Exception-based error handling
 - Debug logging support
+- Automatic synthesis of `describe()` from `info()` method
 
 ## CMake Integration
 

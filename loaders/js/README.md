@@ -41,16 +41,20 @@ async function loadMyCassette() {
       const metadata = result.cassette.methods.describe();
       console.log('Cassette metadata:', metadata);
       
-      // Process a request
+      // Send a REQ message
       const request = '["REQ", "subscription-id", {"kinds": [1]}]';
-      const response = result.cassette.methods.req(request);
+      const response = result.cassette.methods.send(request);
       console.log('Response:', response);
       
-      // Close a subscription (if supported)
-      if (result.cassette.methods.close) {
-        const closeResult = result.cassette.methods.close('["CLOSE", "subscription-id"]');
-        console.log('Close result:', closeResult);
-      }
+      // Send a CLOSE message
+      const closeMessage = '["CLOSE", "subscription-id"]';
+      const closeResult = result.cassette.methods.send(closeMessage);
+      console.log('Close result:', closeResult);
+      
+      // Count events (NIP-45)
+      const countMessage = '["COUNT", "count-sub", {"kinds": [1]}]';
+      const countResult = result.cassette.methods.send(countMessage);
+      console.log('Count result:', countResult);
     } else {
       console.error(`Failed to load cassette: ${result.error}`);
     }
@@ -156,14 +160,16 @@ wss.on('connection', (ws) => {
       const request = message.toString();
       const event = JSON.parse(request);
       
-      if (Array.isArray(event) && event[0] === 'REQ') {
-        // Process the request with all cassettes
+      // Process any NIP-01 message (REQ, CLOSE, COUNT, etc.)
+      if (Array.isArray(event) && event.length >= 2) {
         for (const [id, cassette] of cassettes) {
           try {
-            const response = cassette.methods.req(request);
-            ws.send(response);
+            const response = cassette.methods.send(request);
+            if (response) {
+              ws.send(response);
+            }
           } catch (error) {
-            console.error(`Error processing request with cassette ${id}:`, error);
+            console.error(`Error processing message with cassette ${id}:`, error);
           }
         }
       }
@@ -409,16 +415,21 @@ You can also customize the test by editing the `test.js` file.
 
 ## WebAssembly Interface Requirements
 
-Cassette WebAssembly modules must implement the following interface:
+Cassette WebAssembly modules must implement the following simplified interface (v0.5.0+):
 
 ### Core Functions
 
-- `describe() -> *mut u8`: Returns a pointer to a JSON string with cassette metadata.
-- `get_schema() -> *mut u8`: Returns a pointer to a JSON string with the schema details.
-- `req(request_ptr: *const u8, request_len: usize) -> *mut u8`: Processes a request and returns a pointer to the response.
-- `close(close_ptr: *const u8, close_len: usize) -> *mut u8`: Closes a subscription and returns a pointer to the response.
+- `send(ptr: *const u8, len: usize) -> *mut u8`: Universal handler for all NIP-01 messages (REQ, CLOSE, EVENT, COUNT, etc.)
+- `info() -> *mut u8`: Returns a pointer to NIP-11 relay information document (optional)
+- `get_schema() -> *mut u8`: Returns a pointer to a JSON string with the schema details (optional)
 
-It's important to note that the `req` and `close` functions expect **both** a pointer to the request string and its length. This is critical for proper memory management and string handling in WebAssembly.
+The loader automatically synthesizes a `describe()` method from the `info()` method for backward compatibility.
+
+The `send` function accepts any NIP-01 protocol message in JSON format:
+- `["REQ", subscription_id, filters...]` - Query events
+- `["CLOSE", subscription_id]` - Close subscription
+- `["EVENT", subscription_id, event]` - Submit event (for compatible cassettes)
+- `["COUNT", subscription_id, filters...]` - Count events (NIP-45)
 
 ### Memory Management Functions
 

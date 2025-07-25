@@ -39,8 +39,16 @@ else:
 
 ```python
 # Send a REQ message
-response = cassette.req('["REQ", "sub1", {"kinds": [1], "limit": 10}]')
+response = cassette.send('["REQ", "sub1", {"kinds": [1], "limit": 10}]')
 print(response)
+
+# Send a CLOSE message
+close_response = cassette.send('["CLOSE", "sub1"]')
+print(close_response)
+
+# Send a COUNT message (NIP-45)
+count_response = cassette.send('["COUNT", "count-sub", {"kinds": [1]}]')
+print(count_response)
 
 # Parse response
 import json
@@ -49,6 +57,8 @@ if data[0] == "EVENT":
     print(f"Got event: {data[2]['id']}")
 elif data[0] == "EOSE":
     print(f"End of stored events for subscription: {data[1]}")
+elif data[0] == "COUNT":
+    print(f"Count result: {data[2]['count']} events")
 elif data[0] == "NOTICE":
     print(f"Notice: {data[1]}")
 ```
@@ -97,9 +107,9 @@ Returns a dict with either `{'success': True, 'cassette': Cassette}` or `{'succe
 ### `Cassette` class
 
 #### Methods:
-- `describe()`: Get cassette metadata as JSON string
-- `req(request)`: Process a REQ message, returns response as JSON string
-- `close(close_msg)`: Process a CLOSE message
+- `send(message)`: Process any NIP-01 message (REQ, CLOSE, COUNT, etc.), returns response as JSON string
+- `describe()`: Get cassette metadata as JSON string (synthesized from info() method)
+- `info()`: Get NIP-11 relay information document
 - `get_memory_stats()`: Get current memory statistics
 - `dispose()`: Clean up resources
 
@@ -117,6 +127,7 @@ The Python implementation closely mirrors the JavaScript version with these adap
 3. Python sets for tracking allocations instead of JavaScript Sets
 4. Type hints and dataclasses for better type safety
 5. Pythonic error handling with try/except blocks
+6. Event deduplication is reset on each new REQ message to ensure clean state
 
 ## Memory Format
 
