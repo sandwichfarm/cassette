@@ -2059,19 +2059,12 @@ async fn process_deck_relay_mode(
                                 let engine = wasmtime::Engine::default();
                                 match Module::new(&engine, &wasm_bytes) {
                                     Ok(module) => {
-                                        // Load events from cassette into event store
-                                        let mut store = Store::new(&engine, ());
-                                        if let Ok(instance) = Instance::new(&mut store, &module, &[]) {
-                                            // Get all events from this cassette
-                                            // For now, we'll just add the cassette - full event extraction would be complex
-                                            // The deduplication will happen when new events are added
-                                        }
-                                        
+                                        // Just load the cassette module - we'll query events at runtime using COUNT
                                         let mut cassettes = active_cassettes.write().await;
                                         cassettes.push((path.clone(), module, engine));
                                         loaded_count += 1;
                                         if verbose {
-                                            println!("📼 Loaded existing cassette: {}", path.display());
+                                            println!("📼 Loaded cassette module: {}", path.display());
                                         }
                                     }
                                     Err(e) => {
@@ -2186,14 +2179,62 @@ async fn process_deck_relay_mode(
     Ok(())
 }
 
-// Helper function to check if an event exists in any loaded cassette
+
+// Helper function to check if an event exists in any loaded cassette using COUNT
 async fn check_event_exists_in_cassettes(
     cassettes: &Arc<RwLock<Vec<(PathBuf, Module, Engine)>>>,
     event_id: &str,
 ) -> bool {
-    // For now, we'll return false and rely on the buffer check
-    // A full implementation would require querying each cassette's stored events
-    // This is sufficient since events are checked against the buffer before being added
+    let cassettes_guard = cassettes.read().await;
+    
+    for (_path, module, engine) in cassettes_guard.iter() {
+        let mut store = Store::new(engine, ());
+        
+        if let Ok(instance) = Instance::new(&mut store, module, &[]) {
+            // Try to query for this specific event ID using COUNT
+            if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send") {
+                if let Ok(alloc_func) = instance.get_typed_func::<i32, i32>(&mut store, "alloc_buffer") {
+                    if let Some(memory) = instance.get_memory(&mut store, "memory") {
+                        let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string").ok();
+                        
+                        // Create a COUNT query for this specific event ID
+                        let count_msg = json!(["COUNT", "check-event", {"ids": [event_id]}]);
+                        let msg_bytes = count_msg.to_string().into_bytes();
+                        
+                        if let Ok(msg_ptr) = alloc_func.call(&mut store, msg_bytes.len() as i32) {
+                            if msg_ptr != 0 {
+                                if memory.write(&mut store, msg_ptr as usize, &msg_bytes).is_ok() {
+                                    if let Ok(result_ptr) = send_func.call(&mut store, (msg_ptr, msg_bytes.len() as i32)) {
+                                        if let Some(dealloc) = &dealloc_func {
+                                            let _ = dealloc.call(&mut store, (msg_ptr, msg_bytes.len() as i32));
+                                        }
+                                        
+                                        if result_ptr != 0 {
+                                            if let Ok(result) = read_string_from_memory(&mut store, &instance, &memory, result_ptr) {
+                                                if let Ok(parsed) = serde_json::from_str::<Vec<Value>>(&result) {
+                                                    // Check if we got a COUNT response
+                                                    if parsed.len() >= 3 && parsed[0].as_str() == Some("COUNT") {
+                                                        if let Some(count_obj) = parsed.get(2) {
+                                                            if let Some(count) = count_obj.get("count").and_then(|c| c.as_u64()) {
+                                                                if count > 0 {
+                                                                    return true;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     false
 }
 
@@ -2306,8 +2347,14 @@ async fn handle_deck_relay_connection(
                     }
                 };
                 
+                if verbose {
+                    println!("📨 Message type detected: {}", msg_type);
+                }
+                
                 match msg_type {
                     "EVENT" => {
+                        let event_start = std::time::Instant::now();
+                        
                         // EVENT messages must have exactly 2 elements: ["EVENT", event_object]
                         if arr.len() != 2 {
                             let notice = json!(["NOTICE", "Invalid EVENT message: expected 2 elements"]);
@@ -2326,20 +2373,61 @@ async fn handle_deck_relay_connection(
                         
                         // Validate event if needed
                         if !skip_validation {
+                            let validation_start = std::time::Instant::now();
                             if let Err(e) = validate_event(event) {
+                                let validation_duration = validation_start.elapsed();
+                                if verbose {
+                                    println!("⏱️  Event validation took: {:?} (failed)", validation_duration);
+                                }
                                 let notice = json!(["NOTICE", format!("Invalid event: {}", e)]);
                                 write.send(Message::Text(notice.to_string())).await?;
                                 continue;
                             }
+                            let validation_duration = validation_start.elapsed();
+                            if verbose {
+                                println!("⏱️  Event validation took: {:?}", validation_duration);
+                            }
+                        }
+                        
+                        let event_id = event.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                        
+                        // First check if event exists in cassettes
+                        let cassette_check_start = std::time::Instant::now();
+                        let exists_in_cassettes = check_event_exists_in_cassettes(&active_cassettes, event_id).await;
+                        let cassette_check_duration = cassette_check_start.elapsed();
+                        
+                        if verbose {
+                            println!("⏱️  Cassette duplicate check took: {:?}", cassette_check_duration);
+                        }
+                        
+                        if exists_in_cassettes {
+                            if verbose {
+                                println!("⚠️  Event {} already exists in cassettes, rejecting", event_id);
+                            }
+                            
+                            // Send OK response with false for duplicate
+                            let ok_msg = json!(["OK", event_id, false, "error: duplicate event"]);
+                            let ok_msg_str = ok_msg.to_string();
+                            
+                            if verbose {
+                                println!("📤 Sending response: {}", ok_msg_str);
+                            }
+                            
+                            write.send(Message::Text(ok_msg_str)).await?;
+                            continue;
                         }
                         
                         // Try to add event to the store
+                        let store_start = std::time::Instant::now();
                         let (added, replaced) = {
                             let mut store = event_store.write().await;
                             store.add_event(event.clone())
                         };
+                        let store_duration = store_start.elapsed();
                         
-                        let event_id = event.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                        if verbose {
+                            println!("⏱️  In-memory store operation took: {:?}", store_duration);
+                        }
                         
                         if !added {
                             if verbose {
@@ -2390,8 +2478,19 @@ async fn handle_deck_relay_connection(
                             
                             write.send(Message::Text(ok_msg_str)).await?;
                         }
+                        
+                        let event_duration = event_start.elapsed();
+                        if verbose {
+                            println!("⏱️  Total EVENT processing took: {:?}", event_duration);
+                        }
                     }
                     "REQ" => {
+                        if verbose {
+                            println!("📨 Processing REQ message...");
+                        }
+                        
+                        let req_start = std::time::Instant::now();
+                        
                         // REQ messages must have at least 3 elements: ["REQ", subscription_id, filter, ...]
                         if arr.len() < 3 {
                             let notice = json!(["NOTICE", "Invalid REQ message: expected at least 3 elements"]);
@@ -2425,6 +2524,10 @@ async fn handle_deck_relay_connection(
                         // Store subscription
                         subscriptions.insert(sub_id.to_string(), json!(filters));
                         
+                        if verbose {
+                            println!("📖 Starting event collection...");
+                        }
+                        
                         // Collect ALL events from all sources first
                         let mut all_collected_events = Vec::new();
                         
@@ -2446,8 +2549,18 @@ async fn handle_deck_relay_connection(
                         }
                         
                         // 2. Query ALL cassettes to get complete state
+                        let cassette_query_start = std::time::Instant::now();
                         let cassettes = active_cassettes.read().await;
-                        for (path_idx, (_path, module, engine)) in cassettes.iter().enumerate() {
+                        let mut total_cassette_events = 0;
+                        
+                        if verbose {
+                            println!("📖 Found {} cassettes to query", cassettes.len());
+                        }
+                        
+                        for (path_idx, (path, module, engine)) in cassettes.iter().enumerate() {
+                            if verbose {
+                                println!("📖 Querying cassette {}: {}", path_idx, path.display());
+                            }
                             let mut store = Store::new(engine, ());
                             let instance = Instance::new(&mut store, module, &[])?;
                             
@@ -2459,15 +2572,21 @@ async fn handle_deck_relay_connection(
                                     // Keep querying this cassette until we get EOSE
                                     let mut got_eose = false;
                                     let mut cassette_events = 0;
+                                    let mut consecutive_empty_responses = 0;
+                                    const MAX_EMPTY_RESPONSES: usize = 2;
                                     
-                                    while !got_eose {
-                                        let req_msg = if filters.is_empty() {
-                                            json!(["REQ", sub_id, {}])
-                                        } else {
-                                            let mut msg_arr = vec![json!("REQ"), json!(sub_id)];
-                                            msg_arr.extend(filters.iter().cloned());
-                                            json!(msg_arr)
-                                        };
+                                    // Send initial REQ to establish subscription
+                                    let req_msg = if filters.is_empty() {
+                                        json!(["REQ", sub_id, {}])
+                                    } else {
+                                        let mut msg_arr = vec![json!("REQ"), json!(sub_id)];
+                                        msg_arr.extend(filters.iter().cloned());
+                                        json!(msg_arr)
+                                    };
+                                    
+                                    while !got_eose && consecutive_empty_responses < MAX_EMPTY_RESPONSES {
+                                        let events_before = cassette_events;
+                                        // For subsequent calls, just send the same REQ to continue streaming
                                         let msg_bytes = req_msg.to_string().into_bytes();
                                         let msg_ptr = alloc_func.call(&mut store, msg_bytes.len() as i32)?;
                                         
@@ -2488,7 +2607,20 @@ async fn handle_deck_relay_connection(
                                         
                                         let result = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
                                         
+                                        // Try to deallocate the result pointer
+                                        if let Ok(get_size_func) = instance.get_typed_func::<i32, i32>(&mut store, "get_allocation_size") {
+                                            if let Ok(size) = get_size_func.call(&mut store, result_ptr) {
+                                                if let Some(dealloc) = &dealloc_func {
+                                                    let _ = dealloc.call(&mut store, (result_ptr, size));
+                                                }
+                                            }
+                                        }
+                                        
                                         // Parse the response
+                                        if verbose {
+                                            println!("  🔍 Cassette response: {}", result);
+                                        }
+                                        
                                         if let Ok(parsed) = serde_json::from_str::<Vec<Value>>(&result) {
                                             if parsed.len() >= 2 {
                                                 match parsed[0].as_str() {
@@ -2508,6 +2640,11 @@ async fn handle_deck_relay_connection(
                                                                 // Collect the event
                                                                 all_collected_events.push(event.clone());
                                                                 cassette_events += 1;
+                                                                
+                                                                if verbose {
+                                                                    println!("  📥 Collected event: {}", 
+                                                                        event.get("id").and_then(|i| i.as_str()).unwrap_or("?"));
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -2520,13 +2657,28 @@ async fn handle_deck_relay_connection(
                                                 }
                                             }
                                         }
+                                        
+                                        // Check if we got any new events in this iteration
+                                        if cassette_events == events_before {
+                                            consecutive_empty_responses += 1;
+                                        } else {
+                                            consecutive_empty_responses = 0;
+                                        }
                                     }
                                     
                                     if verbose && cassette_events > 0 {
                                         println!("📊 Found {} events in cassette {}", cassette_events, path_idx);
                                     }
+                                    
+                                    total_cassette_events += cassette_events;
                                 }
                             }
+                        }
+                        
+                        let cassette_query_duration = cassette_query_start.elapsed();
+                        if verbose {
+                            println!("⏱️  Cassette queries took: {:?} (found {} events across {} cassettes)", 
+                                cassette_query_duration, total_cassette_events, cassettes.len());
                         }
                         
                         if verbose {
@@ -2657,6 +2809,11 @@ async fn handle_deck_relay_connection(
                         }
                         
                         write.send(Message::Text(eose_msg_str)).await?;
+                        
+                        let req_duration = req_start.elapsed();
+                        if verbose {
+                            println!("⏱️  Total REQ processing took: {:?}", req_duration);
+                        }
                     }
                     "CLOSE" => {
                         // CLOSE messages must have exactly 2 elements: ["CLOSE", subscription_id]
@@ -4074,10 +4231,17 @@ async fn main() -> Result<()> {
                 // Just show NIP-11 info
                 process_info_command(cassette, nip11)
             } else if *count {
+                // Generate random subscription ID if using default
+                let sub_id = if subscription == "sub1" {
+                    format!("sub-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("random"))
+                } else {
+                    subscription.clone()
+                };
+                
                 // Perform COUNT query
                 process_count_command(
                     cassette,
-                    subscription,
+                    &sub_id,
                     filter,
                     kinds,
                     authors,
@@ -4089,9 +4253,16 @@ async fn main() -> Result<()> {
                     search.as_deref(),
                 )
             } else {
+                // Generate random subscription ID if using default
+                let sub_id = if subscription == "sub1" {
+                    format!("sub-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("random"))
+                } else {
+                    subscription.clone()
+                };
+                
                 process_req_command(
                     cassette,
-                    subscription,
+                    &sub_id,
                     filter,
                     kinds,
                     authors,
@@ -4198,10 +4369,17 @@ async fn main() -> Result<()> {
                 // Just show NIP-11 info
                 process_info_command(cassette, nip11)
             } else if *count {
+                // Generate random subscription ID if using default
+                let sub_id = if subscription == "sub1" {
+                    format!("sub-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("random"))
+                } else {
+                    subscription.clone()
+                };
+                
                 // Perform COUNT query
                 process_count_command(
                     cassette,
-                    subscription,
+                    &sub_id,
                     filter,
                     kinds,
                     authors,
@@ -4213,9 +4391,16 @@ async fn main() -> Result<()> {
                     search.as_deref(),
                 )
             } else {
+                // Generate random subscription ID if using default
+                let sub_id = if subscription == "sub1" {
+                    format!("sub-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("random"))
+                } else {
+                    subscription.clone()
+                };
+                
                 process_req_command(
                     cassette,
-                    subscription,
+                    &sub_id,
                     filter,
                     kinds,
                     authors,

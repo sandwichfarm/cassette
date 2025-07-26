@@ -99,12 +99,17 @@ const EVENTS: &str = r#"[{
     "sig": "test_sig"
 }]"#;
 
-// Streaming state management
+// Subscription state
+#[derive(Clone)]
+struct SubscriptionState {
+    events: Vec<Note>,
+    current_index: usize,
+    eose_sent: bool,
+}
+
+// Streaming state management - supports multiple concurrent subscriptions
 thread_local! {
-    static SUBSCRIPTION_EVENTS: RefCell<Vec<Note>> = RefCell::new(Vec::new());
-    static CURRENT_INDEX: RefCell<usize> = RefCell::new(0);
-    static CURRENT_SUBSCRIPTION: RefCell<String> = RefCell::new(String::new());
-    static EOSE_SENT: RefCell<bool> = RefCell::new(false);
+    static SUBSCRIPTIONS: RefCell<std::collections::HashMap<String, SubscriptionState>> = RefCell::new(std::collections::HashMap::new());
     static DEBUG_MSGS: RefCell<Vec<String>> = RefCell::new(Vec::new());
 }
 
@@ -263,131 +268,119 @@ fn handle_req_command(arr: &[Value]) -> *mut u8 {
         }
     }
 
-    // Check if this is a new subscription
-    CURRENT_SUBSCRIPTION.with(|current| {
-        let mut current = current.borrow_mut();
-        if *current != subscription_id {
-            *current = subscription_id.clone();
-            CURRENT_INDEX.with(|idx| *idx.borrow_mut() = 0);
-            EOSE_SENT.with(|sent| *sent.borrow_mut() = false);
-        }
-    });
-
-    // Load and parse events if needed
-    let mut should_load_events = false;
-    SUBSCRIPTION_EVENTS.with(|events| {
-        should_load_events = events.borrow().is_empty();
-    });
-
-    if should_load_events {
-        // Load and parse events
-        let events: Vec<Note> = match serde_json::from_str(EVENTS) {
-            Ok(notes) => notes,
-            Err(e) => {
-                DEBUG_MSGS.with(|msgs| {
-                    let mut msgs = msgs.borrow_mut();
-                    msgs.push(format!("Failed to parse embedded events: {}", e));
-                });
-                
-                // Print the problematic JSON for debugging
-                DEBUG_MSGS.with(|msgs| {
-                    let mut msgs = msgs.borrow_mut();
-                    // Only print the first 200 chars to avoid overflowing logs
-                    let preview = if EVENTS.len() > 200 {
-                        format!("{}...(truncated)", &EVENTS[0..200])
-                    } else {
-                        EVENTS.to_string()
-                    };
-                    msgs.push(format!("Events JSON: {}", preview));
-                    
-                    // Attempt to analyze the first few characters
-                    let first_few = EVENTS.chars().take(20).collect::<String>();
-                    msgs.push(format!("First 20 chars: {:?}", first_few));
-                    
-                    // Check if it appears to be a JSON array
-                    if !EVENTS.trim().starts_with('[') {
-                        msgs.push("Error: Events JSON doesn't start with '[' character".to_string());
-                    }
-                });
-                
-                // Return a notice with more detailed error information including the exact error position
-                let error_msg = format!("Failed to load events: {} at position {}", e, e.column());
-                return string_to_ptr(json!(["NOTICE", error_msg]).to_string())
-            }
-        };
-
-        // Apply filters (NIP-01: filters are OR'd together, conditions within a filter are AND'd)
-        let mut matching_events = Vec::new();
-        
-        'event_loop: for event in events {
-            for filter in &filters {
-                if matches_filter(&event, filter) {
-                    matching_events.push(event.clone());
-                    continue 'event_loop;
-                }
-            }
-        }
-
-        // Check if any filter has a search query (NIP-50)
-        let has_search_query = filters.iter().any(|f| f.search.is_some());
-        
-        if has_search_query {
-            // NIP-50: Sort by search relevance (highest score first)
-            #[cfg(feature = "nip50")]
-            {
-                // Get the first search query for scoring
-                let search_query = filters.iter()
-                    .find_map(|f| f.search.as_ref())
-                    .cloned()
-                    .unwrap_or_default();
-                    
-                matching_events.sort_by(|a, b| {
-                    let score_a = score_event_for_search(a, &search_query);
-                    let score_b = score_event_for_search(b, &search_query);
-                    score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
-                });
-            }
-        } else {
-            // Default: Sort by created_at in reverse order (newest first)
-            matching_events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        }
-        
-        // Apply limit if specified - find the highest limit across all filters
-        let max_limit = filters.iter()
-            .filter_map(|f| f.limit)
-            .max();
+    // Load and parse events
+    let events: Vec<Note> = match serde_json::from_str(EVENTS) {
+        Ok(notes) => notes,
+        Err(e) => {
+            DEBUG_MSGS.with(|msgs| {
+                let mut msgs = msgs.borrow_mut();
+                msgs.push(format!("Failed to parse embedded events: {}", e));
+            });
             
-        if let Some(limit) = max_limit {
-            matching_events.truncate(limit);
+            // Print the problematic JSON for debugging
+            DEBUG_MSGS.with(|msgs| {
+                let mut msgs = msgs.borrow_mut();
+                // Only print the first 200 chars to avoid overflowing logs
+                let preview = if EVENTS.len() > 200 {
+                    format!("{}...(truncated)", &EVENTS[0..200])
+                } else {
+                    EVENTS.to_string()
+                };
+                msgs.push(format!("Events JSON: {}", preview));
+                
+                // Attempt to analyze the first few characters
+                let first_few = EVENTS.chars().take(20).collect::<String>();
+                msgs.push(format!("First 20 chars: {:?}", first_few));
+                
+                // Check if it appears to be a JSON array
+                if !EVENTS.trim().starts_with('[') {
+                    msgs.push("Error: Events JSON doesn't start with '[' character".to_string());
+                }
+            });
+            
+            // Return a notice with more detailed error information including the exact error position
+            let error_msg = format!("Failed to load events: {} at position {}", e, e.column());
+            return string_to_ptr(json!(["NOTICE", error_msg]).to_string())
         }
-
-        // Store events for this subscription
-        SUBSCRIPTION_EVENTS.with(|subs| {
-            subs.borrow_mut().clear();
-            subs.borrow_mut().extend_from_slice(&matching_events);
-        });
+    };
+    // Apply filters (NIP-01: filters are OR'd together, conditions within a filter are AND'd)
+    let mut matching_events = Vec::new();
+    
+    'event_loop: for event in events {
+        for filter in &filters {
+            if matches_filter(&event, filter) {
+                matching_events.push(event.clone());
+                continue 'event_loop;
+            }
+        }
     }
 
-    // Return next event or EOSE
-    SUBSCRIPTION_EVENTS.with(|events| {
-        CURRENT_INDEX.with(|idx| {
-            let events = events.borrow();
-            let mut idx = idx.borrow_mut();
-            
-            if *idx < events.len() {
+    // Check if any filter has a search query (NIP-50)
+    let has_search_query = filters.iter().any(|f| f.search.is_some());
+    
+    if has_search_query {
+        // NIP-50: Sort by search relevance (highest score first)
+        #[cfg(feature = "nip50")]
+        {
+            // Get the first search query for scoring
+            let search_query = filters.iter()
+                .find_map(|f| f.search.as_ref())
+                .cloned()
+                .unwrap_or_default();
+                
+            matching_events.sort_by(|a, b| {
+                let score_a = score_event_for_search(a, &search_query);
+                let score_b = score_event_for_search(b, &search_query);
+                score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+    } else {
+        // Default: Sort by created_at in reverse order (newest first)
+        matching_events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    }
+    
+    // Apply limit if specified - find the highest limit across all filters
+    let max_limit = filters.iter()
+        .filter_map(|f| f.limit)
+        .max();
+        
+    if let Some(limit) = max_limit {
+        matching_events.truncate(limit);
+    }
+
+    // Update or create subscription state
+    SUBSCRIPTIONS.with(|subs| {
+        let mut subs = subs.borrow_mut();
+        let state = subs.entry(subscription_id.clone()).or_insert(SubscriptionState {
+            events: Vec::new(),
+            current_index: 0,
+            eose_sent: false,
+        });
+        
+        // Update the events for this subscription
+        state.events = matching_events;
+        state.current_index = 0;
+        state.eose_sent = false;
+    });
+
+    // Return first event or EOSE if no events
+    SUBSCRIPTIONS.with(|subs| {
+        let mut subs = subs.borrow_mut();
+        if let Some(state) = subs.get_mut(&subscription_id) {
+            if state.current_index < state.events.len() {
                 // Stream one event at a time
-                let response = json!(["EVENT", subscription_id.clone(), &events[*idx]]);
-                *idx += 1;
+                let response = json!(["EVENT", subscription_id.clone(), &state.events[state.current_index]]);
+                state.current_index += 1;
                 string_to_ptr(response.to_string())
-            } else if !EOSE_SENT.with(|sent| *sent.borrow()) {
-                // All events have been sent, now send EOSE
-                EOSE_SENT.with(|sent| *sent.borrow_mut() = true);
-                string_to_ptr(json!(["EOSE", subscription_id.clone()]).to_string())
             } else {
-                // No more events and EOSE already sent
-                string_to_ptr(json!(["NOTICE", "No more events"]).to_string())
+                // No events, send EOSE immediately
+                state.eose_sent = true;
+                string_to_ptr(json!(["EOSE", subscription_id.clone()]).to_string())
             }
-        })
+        } else {
+            // Should not happen, but handle gracefully
+            string_to_ptr(json!(["EOSE", subscription_id.clone()]).to_string())
+        }
     })
 }
 
@@ -406,11 +399,10 @@ fn handle_close_command(arr: &[Value]) -> *mut u8 {
         return string_to_ptr(json!(["NOTICE", "Invalid subscription ID"]).to_string());
     }
     
-    // Reset the subscription state
-    CURRENT_SUBSCRIPTION.with(|sub| *sub.borrow_mut() = String::new());
-    CURRENT_INDEX.with(|idx| *idx.borrow_mut() = 0);
-    SUBSCRIPTION_EVENTS.with(|events| events.borrow_mut().clear());
-    EOSE_SENT.with(|sent| *sent.borrow_mut() = false);
+    // Remove the subscription from active subscriptions
+    SUBSCRIPTIONS.with(|subs| {
+        subs.borrow_mut().remove(&subscription_id);
+    });
     
     // Respond with a simple notice
     string_to_ptr(json!(["NOTICE", "Subscription closed"]).to_string())
@@ -577,4 +569,30 @@ fn score_event_for_search(event: &Note, search_query: &str) -> f32 {
 
 // Note: Memory management functions are already exported by cassette_tools
 // We don't need to re-export them here to avoid duplicate symbols
+
+// Export a function to continue streaming events for active subscriptions
+#[no_mangle]  
+pub extern "C" fn next() -> *mut u8 {
+    // Check all active subscriptions and return the next pending event
+    SUBSCRIPTIONS.with(|subs| {
+        let mut subs = subs.borrow_mut();
+        
+        // Find a subscription with pending events
+        for (sub_id, state) in subs.iter_mut() {
+            if state.current_index < state.events.len() {
+                // Return next event for this subscription
+                let response = json!(["EVENT", sub_id.clone(), &state.events[state.current_index]]);
+                state.current_index += 1;
+                return string_to_ptr(response.to_string());
+            } else if !state.eose_sent {
+                // Send EOSE for this subscription
+                state.eose_sent = true;
+                return string_to_ptr(json!(["EOSE", sub_id.clone()]).to_string());
+            }
+        }
+        
+        // No pending events in any subscription
+        string_to_ptr(json!(["NOTICE", "No pending events"]).to_string())
+    })
+}
 
