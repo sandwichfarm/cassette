@@ -358,6 +358,69 @@ Choose NIPs based on your use case:
 - **Search**: Add NIP-50 for text search capabilities
 - **Full-featured**: All NIPs for maximum compatibility
 
+## Docker
+
+### Quick Start with Docker
+
+Run a cassette deck relay using Docker:
+
+```bash
+# Clone the repository
+git clone https://github.com/dskvr/cassette.git
+cd cassette
+
+# Build and run with docker-compose
+docker-compose up -d
+
+# View relay logs
+docker logs cassette -f
+
+# Connect with a Nostr client
+nak req ws://localhost:8080 -k 1 -l 10
+```
+
+### Docker Configuration
+
+The cassette Docker setup supports environment variables for configuration:
+
+```bash
+# Copy the sample environment file
+cp .env.sample .env
+
+# Edit .env to customize settings
+# HOST_CASSETTE_DIR - Directory on host for cassette storage (default: ./data)
+# CASSETTE_DIR - Directory inside container (default: /home/cassette/data/deck)
+# RUST_LOG - Logging level (default: info)
+```
+
+### Custom Docker Setup
+
+```bash
+# Build the image
+docker build -t cassette .
+
+# Run with custom settings
+docker run -d \
+  --name cassette \
+  -p 8080:8080 \
+  -v ./my-cassettes:/home/cassette/data \
+  -e RUST_LOG=debug \
+  cassette \
+  cassette deck --relay --bind 0.0.0.0:8080 --output /home/cassette/data/my-deck
+
+# Run with docker-compose and custom directories
+HOST_CASSETTE_DIR=/path/to/cassettes CASSETTE_DIR=/custom/path docker-compose up -d
+```
+
+### Docker Features
+
+- **Multi-stage build**: Optimized image size using Rust builder pattern
+- **Non-root user**: Runs as unprivileged user for security
+- **Configurable storage**: Map host directories for persistent cassette storage
+- **Environment variables**: Configure relay behavior via `.env` file
+- **Log rotation**: Automatic log management with size limits
+- **Auto-restart**: Configured with `unless-stopped` restart policy
+
 ## Building from Source
 
 ### Prerequisites
@@ -381,7 +444,7 @@ cargo build --release
 cassette/
 ├── cli/                    # Command-line interface
 ├── cassette-tools/         # Core WASM functionality and modular NIP support
-├── loaders/                # Language-specific cassette loaders
+├── bindings/                # Language-specific cassette loaders
 │   ├── js/                 # JavaScript/TypeScript loader
 │   ├── py/                 # Python loader
 │   ├── rust/               # Rust loader
@@ -426,11 +489,29 @@ The `send` method accepts any NIP-01 protocol message in JSON format, including:
 - `["EVENT", subscription_id, event]` - Submit event (for compatible cassettes)
 - `["COUNT", subscription_id, filters...]` - Count events (NIP-45)
 
-This unified interface allows cassettes to be loaded by any compatible runtime without language-specific bindings.
+### Important: Loop Behavior
+
+Unlike WebSocket connections, cassettes return one message per `send` call. The `send` method now automatically detects REQ messages and loops internally to collect all events until EOSE.
+
+**Automatic Looping**: All language bindings now handle looping automatically:
+- **REQ messages**: `send()` returns all events in an array/list/vector
+- **Other messages**: `send()` returns a single response string
+
+The method signatures vary by language:
+- **JavaScript/TypeScript**: Returns `string | string[]`
+- **Python**: Returns `Union[str, List[str]]`
+- **Rust**: Returns `SendResult` enum
+- **Go**: Returns `*SendResult` struct
+- **C++**: Returns `std::variant<std::string, std::vector<std::string>>`
+- **Dart**: Returns `dynamic` (`String` or `List<String>`)
+
+The unified interface allows cassettes to be loaded by any compatible runtime.
 
 ## Language Loaders
 
 Cassette provides official loaders for multiple programming languages, allowing you to integrate cassettes into your applications regardless of your tech stack. All loaders implement the same interface and provide consistent functionality across languages.
+
+> IMPORTANT: Packages are not yet published, to test you'll need to import locally.
 
 ### Available Loaders
 
@@ -445,8 +526,14 @@ import { loadCassette } from 'cassette-loader';
 
 const result = await loadCassette('/path/to/cassette.wasm');
 if (result.success) {
+    // Send automatically handles looping for REQ messages
     const response = result.cassette.methods.send('["REQ", "sub1", {"kinds": [1]}]');
-    console.log(response);
+    // response is string[] for REQ messages
+    console.log(`Received ${response.length} events`);
+    
+    // For non-REQ messages, returns single string
+    const closeResponse = result.cassette.methods.send('["CLOSE", "sub1"]');
+    console.log(closeResponse);
 }
 ```
 
@@ -462,20 +549,31 @@ from cassette_loader import load_cassette
 result = load_cassette(wasm_bytes, name='my-cassette')
 if result['success']:
     cassette = result['cassette']
+    # Send automatically handles looping for REQ messages
     response = cassette.send('["REQ", "sub1", {"kinds": [1]}]')
+    # response is List[str] for REQ messages
+    print(f"Received {len(response)} events")
+    
+    # For non-REQ messages, returns single str
+    close_response = cassette.send('["CLOSE", "sub1"]')
+    print(close_response)
 ```
 
 #### Rust
-- **Crate**: `cassette-loader`
+- **Crate**: `cassette-deck`
 - **Installation**: Add to `Cargo.toml`
 - **Features**: Native performance, thread-safe event tracking, comprehensive error handling
 - **[Documentation](./loaders/rust/README.md)**
 
 ```rust
-use cassette_loader::Cassette;
+use cassette_loader::{Cassette, SendResult};
 
 let mut cassette = Cassette::load("path/to/cassette.wasm", true)?;
 let response = cassette.send(r#"["REQ", "sub1", {"kinds": [1]}]"#)?;
+match response {
+    SendResult::Multiple(events) => println!("Received {} events", events.len()),
+    SendResult::Single(msg) => println!("Single response: {}", msg),
+}
 ```
 
 #### Go
@@ -489,6 +587,11 @@ import cassette "github.com/cassette/loaders/go"
 
 c, err := cassette.LoadCassette("path/to/cassette.wasm", true)
 result, err := c.Send(`["REQ", "sub1", {"kinds": [1]}]`)
+if result.IsSingle {
+    fmt.Println("Single response:", result.Single)
+} else {
+    fmt.Printf("Received %d events\n", len(result.Multiple))
+}
 ```
 
 #### C++

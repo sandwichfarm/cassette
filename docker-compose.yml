@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  cassette:
+    build: .
+    container_name: cassette
+    ports:
+      - "8080:8080"
+    environment:
+      - RUST_LOG=info
+      - CASSETTE_DIR=${CASSETTE_DIR:-/home/cassette/data/deck}
+    volumes:
+      # Mount host directory to container for persistent cassette storage
+      - ${HOST_CASSETTE_DIR:-./data}:/home/cassette/data
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: ["cassette", "deck", "--relay", "--bind", "0.0.0.0:8080", "--output", "${CASSETTE_DIR:-/home/cassette/data/deck}"]
