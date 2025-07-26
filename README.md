@@ -88,13 +88,7 @@ nak req -k 1 -l 100 wss://nos.lol | cassette record --name my-notes
 # From a file
 cassette record events.json --name my-notes
 
-# With COUNT support (NIP-45)
-cassette record events.json --name my-notes --nip-45
-
-# With search support (NIP-50)
-cassette record events.json --name my-notes --nip-50
-
-# Full-featured with relay info (NIP-45 + NIP-50)
+# Full-featured with relay info via NIP-11, counts with NIP-45 and search with NIP-50
 cassette record events.json --name my-relay --nip-45 --nip-50 \
   --relay-description "Personal event archive"
 
