@@ -43,3 +43,4 @@ test*.js
 test*.ts
 test*.py 
 test*.sh
+test_*
