@@ -1,5 +1,0 @@
-🎛️  Starting Cassette Deck in RELAY mode
-🌐 Accepting events on: 127.0.0.1:9999
-📼 Output directory: test_deck
-📊 Rotation: 2 events / 100 MB / 3600 seconds
-🌐 Deck relay listening on ws://127.0.0.1:9999

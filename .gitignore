@@ -36,3 +36,10 @@ Thumbs.db
 # Logs
 logs
 
+# Claude crumbs
+*.log 
+test*.json
+test*.js
+test*.ts
+test*.py 
+test*.sh
