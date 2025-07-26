@@ -30,12 +30,11 @@ Initially written on a Saturday over brunch at [SEC-04](https://sovereignenginee
 
 ## Quick Start
 
-Download the latest `cli` binary from [releases](https://github.com/dskvr/cassette/releases/latest).
-
-_**Knowledge is power:** The `cli` includes an ability to both `record` and `scrub` cassettes (create/read). Cassettes respond to `REQ` messages to `stdin` with `EVENT`, `NOTICE` and `EOSE` messages to `stdout`._
-
 ### Prerequisites
 - [Rust and Cargo](https://www.rust-lang.org/)
+
+### Install
+Download the latest `cli` binary from [releases](https://github.com/dskvr/cassette/releases/latest).
 
 ### Record a cassette
 
@@ -43,124 +42,18 @@ _Pipe the events or provide the path to a json file with events._
 
 ```bash
 # Basic cassette (NIP-01 only)
-nak req -k 1 -l 100 wss://nos.lol | cassette record --name my-notes
-
-# From a file
-cassette record events.json --name my-notes
-
-# Full-featured with relay info via NIP-11, counts with NIP-45 and search with NIP-50
-cassette record events.json --name my-relay --nip-45 --nip-50 \
-  --relay-description "Personal event archive"
-
-# Output: my-notes.wasm
+nak req -k 1 -l 100 wss://nos.lol | cassette record --name my-notes --nip-50 --nip-45
+cassette scrub my-notes.wasm -l 5
+cassette scrub --count -k 0
+cassette scrub --search "gm"
 ```
 
-### Scrub through a cassette
+The **cassette cli** also demonstrates different potential ways to use a cassette
+- Mix events from multiple cassettes into one with `dub` 
+- Cast events to relays with `play` 
+- Serve a read-only relay based on cassettes with `listen`
+- Serve a relay that records incoming events into new cassettes, compiles them and hot-loads them into state with `deck`
 
-_Scrub through events like rewinding an analog tape - dump all events or use filters_
-
-```bash
-# Get all events
-cassette scrub my-notes.wasm
-
-# Filter by kind
-cassette scrub my-notes.wasm --kinds 1
-
-# Filter by author
-cassette scrub my-notes.wasm --authors npub1...
-
-# Multiple filters
-cassette scrub my-notes.wasm --kinds 1 --kinds 7 --limit 10
-
-# Get relay information (NIP-11)
-cassette scrub my-notes.wasm --info
-
-# COUNT events (NIP-45)
-cassette scrub my-notes.wasm --count --kinds 1
-
-# Search events (NIP-50)  
-cassette scrub my-notes.wasm --search "bitcoin lightning"
-
-# Search with filters
-cassette scrub my-notes.wasm --search "nostr" --kinds 1 --limit 10
-
-# COUNT with custom relay info
-cassette scrub my-notes.wasm --count --kinds 1 \
-  --name "Archive" --description "Event archive"
-```
-
-### Dub a Mixtape
-
-```bash
-# Merge cassettes
-cassette dub alice.wasm bob.wasm combined.wasm
-
-# Merge with filters
-cassette dub *.wasm filtered.wasm --kinds 1 --since 1700000000
-```
-
-### Play to Relays
-
-```bash
-# Broadcast events to a relay
-cassette play my-notes.wasm --relays wss://relay.damus.io
-
-# Broadcast to multiple relays
-cassette play *.wasm --relays wss://nos.lol wss://relay.nostr.band
-
-# Test with dry-run
-cassette play archive.wasm --relays ws://localhost:7000 --dry-run
-```
-
-### Listen - Serve cassettes as a read-only relay
-
-```bash
-# Serve a single cassette as a WebSocket relay (auto-selects port)
-cassette listen my-notes.wasm
-
-# Serve multiple cassettes on a specific port
-cassette listen *.wasm --port 8080
-
-# Serve cassettes from a directory on all interfaces
-cassette listen cassettes/*.wasm --bind 0.0.0.0 --port 1337
-
-# Verbose mode to see connections
-cassette listen archive.wasm --verbose
-
-# Connect with any Nostr client
-nak req ws://localhost:7777 -k 1 -l 10
-```
-
-### Deck - Writable relay with cassette archiving
-
-```bash
-# Run a writable relay that creates cassettes (relay mode)
-cassette deck
-
-# Run with custom settings
-cassette deck --port 1337 --event-limit 1000 --size-limit 10
-
-# Record from other relays continuously (record mode)
-cassette deck --mode record --relays wss://relay.damus.io --kinds 1
-
-# Verbose mode to see all operations
-cassette deck -v
-
-# Send events to the deck
-echo "hello world" | nak event -c - | nak publish ws://localhost:7777
-```
-
-## What is a Cassette?
-
-A cassette is a WebAssembly module containing Nostr events that implements the Nostr relay protocol. Cassettes support modular NIP implementations including NIP-01 (basic relay protocol), NIP-11 (relay information document), NIP-42 (authentication), and NIP-45 (event counts). Think of it as a portable, queryable database that runs anywhere WebAssembly does - browsers, servers, edge workers, or CLI tools.
-
-### Use Cases
-
-- **Archival**: Store important events in a portable format
-- **Testing**: Create deterministic test fixtures for Nostr clients
-- **Offline**: Query events without network access
-- **Distribution**: Share curated event collections
-- **Privacy**: Keep events local while maintaining relay compatibility
 
 ## CLI Commands
 
@@ -719,6 +612,17 @@ AI Tips:
 - `play` is the current command for broadcasting events to relays
 - `scrub` is for reading/querying cassettes (formerly `play`)
 
-## License
+## What is a Cassette?
 
-MIT
+A cassette is a WebAssembly module containing Nostr events that implements the Nostr relay protocol. Cassettes support modular NIP implementations including NIP-01 (basic relay protocol), NIP-11 (relay information document), NIP-42 (authentication), and NIP-45 (event counts). Think of it as a portable, queryable database that runs anywhere WebAssembly does - browsers, servers, edge workers, or CLI tools.
+
+### Use Cases
+
+- **Archival**: Store important events in a portable format
+- **Testing**: Create deterministic test fixtures for Nostr clients
+- **Books**: Share curated collections where data completedness is essential.
+- **WOT Cache**: Cache users' WoT periodically to greatly reduce number of hops needed for WoT discovery.
+- **Thread Caching**: Cache conversations and threads that are important to you.
+- **Offline**: Query events without network access
+- **Distribution**: Share curated event collections
+- **Privacy**: Keep events local while maintaining relay compatibility
