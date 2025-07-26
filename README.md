@@ -259,7 +259,7 @@ cassette play archive.wasm --relays ws://localhost:7000 --dry-run
 # Note: The 'cast' command is deprecated and will show a warning
 ```
 
-### `listen` - Serve cassettes as a WebSocket relay
+### `listen` - Serve a read-only relay from one or more cassettes
 
 ```bash
 cassette listen [OPTIONS] <CASSETTES...>
