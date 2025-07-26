@@ -4,7 +4,7 @@
 
 **Portable, read-only nostr relays that you can scrub, dub and cast notes from.** Mostly rust, compiled to WASM. 
 
-Initially written on a Saturday over brunch at [SEC-04](https://sovereignengineering.org) with [futurepaul](https://github.com/futurepaul)
+Initially written on a Saturday over brunch at [SEC-04](https://sovereignengineering.io) with [futurepaul](https://github.com/futurepaul)
 
 ## What's New in v0.8.0
 
