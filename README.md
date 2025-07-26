@@ -2,7 +2,7 @@
 
 # Cassette 📼
 
-**Portable, real-only nostr relays that you can scrub, dub and cast notes from.** Mostly rust, compiled to WASM. 
+**Portable, read-only nostr relays that you can scrub, dub and cast notes from.** Mostly rust, compiled to WASM. 
 
 Initially written on a Saturday over brunch at [SEC-04](https://sovereignengineering.org) with [futurepaul](https://github.com/futurepaul)
 
