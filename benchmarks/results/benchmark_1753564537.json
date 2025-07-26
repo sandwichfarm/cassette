@@ -1,0 +1,71 @@
+{
+  "timestamp": "2025-07-26T14:15:37.556159",
+  "config": {
+    "deck_url": "ws://localhost:9999",
+    "duration": 60,
+    "target_rps": 100,
+    "connections": 10
+  },
+  "metrics": {
+    "req_valid": {
+      "count": 20,
+      "mean": 0.009776878356933593,
+      "min": 0.00408172607421875,
+      "max": 0.013694047927856445,
+      "p50": 0.010196924209594727,
+      "p95": 0.013694047927856445,
+      "p99": 0.013694047927856445
+    },
+    "req_event_counts": {
+      "count": 20,
+      "mean": 0,
+      "min": 0,
+      "max": 0,
+      "p50": 0,
+      "p95": 0,
+      "p99": 0
+    },
+    "event_valid": {
+      "count": 1401,
+      "mean": 0.004009822196061912,
+      "min": 0.002398967742919922,
+      "max": 0.006417036056518555,
+      "p50": 0.0039942264556884766,
+      "p95": 0.004467964172363281,
+      "p99": 0.004967212677001953
+    },
+    "invalid_handled": {
+      "count": 19,
+      "mean": 0.000194574657239412,
+      "min": 4.00543212890625e-05,
+      "max": 0.0007178783416748047,
+      "p50": 6.699562072753906e-05,
+      "p95": 0.0007178783416748047,
+      "p99": 0.0007178783416748047
+    },
+    "concurrent_req": {
+      "count": 50,
+      "mean": 0.014200997352600098,
+      "min": 0.006386280059814453,
+      "max": 0.02634906768798828,
+      "p50": 0.011865854263305664,
+      "p95": 0.02590489387512207,
+      "p99": 0.02634906768798828
+    }
+  },
+  "errors": {
+    "req_errors": 0,
+    "event_invalid": 599,
+    "event_rejected": 0,
+    "invalid_Invalid REQ: filter ": 1,
+    "invalid_not_caught": 572,
+    "invalid_Invalid REQ message:": 4,
+    "invalid_Invalid EVENT messag": 7,
+    "invalid_Invalid message: emp": 1,
+    "invalid_Invalid event: Missi": 1,
+    "invalid_Invalid message form": 3,
+    "invalid_Invalid JSON: EOF wh": 1,
+    "invalid_Invalid EVENT: secon": 1,
+    "connection_failed": 0
+  }
+}

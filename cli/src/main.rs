@@ -4942,7 +4942,6 @@ fn process_events(
     generator.set_var("event_count", &event_count.to_string());
     
     // Properly escape the JSON for template insertion
-    // Note: We're not double-escaping anymore, just using the raw JSON
     generator.set_var("events_json", &events_json_string);
     
     // Build features array based on NIP flags

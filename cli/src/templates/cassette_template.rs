@@ -56,17 +56,17 @@ struct Filter {
 }
 
 // Custom deserialization helpers to ensure NIP-119 tag filters are correctly parsed
-impl Filter {
-    // Helper method to check if a key is a NIP-119 AND filter
-    fn is_nip119_and_filter(key: &str) -> bool {
-        key.starts_with('&') && key.len() > 1
-    }
+// impl Filter {
+//     // Helper method to check if a key is a NIP-119 AND filter
+//     fn is_nip119_and_filter(key: &str) -> bool {
+//         key.starts_with('&') && key.len() > 1
+//     }
 
-    // Helper method to check if a key is a regular tag filter
-    fn is_regular_tag_filter(key: &str) -> bool {
-        key.starts_with('#') && key.len() == 2
-    }
-}
+//     // Helper method to check if a key is a regular tag filter
+//     fn is_regular_tag_filter(key: &str) -> bool {
+//         key.starts_with('#') && key.len() == 2
+//     }
+// }
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Note {
@@ -82,7 +82,7 @@ struct Note {
 
 // Events embedded by CLI during build
 #[cfg(not(test))]
-const EVENTS: &str = r###"{{{ events_json }}}"###;
+const EVENTS: &str = include_str!("events.json");
 
 #[cfg(test)]
 const EVENTS: &str = r#"[{
@@ -351,16 +351,24 @@ fn handle_req_command(arr: &[Value]) -> *mut u8 {
     // Update or create subscription state
     SUBSCRIPTIONS.with(|subs| {
         let mut subs = subs.borrow_mut();
-        let state = subs.entry(subscription_id.clone()).or_insert(SubscriptionState {
-            events: Vec::new(),
-            current_index: 0,
-            eose_sent: false,
-        });
         
-        // Update the events for this subscription
-        state.events = matching_events;
-        state.current_index = 0;
-        state.eose_sent = false;
+        // Check if subscription already exists
+        if let Some(state) = subs.get_mut(&subscription_id) {
+            // Existing subscription - don't reset, just continue from current position
+            // Only update if the filter changed (simplified: if events count changed)
+            if state.events.len() != matching_events.len() {
+                state.events = matching_events;
+                state.current_index = 0;
+                state.eose_sent = false;
+            }
+        } else {
+            // New subscription
+            subs.insert(subscription_id.clone(), SubscriptionState {
+                events: matching_events,
+                current_index: 0,
+                eose_sent: false,
+            });
+        }
     });
 
     // Return first event or EOSE if no events
