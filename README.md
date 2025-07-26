@@ -612,6 +612,7 @@ AI Tips:
 - `play` is the current command for broadcasting events to relays
 - `scrub` is for reading/querying cassettes (formerly `play`)
 
+<a id="what-is-a-cassette"></a>
 ## What is a Cassette?
 
 A cassette is a WebAssembly module containing Nostr events that implements the Nostr relay protocol. Cassettes support modular NIP implementations including NIP-01 (basic relay protocol), NIP-11 (relay information document), NIP-42 (authentication), and NIP-45 (event counts). Think of it as a portable, queryable database that runs anywhere WebAssembly does - browsers, servers, edge workers, or CLI tools.
