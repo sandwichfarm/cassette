@@ -4,48 +4,6 @@
 
 Portable nostr relays that you can scrub, dub and cast notes from. Mostly rust, compiled to WASM. 
 
-## Table of Contents
-
-- [What's New](#whats-new-in-v071)
-- [NIPs Support](#nips-look)
-- [Quick Start](#quick-start)
-  - [Prerequisites](#prerequisites)
-  - [Record a cassette](#record-a-cassette)
-  - [Scrub through a cassette](#scrub-through-a-cassette)
-  - [Dub a Mixtape](#dub-a-mixtape)
-  - [Play to Relays](#play-to-relays)
-  - [Listen - Serve cassettes as a relay](#listen---serve-cassettes-as-a-relay)
-  - [Deck - Run a writable relay](#deck---run-a-writable-relay)
-- [What is a Cassette?](#what-is-a-cassette)
-  - [Use Cases](#use-cases)
-- [CLI Commands](#cli-commands)
-  - [`record`](#record---record-events-onto-cassettes)
-  - [`scrub`](#scrub---scrub-through-cassettes-send-a-req)
-  - [`dub`](#dub---combine-cassettes-into-a-mixtape)
-  - [`play`](#play---broadcast-events-to-nostr-relays)
-  - [`listen`](#listen---serve-cassettes-as-a-websocket-relay)
-  - [`deck`](#deck---run-a-cassette-deck-relay)
-- [Advanced Configuration](#advanced-configuration)
-  - [Modular NIP Support](#modular-nip-support)
-    - [NIP-01 (Basic Relay Protocol)](#nip-01-basic-relay-protocol)
-    - [NIP-11 (Relay Information Document)](#nip-11-relay-information-document)
-    - [NIP-45 (Event Counts)](#nip-45-event-counts)
-    - [NIP-42 (Authentication)](#nip-42-authentication)
-    - [NIP-50 (Search Capability)](#nip-50-search-capability)
-  - [Combining NIPs](#combining-nips)
-  - [Filtering and Querying](#filtering-and-querying)
-  - [Performance and Size Optimization](#performance-and-size-optimization)
-- [Building from Source](#building-from-source)
-- [Project Structure](#project-structure)
-- [WebAssembly Interface](#webassembly-interface)
-- [Language Loaders](#language-loaders)
-- [Advanced Usage](#advanced-usage)
-  - [Running Cassettes as Relays](#running-cassettes-as-relays)
-  - [Creating Custom Cassettes](#creating-custom-cassettes)
-- [Contributing](#contributing)
-- [Migration Guide](#migration-guide)
-- [License](#license)
-
 ## What's New in v0.8.0
 
 - **🎛️ New `deck` command**: Run a cassette deck - continuously record and serve cassettes as a writable relay
@@ -152,7 +110,7 @@ cassette play *.wasm --relays wss://nos.lol wss://relay.nostr.band
 cassette play archive.wasm --relays ws://localhost:7000 --dry-run
 ```
 
-### Listen - Serve cassettes as a relay
+### Listen - Serve cassettes as a read-only relay
 
 ```bash
 # Serve a single cassette as a WebSocket relay (auto-selects port)
@@ -171,7 +129,7 @@ cassette listen archive.wasm --verbose
 nak req ws://localhost:7777 -k 1 -l 10
 ```
 
-### Deck - Run a writable relay
+### Deck - Writable relay with cassette archiving
 
 ```bash
 # Run a writable relay that creates cassettes (relay mode)
