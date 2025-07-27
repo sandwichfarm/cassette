@@ -82,7 +82,7 @@ struct Note {
 
 // Events embedded by CLI during build
 #[cfg(not(test))]
-const EVENTS: &str = include_str!("events.json");
+const EVENTS: &str = r###"{{events_json}}"###;
 
 #[cfg(test)]
 const EVENTS: &str = r#"[{

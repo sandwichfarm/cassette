@@ -1,8 +1,9 @@
 [package]
 name = "cassette-cli"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 description = "CLI tool for creating and managing Cassette platform modules"
+build = "build.rs"
 
 # Set the binary name to "cassette"
 [[bin]]
@@ -14,6 +15,10 @@ path = "src/main.rs"
 name = "cassette_cli"
 path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["deck"]
+deck = []
 
 [dependencies]
 cassette-tools = { path = "../cassette-tools" }

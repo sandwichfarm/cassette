@@ -57,9 +57,11 @@ release:
 	@echo "$(GREEN)✓ Release build complete$(NC)"
 
 install: release
-	@echo "$(GREEN)Installing Cassette CLI...$(NC)"
-	@cd cli && cargo install --path .
-	@echo "$(GREEN)✓ Cassette CLI installed$(NC)"
+	@echo "$(GREEN)Installing Cassette CLI to /usr/local/bin...$(NC)"
+	@sudo cp cli/target/release/cassette /usr/local/bin/
+	@sudo chmod +x /usr/local/bin/cassette
+	@echo "$(GREEN)✓ Cassette CLI installed to /usr/local/bin$(NC)"
+	@echo "$(GREEN)✓ Version: $$(cassette --version)$(NC)"
 
 wasm-target:
 	@echo "$(GREEN)Installing wasm32 target...$(NC)"

@@ -1,0 +1,3 @@
+# Python cassette benchmark requirements
+../../bindings/py/
+pyyaml>=6.0

@@ -1,0 +1,43 @@
+# Cassette Benchmark Configuration
+# This file controls parameters for all benchmark tests
+
+# Number of iterations per cassette size
+iterations:
+  small: 100    # Quick tests for small cassettes
+  medium: 10    # Reduced iterations for medium cassettes  
+  large: 5     # Minimal iterations for large cassettes
+
+# Default iterations if size not specified
+default_iterations: 100
+
+# Cassette size patterns to match filenames
+size_patterns:
+  small:
+    - "small*.wasm"
+    - "tiny*.wasm"
+  medium:
+    - "medium*.wasm"
+  large:
+    - "large*.wasm"
+    - "huge*.wasm"
+
+# Test configuration
+test_config:
+  # Number of warmup iterations before actual benchmarking
+  warmup_iterations: 10
+  
+  # Whether to save detailed results to JSON
+  save_json_output: true
+  
+  # Whether to run memory profiling
+  profile_memory: true
+
+# Language-specific overrides (optional)
+# These override the global settings for specific languages
+language_overrides:
+  # Example:
+  # python:
+  #   iterations:
+  #     small: 50
+  #     medium: 25
+  #     large: 5
