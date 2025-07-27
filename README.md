@@ -21,20 +21,6 @@ Initially written on a Saturday over brunch at [SEC-04](https://sovereignenginee
 - **🐳 Docker support**: Official Docker image and docker-compose configuration for easy deployment
 - **📁 Bindings restructure**: Renamed `loaders` directory to `bindings` for clarity
 
-## What's New in v0.8.0
-
-- **🎛️ New `deck` command**: Run a cassette deck - continuously record and serve cassettes as a writable relay
-- **📼 Deck relay mode**: Accept events via WebSocket and automatically compile them into cassettes
-- **♻️ Event deduplication**: Proper handling of replaceable events (NIP-01) across all cassettes
-- **🔍 Complete NIP-01 compliance**: Full filter support including ids, kinds, authors, since, until, limit, and tag filters
-- **📊 Improved REQ handling**: Collects all events before applying replaceable event logic and filters
-- **🎚️ Renamed `play` to `scrub`**: Better reflects the analog tape metaphor of moving through content
-- **🌐 New `listen` command**: Serve cassettes as a WebSocket relay with NIP-11 support
-- **🔧 NIP-11 improvements**: Added `software` and `version` fields to relay information
-- **🐛 Bug fixes**: Fixed WebSocket connection state issues and event handling in relay mode
-
-> **Note**: The `play` command is deprecated but still works with a warning. Please use `scrub` instead.
-
 ## NIPs Look:
 
 - [x] **NIP-01** - Basic Relay Protocol (REQ/EVENT/EOSE/CLOSE)
