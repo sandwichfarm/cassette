@@ -21,6 +21,7 @@ use sha2::{Sha256, Digest};
 
 mod ui;
 mod deps;
+mod embedded_cassette_tools;
 
 /// Sanitize a name for use as a filename
 /// Converts to lowercase, replaces spaces with hyphens, removes special characters
@@ -321,6 +322,129 @@ mod generator {
             self.generate_with_callback(None::<fn() -> Result<()>>)
         }
         
+        /// Generate a cassette using embedded cassette-tools library  
+        #[cfg(feature = "deck")]
+        pub fn generate_with_embedded_tools(&self) -> Result<PathBuf> {
+            self.generate_with_tools_dir(None)
+        }
+        
+        /// Generate a cassette using embedded cassette-tools library with optional pre-extracted tools dir
+        #[cfg(feature = "deck")]
+        pub fn generate_with_tools_dir(&self, existing_tools_dir: Option<&Path>) -> Result<PathBuf> {
+            debugln!(self.verbose, "🔧 Generating cassette with embedded tools");
+            
+            // The project_dir should already be set up by the caller
+            // We'll use that instead of creating a new temp directory
+            
+            // Create src directory
+            let src_dir = self.project_dir.join("src");
+            fs::create_dir_all(&src_dir)?;
+            
+            // Determine tools directory
+            let tools_dir = if let Some(existing_tools) = existing_tools_dir {
+                // Make sure we use the absolute path
+                fs::canonicalize(existing_tools)?
+            } else {
+                // Extract to a local directory within the project
+                let tools_dir = self.project_dir.join("cassette-tools");
+                fs::create_dir_all(&tools_dir)?;
+                self.extract_embedded_tools(&tools_dir)?;
+                fs::canonicalize(&tools_dir)?
+            };
+            
+            // Create the wrapper project with local path dependency
+            self.create_embedded_project_files(&src_dir, &tools_dir, &self.project_dir)?;
+            
+            // Build the WASM module
+            let output_path = self.build_wasm(&self.project_dir, None::<fn() -> Result<()>>)?;
+            
+            // Copy to destination
+            let dest_path = self.copy_output(output_path)?;
+            
+            Ok(dest_path)
+        }
+        
+        #[cfg(feature = "deck")]
+        fn extract_embedded_tools(&self, tools_dir: &Path) -> Result<()> {
+            use crate::embedded_cassette_tools::get_embedded_tools_dir;
+            
+            // Get the embedded tools directory
+            let embedded_dir = get_embedded_tools_dir();
+            
+            debugln!(self.verbose, "  Extracting embedded cassette-tools from: {}", embedded_dir.display());
+            
+            // Copy all files from embedded directory to tools_dir
+            self.copy_dir_contents(embedded_dir, tools_dir)?;
+            
+            debugln!(self.verbose, "  Extracted cassette-tools to: {}", tools_dir.display());
+            
+            Ok(())
+        }
+        
+        #[cfg(feature = "deck")]
+        pub fn copy_dir_contents(&self, src: &Path, dst: &Path) -> Result<()> {
+            fs::create_dir_all(dst)?;
+            
+            for entry in fs::read_dir(src)? {
+                let entry = entry?;
+                let ty = entry.file_type()?;
+                let src_path = entry.path();
+                let dst_path = dst.join(entry.file_name());
+                
+                if ty.is_dir() {
+                    self.copy_dir_contents(&src_path, &dst_path)?;
+                } else {
+                    fs::copy(&src_path, &dst_path)?;
+                }
+            }
+            
+            Ok(())
+        }
+        
+        #[cfg(feature = "deck")]  
+        fn create_embedded_project_files(&self, src_dir: &Path, tools_dir: &Path, project_dir: &Path) -> Result<()> {
+            // Create the lib.rs file from template
+            let mut lib_rs_file = File::create(src_dir.join("lib.rs"))
+                .context("Failed to create lib.rs file")?;
+            
+            // Use the existing template rendering
+            let mut handlebars = Handlebars::new();
+            handlebars.set_strict_mode(true);
+            
+            let mut template_data = json!({});
+            let obj = template_data.as_object_mut().unwrap();
+            
+            for (key, value) in &self.template_vars {
+                obj.insert(key.clone(), json!(value));
+            }
+            
+            let lib_rs_content = handlebars.render_template(TEMPLATE_RS, &template_data)
+                .context("Failed to render lib.rs template")?;
+            
+            lib_rs_file.write_all(lib_rs_content.as_bytes())
+                .context("Failed to write to lib.rs file")?;
+            
+            // Create Cargo.toml with local path to extracted tools
+            let cargo_data = json!({
+                "crate_name": self.name,
+                "version": "0.1.0",
+                "description": "Generated Cassette",
+                "cassette_tools_path": tools_dir.display().to_string(),
+                "features_array": self.template_vars.get("features_array").unwrap_or(&"[\"default\"]".to_string())
+            });
+            
+            let cargo_content = handlebars.render_template(TEMPLATE_CARGO, &cargo_data)
+                .context("Failed to render Cargo.toml template")?;
+            
+            let cargo_path = project_dir.join("Cargo.toml");
+            let mut cargo_file = File::create(&cargo_path)
+                .context("Failed to create Cargo.toml file")?;
+            cargo_file.write_all(cargo_content.as_bytes())
+                .context("Failed to write to Cargo.toml file")?;
+            
+            Ok(())
+        }
+        
         pub fn generate_with_callback<F>(&self, progress_callback: Option<F>) -> Result<PathBuf> 
         where 
             F: FnMut() -> Result<()>
@@ -416,13 +540,21 @@ mod generator {
 
         fn get_relative_cassette_tools_path(&self) -> Result<String> {
             // Use an absolute path for cassette-tools
-            // We'll determine this from the current working directory
-            let current_dir = std::env::current_dir()?;
-            debugln!(self.verbose, "  Current directory: {}", current_dir.display());
+            #[cfg(feature = "deck")]
+            {
+                // When using deck feature, cassette-tools is already embedded
+                return Ok("./cassette-tools".to_string());
+            }
             
-            // Find the project root by traversing up until we find a marker file
-            let mut project_root = current_dir.clone();
-            loop {
+            #[cfg(not(feature = "deck"))]
+            {
+                // We'll determine this from the current working directory
+                let current_dir = std::env::current_dir()?;
+                debugln!(self.verbose, "  Current directory: {}", current_dir.display());
+            
+                // Find the project root by traversing up until we find a marker file
+                let mut project_root = current_dir.clone();
+                loop {
                 if project_root.join("cassette-tools").exists() {
                     // Found the project root - canonicalize to resolve symlinks
                     let tools_path = project_root.join("cassette-tools")
@@ -448,7 +580,8 @@ mod generator {
             
             let tools_path = path.display().to_string();
             
-            Ok(tools_path)
+                Ok(tools_path)
+            }
         }
 
         fn build_wasm<F>(&self, project_dir: &Path, mut progress_callback: Option<F>) -> Result<PathBuf> 
@@ -2010,6 +2143,30 @@ fn load_cassette_with_nip11(
 }
 
 
+#[cfg(feature = "deck")]
+/// Initialize persistent embedded tools directory for deck mode
+fn init_embedded_tools_dir(output_dir: &PathBuf) -> Result<PathBuf> {
+    let tools_dir = output_dir.join(".cassette-tools-embedded");
+    fs::create_dir_all(&tools_dir)?;
+    
+    // Extract embedded tools once at startup
+    if !tools_dir.join("Cargo.toml").exists() {
+        use crate::embedded_cassette_tools::get_embedded_tools_dir;
+        let embedded_dir = get_embedded_tools_dir();
+        
+        // Copy all files from embedded directory to tools_dir
+        let mut generator = generator::CassetteGenerator::new(
+            output_dir.clone(),
+            "temp",
+            &output_dir,
+        );
+        generator.copy_dir_contents(embedded_dir, &tools_dir)?;
+        println!("📦 Extracted embedded cassette-tools to {}", tools_dir.display());
+    }
+    
+    Ok(tools_dir)
+}
+
 /// Process the deck command in relay mode - run a writable relay with cassette backend
 async fn process_deck_relay_mode(
     base_name: &str,
@@ -2039,6 +2196,10 @@ async fn process_deck_relay_mode(
     // Create output directory
     fs::create_dir_all(output_dir)?;
     
+    // Create a persistent directory for embedded cassette-tools
+    #[cfg(feature = "deck")]
+    let embedded_tools_dir = Arc::new(init_embedded_tools_dir(output_dir)?);
+    
     // Shared state for cassettes and current recording
     let active_cassettes: Arc<RwLock<Vec<(PathBuf, Module, Engine)>>> = Arc::new(RwLock::new(Vec::new()));
     let recording_state = Arc::new(RwLock::new(RecordingState {
@@ -2046,8 +2207,9 @@ async fn process_deck_relay_mode(
         event_count: 0,
         start_time: SystemTime::now(),
         current_size: 0,
+        is_compiling: false,
     }));
-    let event_store = Arc::new(RwLock::new(DeckEventStore::new()));
+    let _event_store = Arc::new(RwLock::new(DeckEventStore::new()));
     
     // Load existing cassettes from output directory
     {
@@ -2108,6 +2270,8 @@ async fn process_deck_relay_mode(
         let output_dir = output_dir.clone();
         let base_name = base_name.to_string();
         let nip11_args = nip11_args.clone();
+        #[cfg(feature = "deck")] 
+        let embedded_tools_dir = embedded_tools_dir.clone();
         
         tokio::spawn(async move {
             loop {
@@ -2131,6 +2295,7 @@ async fn process_deck_relay_mode(
                         nip_50,
                         &nip11_args,
                         verbose,
+                        #[cfg(feature = "deck")] &embedded_tools_dir,
                     ).await {
                         eprintln!("❌ Failed to rotate cassette: {}", e);
                     }
@@ -2148,7 +2313,7 @@ async fn process_deck_relay_mode(
                 }
                 let cassettes = active_cassettes.clone();
                 let recording = recording_state.clone();
-                let store = event_store.clone();
+                let store = _event_store.clone();
                 let skip_val = skip_validation;
                 tokio::spawn(handle_deck_relay_connection(stream, cassettes, recording, store, skip_val, verbose));
             }
@@ -2174,6 +2339,7 @@ async fn process_deck_relay_mode(
                         nip_50,
                         &nip11_args,
                         verbose,
+                        #[cfg(feature = "deck")] &embedded_tools_dir,
                     ).await?;
                 }
                 break;
@@ -2248,7 +2414,7 @@ async fn handle_deck_relay_connection(
     stream: TcpStream,
     active_cassettes: Arc<RwLock<Vec<(PathBuf, Module, Engine)>>>,
     recording_state: Arc<RwLock<RecordingState>>,
-    event_store: Arc<RwLock<DeckEventStore>>,
+    _event_store: Arc<RwLock<DeckEventStore>>,
     skip_validation: bool,
     verbose: bool,
 ) -> Result<()> {
@@ -2425,7 +2591,7 @@ async fn handle_deck_relay_connection(
                         // Try to add event to the store
                         let store_start = std::time::Instant::now();
                         let (added, replaced) = {
-                            let mut store = event_store.write().await;
+                            let mut store = _event_store.write().await;
                             store.add_event(event.clone())
                         };
                         let store_duration = store_start.elapsed();
@@ -3164,6 +3330,10 @@ async fn process_deck_record_mode(
     // Create output directory
     fs::create_dir_all(output_dir)?;
     
+    // Create a persistent directory for embedded cassette-tools
+    #[cfg(feature = "deck")]
+    let embedded_tools_dir = Arc::new(init_embedded_tools_dir(output_dir)?);
+    
     // Shared state for hot-loading cassettes
     let active_cassettes: Arc<RwLock<Vec<(PathBuf, Module, Engine)>>> = Arc::new(RwLock::new(Vec::new()));
     let recording_state = Arc::new(RwLock::new(RecordingState {
@@ -3171,8 +3341,9 @@ async fn process_deck_record_mode(
         event_count: 0,
         start_time: SystemTime::now(),
         current_size: 0,
+        is_compiling: false,
     }));
-    let event_store = Arc::new(RwLock::new(DeckEventStore::new()));
+    let _event_store = Arc::new(RwLock::new(DeckEventStore::new()));
     
     // Start the WebSocket server
     let server_handle = {
@@ -3232,6 +3403,8 @@ async fn process_deck_record_mode(
                     let output_dir = output_dir.clone();
                     let base_name = base_name.clone();
                     let nip11_args = nip11_args.clone();
+                    #[cfg(feature = "deck")]
+                    let embedded_tools_dir = embedded_tools_dir.clone();
                     
                     tokio::spawn(async move {
                         loop {
@@ -3256,6 +3429,7 @@ async fn process_deck_record_mode(
                                     nip_50,
                                     &nip11_args,
                                     verbose,
+                                    #[cfg(feature = "deck")] &embedded_tools_dir,
                                 ).await {
                                     eprintln!("❌ Failed to rotate cassette: {}", e);
                                 }
@@ -3300,6 +3474,7 @@ struct RecordingState {
     event_count: usize,
     start_time: SystemTime,
     current_size: usize,
+    is_compiling: bool,
 }
 
 // Global event store for deck mode with deduplication
@@ -3475,7 +3650,17 @@ async fn rotate_cassette(
     nip_50: bool,
     nip11_args: &Nip11Args,
     verbose: bool,
+    #[cfg(feature = "deck")] embedded_tools_dir: &Arc<PathBuf>,
 ) -> Result<()> {
+    // Check if already compiling
+    {
+        let mut state = recording_state.write().await;
+        if state.is_compiling {
+            return Ok(()); // Skip rotation if already compiling
+        }
+        state.is_compiling = true;
+    }
+    
     // Get events but DON'T reset state yet - keep events queryable until cassette is compiled
     let events = {
         let state = recording_state.read().await;
@@ -3483,6 +3668,8 @@ async fn rotate_cassette(
     };
     
     if events.is_empty() {
+        let mut state = recording_state.write().await;
+        state.is_compiling = false;
         return Ok(());
     }
     
@@ -3502,10 +3689,13 @@ async fn rotate_cassette(
     let recording_state_clone = recording_state.clone();
     let event_count = events.len();
     
-    let handle = tokio::task::spawn_blocking(move || {
+    #[cfg(feature = "deck")]
+    let embedded_tools_dir_clone = embedded_tools_dir.clone();
+    
+    let handle = tokio::task::spawn_blocking(move || -> Result<()> {
         // Create temporary directory for compilation
         let temp_dir = TempDir::new()?;
-        let project_dir = temp_dir.path();
+        let project_dir = temp_dir.path().to_path_buf();
         
         // Build features list
         // Since the Cargo.toml template has default = ["nip11"], we always need nip11
@@ -3517,7 +3707,7 @@ async fn rotate_cassette(
         let mut generator = generator::CassetteGenerator::new(
             output_dir.clone(),
             &cassette_name,
-            project_dir,
+            &project_dir,
         );
         
         let events_json = serde_json::to_string(&events)?;
@@ -3546,7 +3736,11 @@ async fn rotate_cassette(
         
         generator.set_verbose(verbose);
         
-        // Generate cassette
+        // Generate cassette using embedded tools
+        #[cfg(feature = "deck")]
+        let cassette_path = generator.generate_with_tools_dir(Some(&embedded_tools_dir_clone))?;
+        
+        #[cfg(not(feature = "deck"))]
         let cassette_path = generator.generate()?;
         
         // Hot-load the new cassette
@@ -3571,6 +3765,7 @@ async fn rotate_cassette(
                 .map(|e| serde_json::to_string(e).unwrap_or_default().len())
                 .sum();
             state.start_time = SystemTime::now();
+            state.is_compiling = false;
         });
         
         Ok::<(), anyhow::Error>(())
@@ -3591,6 +3786,7 @@ async fn rotate_cassette(
                 state.event_count = 0;
                 state.current_size = 0;
                 state.start_time = SystemTime::now();
+                state.is_compiling = false;
                 eprintln!("⚠️  Cleared {} events due to compilation failure", event_count);
             }
             Err(e) => {
@@ -3601,6 +3797,7 @@ async fn rotate_cassette(
                 state.event_count = 0;
                 state.current_size = 0;
                 state.start_time = SystemTime::now();
+                state.is_compiling = false;
                 eprintln!("⚠️  Cleared {} events due to task failure", event_count);
             }
         }
@@ -5069,13 +5266,27 @@ fn process_events(
     let result = if let Some(ref ui) = record_ui {
         // Interactive mode - show compilation progress
         let total_events = processed_events.len() as u64;
-        generator.generate_with_callback(Some(|| {
-            ui.show_compilation(total_events)?;
-            Ok(())
-        }))
+        #[cfg(feature = "deck")]
+        {
+            generator.generate_with_embedded_tools()
+        }
+        #[cfg(not(feature = "deck"))]
+        {
+            generator.generate_with_callback(Some(|| {
+                ui.show_compilation(total_events)?;
+                Ok(())
+            }))
+        }
     } else {
         // Non-interactive mode
-        generator.generate()
+        #[cfg(feature = "deck")]
+        {
+            generator.generate_with_embedded_tools()
+        }
+        #[cfg(not(feature = "deck"))]
+        {
+            generator.generate()
+        }
     };
     
     match result {
