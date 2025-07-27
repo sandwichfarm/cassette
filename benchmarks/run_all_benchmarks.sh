@@ -20,6 +20,10 @@ NC='\033[0m' # No Color
 # Create results directory if it doesn't exist
 mkdir -p "$RESULTS_DIR"
 
+# Clean up old log files and summaries
+rm -f "$RESULTS_DIR"/*_output_*.log
+rm -f "$RESULTS_DIR"/benchmark_summary_*.txt
+
 # Function to print colored output
 print_status() {
     echo -e "${2}${1}${NC}"
@@ -45,17 +49,42 @@ run_benchmark() {
     cd "$dir"
     
     # Run the benchmark
-    if make run > "$RESULTS_DIR/${lang}_output_$TIMESTAMP.log" 2>&1; then
+    TEMP_LOG="$RESULTS_DIR/${lang}_output_$TIMESTAMP.log"
+    if make run > "$TEMP_LOG" 2>&1; then
         print_status "✅ $lang benchmark completed successfully" "$GREEN"
         
-        # Move result files to results directory
-        find . -name "benchmark_${lang}_*.json" -newer "$RESULTS_DIR/${lang}_output_$TIMESTAMP.log" -exec mv {} "$RESULTS_DIR/" \; 2>/dev/null || true
+        # Extract clean results based on language
+        case "$lang" in
+            "py")
+                # Extract Python benchmark table
+                awk '/CASSETTE PERFORMANCE COMPARISON/,/^$/' "$TEMP_LOG" | \
+                grep -E "^(Filter Type|empty|limit_|kinds_|author|since|until|time_range|tag_|complex|SUMMARY STATISTICS|Cassette|.*\.wasm|[0-9]+\.|REQ QUERY PERFORMANCE|─|═)" \
+                > "$RESULTS_DIR/${lang}.txt"
+                ;;
+            "rust")
+                # Extract Rust benchmark table
+                awk '/Benchmark Results/,/^$/' "$TEMP_LOG" | \
+                grep -E "^(Cassette|.*\.wasm|empty|limit_|kinds_|author|since|until|time_range|tag_|complex|╔|║|╚|═|─|[0-9]+\.)" \
+                > "$RESULTS_DIR/${lang}.txt"
+                ;;
+            *)
+                # For other languages, extract performance metrics
+                grep -E "(ms|milliseconds|seconds|ops/sec|events/sec|throughput|latency|p50|p95|p99|average|median|benchmark|performance)" "$TEMP_LOG" | \
+                grep -v -E "(Installing|Downloading|Building|Compiling|Warning|Error|mkdir|cd |make)" \
+                > "$RESULTS_DIR/${lang}.txt"
+                ;;
+        esac
         
-        echo "$lang: SUCCESS" >> "$SUMMARY_FILE"
+        # Remove the log file
+        rm -f "$TEMP_LOG"
+        
         return 0
     else
         print_status "❌ $lang benchmark failed" "$RED"
-        echo "$lang: FAILED" >> "$SUMMARY_FILE"
+        # Still save error output
+        echo "Benchmark failed. Error output:" > "$RESULTS_DIR/${lang}.txt"
+        tail -20 "$TEMP_LOG" >> "$RESULTS_DIR/${lang}.txt"
+        rm -f "$TEMP_LOG"
         return 1
     fi
 }
@@ -99,13 +128,20 @@ print_status "🚀 Running deck benchmark..." "$BLUE"
 if [ -d "$SCRIPT_DIR/deck" ]; then
     cd "$SCRIPT_DIR/deck"
     if [ -f "Makefile" ]; then
-        if make run > "$RESULTS_DIR/deck_output_$TIMESTAMP.log" 2>&1; then
+        TEMP_LOG="$RESULTS_DIR/deck_output_$TIMESTAMP.log"
+        if make run > "$TEMP_LOG" 2>&1; then
             print_status "✅ Deck benchmark completed successfully" "$GREEN"
-            echo "deck: SUCCESS" >> "$SUMMARY_FILE"
+            # Extract performance metrics
+            grep -E "(ms|milliseconds|seconds|ops/sec|events/sec|throughput|latency|p50|p95|p99|average|median|benchmark|performance)" "$TEMP_LOG" | \
+            grep -v -E "(Installing|Downloading|Building|Compiling|Warning|Error|mkdir|cd |make)" \
+            > "$RESULTS_DIR/deck.txt"
+            rm -f "$TEMP_LOG"
             ((SUCCESSFUL++))
         else
             print_status "❌ Deck benchmark failed" "$RED"
-            echo "deck: FAILED" >> "$SUMMARY_FILE"
+            echo "Benchmark failed. Error output:" > "$RESULTS_DIR/deck.txt"
+            tail -20 "$TEMP_LOG" >> "$RESULTS_DIR/deck.txt"
+            rm -f "$TEMP_LOG"
             ((FAILED++))
         fi
     fi
