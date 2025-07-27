@@ -261,6 +261,41 @@ macro_rules! debugln {
     };
 }
 
+/// Escape JSON string for use in a Rust raw string literal with ### delimiters
+/// This ensures the JSON doesn't contain "### which would break the raw string
+fn escape_json_for_raw_string(json: &str) -> String {
+    // Count the maximum consecutive # characters after a quote in the JSON
+    let mut max_hashes = 0;
+    let mut current_hashes = 0;
+    let mut after_quote = false;
+    
+    for ch in json.chars() {
+        match ch {
+            '"' => {
+                after_quote = true;
+                current_hashes = 0;
+            }
+            '#' if after_quote => {
+                current_hashes += 1;
+                max_hashes = max_hashes.max(current_hashes);
+            }
+            _ => {
+                after_quote = false;
+                current_hashes = 0;
+            }
+        }
+    }
+    
+    // If we found "### or more, we need to use more # symbols in the raw string
+    // For now, we'll use a simpler approach: replace "### with something else
+    if max_hashes >= 3 {
+        // Replace "### with "##\u{23} (using unicode escape for #)
+        json.replace("\"###", "\"##\\u{23}")
+    } else {
+        json.to_string()
+    }
+}
+
 // Module for cassette generation
 mod generator {
     use std::fs::{self, File};
@@ -410,6 +445,8 @@ mod generator {
             // Use the existing template rendering
             let mut handlebars = Handlebars::new();
             handlebars.set_strict_mode(true);
+            // Disable HTML escaping for raw JSON content
+            handlebars.register_escape_fn(handlebars::no_escape);
             
             let mut template_data = json!({});
             let obj = template_data.as_object_mut().unwrap();
@@ -469,6 +506,8 @@ mod generator {
             // Create Handlebars instance for template rendering
             let mut handlebars = Handlebars::new();
             handlebars.set_strict_mode(true);
+            // Disable HTML escaping for raw JSON content
+            handlebars.register_escape_fn(handlebars::no_escape);
 
             // Convert template vars to JSON
             let mut template_data = json!({});
@@ -774,10 +813,11 @@ fn get_event_count_for_filter(
     filter: &serde_json::Map<String, Value>,
     subscription: &str,
 ) -> Result<Option<u64>, anyhow::Error> {
-    // Get the send function for sending COUNT
-    let send_func = match instance.get_typed_func::<(i32, i32), i32>(&mut *store, "send") {
+    // Get the send function for sending COUNT (try 'send' then 'req' for backward compatibility)
+    let send_func = match instance.get_typed_func::<(i32, i32), i32>(&mut *store, "send")
+        .or_else(|_| instance.get_typed_func::<(i32, i32), i32>(&mut *store, "req")) {
         Ok(func) => func,
-        Err(_) => return Ok(None), // No send function available
+        Err(_) => return Ok(None), // No send/req function available
     };
     
     // Create COUNT message with same filter
@@ -917,10 +957,11 @@ fn process_req_command(
         .get_memory(&mut store, "memory")
         .ok_or_else(|| anyhow!("Memory export not found"))?;
     
-    // Get the send function
+    // Get the send function (try new 'send' first, then fall back to old 'req')
     let send_func = instance
         .get_typed_func::<(i32, i32), i32>(&mut store, "send")
-        .context("Failed to get send function")?;
+        .or_else(|_| instance.get_typed_func::<(i32, i32), i32>(&mut store, "req"))
+        .context("Failed to get send/req function")?;
     
     // Get allocation function
     let alloc_func = instance
@@ -1154,9 +1195,11 @@ fn process_count_command(
         .ok_or_else(|| anyhow!("Memory export not found"))?;
     
     // Get the send function (COUNT also uses the send function)
+    // Try new 'send' first, then fall back to old 'req' for backward compatibility
     let send_func = instance
         .get_typed_func::<(i32, i32), i32>(&mut store, "send")
-        .context("Failed to get send function")?;
+        .or_else(|_| instance.get_typed_func::<(i32, i32), i32>(&mut store, "req"))
+        .context("Failed to get send/req function")?;
     
     // Get allocation function
     let alloc_func = instance
@@ -1297,10 +1340,11 @@ fn process_dub_command(
             .get_memory(&mut store, "memory")
             .ok_or_else(|| anyhow!("Memory export not found"))?;
         
-        // Get the send function
+        // Get the send function (try 'send' then 'req' for backward compatibility)
         let send_func = instance
             .get_typed_func::<(i32, i32), i32>(&mut store, "send")
-            .context("Failed to get send function")?;
+            .or_else(|_| instance.get_typed_func::<(i32, i32), i32>(&mut store, "req"))
+            .context("Failed to get send/req function")?;
         
         // Get allocation function
         let alloc_func = instance
@@ -2363,7 +2407,8 @@ async fn check_event_exists_in_cassettes(
         
         if let Ok(instance) = Instance::new(&mut store, module, &[]) {
             // Try to query for this specific event ID using COUNT
-            if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send") {
+            if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send")
+                .or_else(|_| instance.get_typed_func::<(i32, i32), i32>(&mut store, "req")) {
                 if let Ok(alloc_func) = instance.get_typed_func::<i32, i32>(&mut store, "alloc_buffer") {
                     if let Some(memory) = instance.get_memory(&mut store, "memory") {
                         let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string").ok();
@@ -2735,7 +2780,8 @@ async fn handle_deck_relay_connection(
                             let mut store = Store::new(engine, ());
                             let instance = Instance::new(&mut store, module, &[])?;
                             
-                            if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send") {
+                            if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send")
+                .or_else(|_| instance.get_typed_func::<(i32, i32), i32>(&mut store, "req")) {
                                 if let Ok(alloc_func) = instance.get_typed_func::<i32, i32>(&mut store, "alloc_buffer") {
                                     let memory = instance.get_memory(&mut store, "memory").unwrap();
                                     let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string").ok();
@@ -3065,7 +3111,8 @@ async fn handle_deck_relay_connection(
                                         let instance = Instance::new(&mut store, module, &[])?;
                                         
                                         // Send COUNT to cassette
-                                        if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send") {
+                                        if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send")
+                .or_else(|_| instance.get_typed_func::<(i32, i32), i32>(&mut store, "req")) {
                                             if let Ok(alloc_func) = instance.get_typed_func::<i32, i32>(&mut store, "alloc_buffer") {
                                                 let memory = instance.get_memory(&mut store, "memory").unwrap();
                                                 let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string").ok();
@@ -3968,7 +4015,8 @@ async fn handle_deck_connection(
                     let instance = Instance::new(&mut store, module, &[])?;
                     
                     // Process the message
-                    if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send") {
+                    if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send")
+                .or_else(|_| instance.get_typed_func::<(i32, i32), i32>(&mut store, "req")) {
                         if let Ok(alloc_func) = instance.get_typed_func::<i32, i32>(&mut store, "alloc_buffer") {
                             let memory = instance.get_memory(&mut store, "memory").unwrap();
                             
@@ -4239,7 +4287,8 @@ async fn handle_websocket_connection(
                                 for (_path, module, engine) in cassettes.iter() {
                                     let mut store = Store::new(engine, ());
                                     let instance = Instance::new(&mut store, module, &[])?;
-                                    if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send") {
+                                    if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send")
+                .or_else(|_| instance.get_typed_func::<(i32, i32), i32>(&mut store, "req")) {
                                         let memory = instance.get_memory(&mut store, "memory")
                                             .ok_or_else(|| anyhow!("Memory export not found"))?;
                                         let alloc_func = instance.get_typed_func::<i32, i32>(&mut store, "alloc_buffer")?;
@@ -5603,7 +5652,8 @@ fn extract_all_events_from_cassette(cassette_path: &std::path::PathBuf, nip11_ar
     let alloc_func = instance
         .get_typed_func::<i32, i32>(&mut store, "alloc_buffer")
         .or_else(|_| instance.get_typed_func::<i32, i32>(&mut store, "alloc_string"))?;
-    let send_func = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send")?;
+    let send_func = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send")
+        .or_else(|_| instance.get_typed_func::<(i32, i32), i32>(&mut store, "req"))?;
     let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string").ok();
     
     // Request all events
