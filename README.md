@@ -6,6 +6,21 @@
 
 Initially written on a Saturday over brunch at [SEC-04](https://sovereignengineering.io) with [futurepaul](https://github.com/futurepaul)
 
+## What's New in v0.9.x
+
+- **🚀 Automatic REQ looping in all language bindings**: All bindings now automatically detect REQ messages and loop until EOSE
+  - JavaScript/TypeScript: Returns `string | string[]`
+  - Python: Returns `Union[str, List[str]]`
+  - Rust: Returns `SendResult` enum (Single/Multiple)
+  - Go: Returns `*SendResult` struct
+  - C++: Returns `std::variant<std::string, std::vector<std::string>>`
+  - Dart: Returns `dynamic` (`String` or `List<String>`)
+- **📦 Embedded cassette-tools in deck binary**: Deck and record commands now work standalone without requiring cassette-tools in the working directory
+- **🐛 Fixed Handlebars HTML escaping**: Resolved issue where new cassettes couldn't be read due to JSON content being HTML-escaped
+- **📊 Comprehensive benchmark suite**: Added benchmarks for all language bindings and deck performance testing
+- **🐳 Docker support**: Official Docker image and docker-compose configuration for easy deployment
+- **📁 Bindings restructure**: Renamed `loaders` directory to `bindings` for clarity
+
 ## What's New in v0.8.0
 
 - **🎛️ New `deck` command**: Run a cassette deck - continuously record and serve cassettes as a writable relay
