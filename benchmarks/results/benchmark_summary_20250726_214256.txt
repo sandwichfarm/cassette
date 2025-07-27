@@ -1,0 +1,10 @@
+Cassette Benchmark Summary - 20250726_214256
+========================================
+
+py: FAILED
+rust: SUCCESS
+cpp: FAILED
+dart: FAILED
+go: FAILED
+js: FAILED
+deck: SUCCESS

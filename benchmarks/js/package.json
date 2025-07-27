@@ -1,0 +1,13 @@
+{
+  "name": "cassette-benchmark-js",
+  "version": "1.0.0",
+  "description": "Cassette WASM benchmark for JavaScript/Node.js",
+  "main": "benchmark.js",
+  "scripts": {
+    "benchmark": "node benchmark.js"
+  },
+  "dependencies": {
+    "cassette-wasm": "file:../../bindings/js",
+    "js-yaml": "^4.1.0"
+  }
+}

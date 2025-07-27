@@ -1355,6 +1355,7 @@ fn process_dub_command(
         false, // interactive
         false, // verbose
         true, // validate (enabled by default)
+        false, // skip_unicode_check
         false, // _nip_11
         false, // nip_42
         false, // nip_45
@@ -1565,6 +1566,10 @@ enum Commands {
         /// Skip validation of Nostr events (validation is enabled by default)
         #[arg(long)]
         _skip_validation: bool,
+        
+        /// Skip Unicode character checks that might cause Rust compilation issues
+        #[arg(long = "skip-unicode-check")]
+        skip_unicode_check: bool,
         
         /// Enable NIP-11 (Relay Information Document)
         #[arg(long)]
@@ -4025,6 +4030,7 @@ async fn main() -> Result<()> {
             interactive,
             verbose,
             _skip_validation,
+            skip_unicode_check,
             _nip_11,
             nip_42,
             nip_45,
@@ -4054,6 +4060,7 @@ async fn main() -> Result<()> {
                     *interactive,
                     *verbose,
                     !*_skip_validation,
+                    *skip_unicode_check,
                     *_nip_11,
                     *nip_42,
                     *nip_45,
@@ -4096,6 +4103,7 @@ async fn main() -> Result<()> {
                     *interactive,
                     *verbose,
                     !*_skip_validation,
+                    *skip_unicode_check,
                     *_nip_11,
                     *nip_42,
                     *nip_45,
@@ -4793,6 +4801,61 @@ fn parse_events_from_file(input_file: &str) -> Result<Vec<Value>> {
     }
 }
 
+/// Filter out events containing problematic Unicode characters
+/// Returns (filtered_events, skipped_events) where skipped_events contains (event_id, unicode_char)
+fn filter_problematic_unicode_events(events: Vec<Value>, verbose: bool) -> (Vec<Value>, Vec<(String, u32)>) {
+    let problematic_chars = [
+        '\u{2028}', // Line Separator
+        '\u{2029}', // Paragraph Separator
+        '\u{202A}', // Left-to-Right Embedding
+        '\u{202B}', // Right-to-Left Embedding
+        '\u{202C}', // Pop Directional Formatting
+        '\u{202D}', // Left-to-Right Override
+        '\u{202E}', // Right-to-Left Override
+        '\u{2066}', // Left-to-Right Isolate
+        '\u{2067}', // Right-to-Left Isolate
+        '\u{2068}', // First Strong Isolate
+        '\u{2069}', // Pop Directional Isolate
+    ];
+    
+    let mut filtered_events = Vec::new();
+    let mut skipped_events = Vec::new();
+    
+    for event in events {
+        let event_json = serde_json::to_string(&event).unwrap_or_default();
+        let mut has_problematic_char = false;
+        let mut found_char: Option<char> = None;
+        
+        for &ch in &problematic_chars {
+            if event_json.contains(ch) {
+                has_problematic_char = true;
+                found_char = Some(ch);
+                break;
+            }
+        }
+        
+        if has_problematic_char {
+            // Extract event ID for reporting
+            let event_id = event.get("id")
+                .and_then(|id| id.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            
+            if let Some(ch) = found_char {
+                skipped_events.push((event_id, ch as u32));
+            }
+            
+            debugln!(verbose, "  Skipping event {} due to Unicode character U+{:04X}", 
+                     event.get("id").and_then(|id| id.as_str()).unwrap_or("unknown"),
+                     found_char.unwrap_or('\0') as u32);
+        } else {
+            filtered_events.push(event);
+        }
+    }
+    
+    (filtered_events, skipped_events)
+}
+
 fn process_events(
     input_file: &str,
     name: &str,
@@ -4801,6 +4864,7 @@ fn process_events(
     interactive: bool,
     verbose: bool,
     validate: bool,
+    skip_unicode_check: bool,
     _nip_11: bool,
     nip_42: bool,
     nip_45: bool,
@@ -4852,9 +4916,26 @@ fn process_events(
         }
     }
     
+    // Filter out events with problematic Unicode unless skip_unicode_check is set
+    let (filtered_events, skipped_events) = if skip_unicode_check {
+        // Skip the check - include all events
+        (original_events, Vec::new())
+    } else {
+        filter_problematic_unicode_events(original_events, verbose)
+    };
+    
+    // Report skipped events if any
+    if !skipped_events.is_empty() {
+        eprintln!("\n⚠️  Skipped {} events due to problematic Unicode characters:", skipped_events.len());
+        for (event_id, char_code) in skipped_events.iter() {
+            eprintln!("   Event ID: {} - Unicode character U+{:04X}", event_id, char_code);
+        }
+        eprintln!("   To include these events anyway, use the --skip-unicode-check flag.");
+    }
+    
     // Preprocess events to handle replaceable and addressable events
     debugln!(verbose, "\n🔍 Preprocessing events according to NIP-01...");
-    let mut processed_events = preprocess_events(original_events);
+    let mut processed_events = preprocess_events(filtered_events);
     
     // Validate events if validation is enabled
     if validate {
@@ -4883,6 +4964,9 @@ fn process_events(
         if validate { " and validation" } else { "" }, 
         processed_events.len()
     );
+    if !skipped_events.is_empty() {
+        debugln!(verbose, "  Events skipped due to Unicode issues: {}", skipped_events.len());
+    }
     
     // Sample of events
     if verbose {
