@@ -79,10 +79,8 @@ cassette dub *.wasm filtered.wasm --kinds 1 --since 1700000000`
             Install
           </h3>
           <div class="bg-gray-900 rounded p-4 font-mono text-sm">
-            <p class="text-gray-400 mb-2"># Download the latest binary</p>
-            <p class="text-green-400">wget https://github.com/dskvr/cassette/releases/latest/download/cassette-linux-amd64</p>
-            <p class="text-green-400">chmod +x cassette-linux-amd64</p>
-            <p class="text-green-400">sudo mv cassette-linux-amd64 /usr/local/bin/cassette</p>
+            <p class="text-gray-400 mb-2"># Install with one command</p>
+            <p class="text-green-400">curl -sSL https://cassette.fm/install.sh | bash</p>
           </div>
         </div>
         

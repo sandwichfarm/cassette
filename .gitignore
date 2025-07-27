@@ -38,6 +38,7 @@ logs
 
 # Claude crumbs
 *.log 
+*.txt
 test*.json
 test*.js
 test*.ts

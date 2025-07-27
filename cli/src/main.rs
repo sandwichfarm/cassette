@@ -2007,7 +2007,7 @@ enum Commands {
         mode: String,
         
         /// Relay URLs to record from (for record mode)
-        #[arg(short, long)]
+        #[arg(short, long, num_args = 1.., value_delimiter = ' ')]
         relays: Vec<String>,
         
         /// Base name for cassettes (will append timestamp)
@@ -2759,6 +2759,11 @@ async fn handle_deck_relay_connection(
                                         let events_before = cassette_events;
                                         // For subsequent calls, just send the same REQ to continue streaming
                                         let msg_bytes = req_msg.to_string().into_bytes();
+                                        
+                                        // Debug: print what we're sending
+                                        if verbose {
+                                            println!("  🔍 Sending to cassette: {}", req_msg);
+                                        }
                                         let msg_ptr = alloc_func.call(&mut store, msg_bytes.len() as i32)?;
                                         
                                         if msg_ptr == 0 {
@@ -3374,15 +3379,20 @@ async fn process_deck_record_mode(
         let base_name = base_name.to_string();
         let nip11_args = nip11_args.clone();
         tokio::spawn(async move {
+            let mut relay_since_timestamps: HashMap<String, i64> = HashMap::new();
+            
             loop {
                 // Connect to relays and start recording
                 let mut handles = vec![];
+                
                 for relay_url in &relay_urls {
                     let state = recording_state.clone();
                     let url = relay_url.clone();
+                    let url_for_handle = url.clone(); // Clone for the handle storage
                     let filter_json = filter_json.clone();
                     let kinds = kinds.to_vec();
                     let authors = authors.iter().cloned().collect::<Vec<_>>();
+                    let since = relay_since_timestamps.get(&url).copied();
                     
                     let handle = tokio::spawn(async move {
                         record_from_relay(
@@ -3391,9 +3401,10 @@ async fn process_deck_record_mode(
                             filter_json.as_deref(),
                             &kinds,
                             &authors,
+                            since,
                         ).await
                     });
-                    handles.push(handle);
+                    handles.push((url_for_handle, handle));
                 }
                 
                 // Monitor recording state and trigger rotation
@@ -3440,8 +3451,24 @@ async fn process_deck_record_mode(
                 
                 // Wait for any handle to complete (error condition)
                 tokio::select! {
-                    _ = futures_util::future::join_all(handles) => {
-                        eprintln!("⚠️  Relay connections lost, reconnecting...");
+                    _ = async {
+                        // Wait for all handles and collect their results
+                        for (url, handle) in handles {
+                            match handle.await {
+                                Ok(Ok(last_timestamp)) => {
+                                    // Update the since timestamp for this relay
+                                    relay_since_timestamps.insert(url, last_timestamp);
+                                }
+                                Ok(Err(e)) => {
+                                    eprintln!("⚠️  Error from {}: {}", url, e);
+                                }
+                                Err(e) => {
+                                    eprintln!("⚠️  Task error for {}: {}", url, e);
+                                }
+                            }
+                        }
+                    } => {
+                        eprintln!("⚠️  Relay connections ended, reconnecting in 5 seconds...");
                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     }
                     _ = rotation_handle => {
@@ -3585,12 +3612,15 @@ async fn record_from_relay(
     filter_json: Option<&str>,
     kinds: &[i64],
     authors: &[String],
-) -> Result<()> {
+    initial_since: Option<i64>,
+) -> Result<i64> {
     use tokio_tungstenite::tungstenite::Message;
     use futures_util::{StreamExt, SinkExt};
     
+    println!("📡 Connecting to {}", relay_url);
     let (ws_stream, _) = connect_async(relay_url).await?;
     let (mut write, mut read) = ws_stream.split();
+    println!("✅ Connected to {}", relay_url);
     
     // Create subscription filter
     let mut filter = serde_json::Map::new();
@@ -3608,35 +3638,115 @@ async fn record_from_relay(
         filter.insert("authors".to_string(), json!(authors));
     }
     
+    // Add since timestamp if provided (for reconnections)
+    if let Some(since) = initial_since {
+        filter.insert("since".to_string(), json!(since));
+        println!("🔄 Resuming from timestamp: {}", since);
+    }
+    
     // Send subscription
     let req_message = json!(["REQ", "deck-sub", filter]);
     write.send(Message::Text(req_message.to_string())).await?;
     
+    // Track if we've received EOSE and latest timestamp
+    let mut received_eose = false;
+    let mut last_event_time = std::time::Instant::now();
+    let mut latest_timestamp = initial_since.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    });
+    
     // Read events
-    while let Some(msg) = read.next().await {
-        match msg {
-            Ok(Message::Text(text)) => {
+    loop {
+        // Use timeout to periodically check connection health
+        match tokio::time::timeout(
+            tokio::time::Duration::from_secs(60),
+            read.next()
+        ).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
                 if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
                     if let Some(arr) = parsed.as_array() {
-                        if arr.len() >= 3 && arr[0].as_str() == Some("EVENT") {
-                            if let Some(event) = arr.get(2) {
-                                let event_size = text.len();
-                                let mut state = recording_state.write().await;
-                                state.current_events.push(event.clone());
-                                state.event_count += 1;
-                                state.current_size += event_size;
+                        match arr.get(0).and_then(|v| v.as_str()) {
+                            Some("EVENT") => {
+                                if arr.len() >= 3 {
+                                    if let Some(event) = arr.get(2) {
+                                        // Extract created_at timestamp
+                                        if let Some(created_at) = event.get("created_at").and_then(|v| v.as_i64()) {
+                                            if created_at > latest_timestamp {
+                                                latest_timestamp = created_at;
+                                            }
+                                        }
+                                        
+                                        let event_size = text.len();
+                                        let mut state = recording_state.write().await;
+                                        state.current_events.push(event.clone());
+                                        state.event_count += 1;
+                                        state.current_size += event_size;
+                                        last_event_time = std::time::Instant::now();
+                                    }
+                                }
                             }
+                            Some("EOSE") => {
+                                if !received_eose {
+                                    println!("📍 Received EOSE from {} - continuing to listen for new events", relay_url);
+                                    received_eose = true;
+                                }
+                                // Don't break on EOSE - keep the connection alive
+                            }
+                            Some("NOTICE") => {
+                                if arr.len() >= 2 {
+                                    println!("📝 Notice from {}: {}", relay_url, arr[1]);
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
             }
-            Ok(Message::Close(_)) => break,
-            Err(_) => break,
-            _ => {}
+            Ok(Some(Ok(Message::Close(_)))) => {
+                println!("🔌 {} closed the connection", relay_url);
+                break;
+            }
+            Ok(Some(Ok(Message::Ping(data)))) => {
+                // Respond to ping with pong
+                write.send(Message::Pong(data)).await?;
+            }
+            Ok(Some(Ok(Message::Binary(_)))) => {
+                // Ignore binary messages
+            }
+            Ok(Some(Ok(Message::Pong(_)))) => {
+                // Pong received, connection is alive
+            }
+            Ok(Some(Ok(Message::Frame(_)))) => {
+                // Ignore frame messages
+            }
+            Ok(Some(Err(e))) => {
+                eprintln!("❌ WebSocket error from {}: {}", relay_url, e);
+                break;
+            }
+            Ok(None) => {
+                println!("🔌 Connection to {} ended", relay_url);
+                break;
+            }
+            Err(_) => {
+                // Timeout - send a ping to check if connection is alive
+                if received_eose && last_event_time.elapsed() > tokio::time::Duration::from_secs(300) {
+                    // If we haven't received events for 5 minutes after EOSE, reconnect
+                    println!("⏰ No events from {} for 5 minutes, reconnecting...", relay_url);
+                    break;
+                }
+                // Send ping to keep connection alive
+                if write.send(Message::Ping(vec![])).await.is_err() {
+                    println!("❌ Failed to ping {}, connection lost", relay_url);
+                    break;
+                }
+            }
         }
     }
     
-    Ok(())
+    Ok(latest_timestamp)
 }
 
 // Helper function to rotate and compile a new cassette
