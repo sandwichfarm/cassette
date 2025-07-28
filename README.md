@@ -58,7 +58,7 @@ The **cassette cli** also demonstrates different potential ways to use a cassett
 
 ## CLI Commands
 
-### `record` - Record events onto cassettes
+### `record` - Record events onto cassettes via stdin (ndjson, json arrays, NIP-01 `EVENT` messages) or with provided file.
 
 ```bash
 cassette record [OPTIONS] [INPUT_FILE]
@@ -78,6 +78,8 @@ cassette record [OPTIONS] [INPUT_FILE]
 #   --relay-pubkey     Owner pubkey for NIP-11 relay info
 
 # Examples:
+
+# record accepts ndjson, json arrays, and NIP-01 `EVENT` messages.
 nak req -k 30023 wss://relay.nostr.band | cassette record -n "long-form"
 cassette record my-events.json --name "my-backup"
 cassette record events.json --nip-45 --name "countable" # With COUNT support
