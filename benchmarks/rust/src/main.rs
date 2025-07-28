@@ -254,7 +254,7 @@ impl CassetteBenchmark {
         Ok(())
     }
 
-    fn send(&mut self, message: &str) -> Result<Vec<String>> {
+    fn scrub(&mut self, message: &str) -> Result<Vec<String>> {
         let msg_ptr = self.write_string(message)?;
         let msg_len = message.len() as u32;
 

@@ -277,9 +277,9 @@ func (c *Cassette) Describe() (string, error) {
 	return "Cassette with no description", nil
 }
 
-// Send processes any NIP-01 message
+// Scrub processes any NIP-01 message
 // For REQ messages, returns SendResult with Multiple set. For other messages, returns SendResult with Single set.
-func (c *Cassette) Send(message string) (*SendResult, error) {
+func (c *Cassette) Scrub(message string) (*SendResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -331,6 +331,14 @@ func (c *Cassette) Send(message string) (*SendResult, error) {
 	return &SendResult{IsSingle: true, Single: result}, nil
 }
 
+// Send is deprecated. Use Scrub instead.
+func (c *Cassette) Send(message string) (*SendResult, error) {
+	if c.debug {
+		fmt.Println("DEPRECATION WARNING: Send() is deprecated. Please use Scrub() instead.")
+	}
+	return c.Scrub(message)
+}
+
 // sendSingle performs a single send call
 func (c *Cassette) sendSingle(message string) (string, error) {
 	// Write message to memory
@@ -339,13 +347,21 @@ func (c *Cassette) sendSingle(message string) (string, error) {
 		return "", err
 	}
 
-	// Call send function
-	sendFunc, ok := c.exports["send"]
+	// Call scrub function (or fall back to send for backward compatibility)
+	scrubFunc, ok := c.exports["scrub"]
 	if !ok {
-		return "", fmt.Errorf("send function not found")
+		// Try deprecated send function
+		sendFunc, ok := c.exports["send"]
+		if !ok {
+			return "", fmt.Errorf("neither scrub nor send function found in cassette")
+		}
+		if c.debug {
+			fmt.Println("WARNING: Using deprecated 'send' function. Cassette should implement 'scrub' instead.")
+		}
+		scrubFunc = sendFunc
 	}
 
-	result, err := sendFunc.Call(c.store, msgPtr, int32(len(message)))
+	result, err := scrubFunc.Call(c.store, msgPtr, int32(len(message)))
 	if err != nil {
 		return "", err
 	}
@@ -357,7 +373,7 @@ func (c *Cassette) sendSingle(message string) (string, error) {
 
 	resultPtr := result.(int32)
 	if resultPtr == 0 {
-		return `["NOTICE", "send() returned null pointer"]`, nil
+		return `["NOTICE", "scrub() returned null pointer"]`, nil
 	}
 
 	// Read result

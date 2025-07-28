@@ -113,9 +113,9 @@ thread_local! {
     static DEBUG_MSGS: RefCell<Vec<String>> = RefCell::new(Vec::new());
 }
 
-// Single entry point for all NIP-01 messages
+// New primary entry point for all NIP-01 messages
 #[no_mangle]
-pub extern "C" fn send(ptr: *const u8, len: usize) -> *mut u8 {
+pub extern "C" fn scrub(ptr: *const u8, len: usize) -> *mut u8 {
     if ptr.is_null() {
         return string_to_ptr(json!(["NOTICE", "Error: Null request pointer"]).to_string());
     }
@@ -171,6 +171,19 @@ pub extern "C" fn send(ptr: *const u8, len: usize) -> *mut u8 {
             string_to_ptr(json!(["NOTICE", format!("Unknown command: {}", command)]).to_string())
         }
     }
+}
+
+// Deprecated: Use 'scrub' instead. This function is kept for backward compatibility.
+#[no_mangle]
+pub extern "C" fn send(ptr: *const u8, len: usize) -> *mut u8 {
+    // Log deprecation warning
+    DEBUG_MSGS.with(|msgs| {
+        let mut msgs = msgs.borrow_mut();
+        msgs.push("WARNING: 'send' is deprecated. Please use 'scrub' instead.".to_string());
+    });
+    
+    // Call the new scrub function
+    scrub(ptr, len)
 }
 
 // Handle EVENT command

@@ -123,12 +123,17 @@ class CoreCassetteInterface {
     }
   }
   
-  // Universal send method for all NIP-01 messages
-  send(messageStr: string): string | string[] {
+  // Universal scrub method for all NIP-01 messages
+  scrub(messageStr: string): string | string[] {
     this.logger.log(`Processing message: ${messageStr.substring(0, 100)}${messageStr.length > 100 ? '...' : ''}`);
     
-    if (typeof this.exports.send !== 'function') {
-      throw new Error('send function not implemented by cassette');
+    // Try to use the new 'scrub' function first, fall back to 'send' for backward compatibility
+    if (typeof this.exports.scrub !== 'function') {
+      if (typeof this.exports.send !== 'function') {
+        throw new Error('Neither scrub nor send function implemented by cassette');
+      }
+      // Use deprecated send function
+      this.logger.warn('Using deprecated send function. Cassette should implement scrub instead.');
     }
     
     // Parse the message to determine type
@@ -245,6 +250,12 @@ class CoreCassetteInterface {
       this.logger.warn(`Failed to parse result: ${parseError.message}`);
       return JSON.stringify(["NOTICE", `Error: ${parseError.message}`]);
     }
+  }
+  
+  // Deprecated: Use scrub() instead
+  send(messageStr: string): string | string[] {
+    this.logger.warn('DEPRECATION WARNING: send() is deprecated. Please use scrub() instead.');
+    return this.scrub(messageStr);
   }
   
   getSchema(): string {
@@ -395,13 +406,20 @@ class CoreCassetteInterface {
         return JSON.stringify(["NOTICE", `Error: ${allocError.message}`]);
       }
     
-      // Call send function (which should return a pointer to the result)
+      // Call scrub function (or fall back to send for backward compatibility)
       try {
-        this.logger.log('Calling send function');
-        resultPtr = (this.exports.send as Function)(messagePtr, messageStr.length);
+        if (typeof this.exports.scrub === 'function') {
+          this.logger.log('Calling scrub function');
+          resultPtr = (this.exports.scrub as Function)(messagePtr, messageStr.length);
+        } else if (typeof this.exports.send === 'function') {
+          this.logger.log('Calling send function (deprecated)');
+          resultPtr = (this.exports.send as Function)(messagePtr, messageStr.length);
+        } else {
+          throw new Error('Neither scrub nor send function found');
+        }
         
         if (resultPtr === 0) {
-          this.logger.warn('send function returned null pointer');
+          this.logger.warn('Function returned null pointer');
           return JSON.stringify(["NOTICE", "Error: Empty response from cassette"]);
         }
       } catch (callError: any) {
@@ -588,7 +606,8 @@ export async function loadCassette(
       version,
       methods: {
         describe: () => coreInterface.describe(),
-        send: (messageStr: string) => coreInterface.send(messageStr),
+        scrub: (messageStr: string) => coreInterface.scrub(messageStr),
+        send: (messageStr: string) => coreInterface.send(messageStr), // deprecated
         getSchema: () => coreInterface.getSchema(),
         info: () => coreInterface.info()
       },

@@ -23,7 +23,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Sending REQ: " << req << std::endl << std::endl;
         
         // Send REQ - automatically collects all events until EOSE
-        auto result = cassette.send(req);
+        auto result = cassette.scrub(req);
         
         int event_count = 0;
         if (std::holds_alternative<std::vector<std::string>>(result)) {
@@ -43,10 +43,10 @@ int main(int argc, char* argv[]) {
         
         std::cout << std::endl << "Total events received: " << event_count << std::endl;
         
-        // Test CLOSE using send()
+        // Test CLOSE using scrub()
         std::string close_msg = R"(["CLOSE", "example-sub"])";
         std::cout << std::endl << "Sending CLOSE: " << close_msg << std::endl;
-        auto close_result = cassette.send(close_msg);
+        auto close_result = cassette.scrub(close_msg);
         if (std::holds_alternative<std::string>(close_result)) {
             std::cout << "CLOSE result: " << std::get<std::string>(close_result) << std::endl;
         }

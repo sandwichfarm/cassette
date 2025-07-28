@@ -94,12 +94,21 @@ Cassette::Cassette(const std::string& path, bool debug)
     memory_manager = std::make_unique<MemoryManager>(store, instance);
     event_tracker = std::make_unique<EventTracker>();
     
-    // Get required functions
-    auto send_export = instance.get(store, "send");
-    if (!send_export || !std::holds_alternative<wasmtime::Func>(*send_export)) {
-        throw std::runtime_error("send function not found");
+    // Get required functions (try scrub first, fall back to send)
+    auto scrub_export = instance.get(store, "scrub");
+    if (scrub_export && std::holds_alternative<wasmtime::Func>(*scrub_export)) {
+        scrub_func = std::get<wasmtime::Func>(*scrub_export);
+    } else {
+        // Try deprecated send function
+        auto send_export = instance.get(store, "send");
+        if (!send_export || !std::holds_alternative<wasmtime::Func>(*send_export)) {
+            throw std::runtime_error("neither scrub nor send function found in cassette");
+        }
+        if (debug) {
+            std::cerr << "WARNING: Using deprecated 'send' function. Cassette should implement 'scrub' instead.\n";
+        }
+        scrub_func = std::get<wasmtime::Func>(*send_export);
     }
-    send_func = std::get<wasmtime::Func>(*send_export);
     
     // Optional functions
     if (auto describe_export = instance.get(store, "describe")) {
@@ -271,7 +280,7 @@ bool Cassette::is_duplicate_event(const json& parsed) {
     return false;
 }
 
-SendResult Cassette::send(const std::string& message) {
+SendResult Cassette::scrub(const std::string& message) {
     std::lock_guard<std::mutex> lock(mutex);
     
     // Parse message to determine type
@@ -308,6 +317,14 @@ SendResult Cassette::send(const std::string& message) {
     return send_single(message);
 }
 
+// Deprecated: Use scrub() instead
+SendResult Cassette::send(const std::string& message) {
+    if (debug) {
+        std::cerr << "DEPRECATION WARNING: send() is deprecated. Please use scrub() instead.\n";
+    }
+    return scrub(message);
+}
+
 std::string Cassette::send_single(const std::string& message) {
     // Write message to memory
     int32_t msg_ptr = memory_manager->write_string(message);
@@ -317,7 +334,7 @@ std::string Cassette::send_single(const std::string& message) {
         wasmtime::Val::i32(msg_ptr),
         wasmtime::Val::i32(static_cast<int32_t>(message.length()))
     };
-    auto results = send_func.call(store, args);
+    auto results = scrub_func.call(store, args);
     
     // Deallocate message
     if (dealloc_func) {
@@ -325,12 +342,12 @@ std::string Cassette::send_single(const std::string& message) {
     }
     
     if (results.empty() || !results[0].i32()) {
-        return R"(["NOTICE", "send() failed"])";
+        return R"(["NOTICE", "scrub() failed"])";
     }
     
     int32_t result_ptr = *results[0].i32();
     if (result_ptr == 0) {
-        return R"(["NOTICE", "send() returned null pointer"])";
+        return R"(["NOTICE", "scrub() returned null pointer"])";
     }
     
     // Read result

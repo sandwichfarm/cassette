@@ -469,8 +469,9 @@ cassette/
 Cassettes implement a simplified WebAssembly interface:
 
 ```rust
-// Core export (v0.5.0+)
-fn send(ptr, len) -> ptr       // Handle all NIP-01 messages (REQ, CLOSE, EVENT, COUNT)
+// Core export (v0.9.0+)
+fn scrub(ptr, len) -> ptr      // Handle all NIP-01 messages (REQ, CLOSE, EVENT, COUNT)
+fn send(ptr, len) -> ptr       // Deprecated: Use scrub() instead (kept for backward compatibility)
 
 // NIP-11 support (always included)
 fn info() -> ptr               // Relay information document
@@ -484,7 +485,7 @@ fn dealloc_string(ptr, len)
 fn get_allocation_size(ptr) -> size
 ```
 
-The `send` method accepts any NIP-01 protocol message in JSON format, including:
+The `scrub` method accepts any NIP-01 protocol message in JSON format, including:
 - `["REQ", subscription_id, filters...]` - Query events
 - `["CLOSE", subscription_id]` - Close subscription
 - `["EVENT", subscription_id, event]` - Submit event (for compatible cassettes)
@@ -492,11 +493,11 @@ The `send` method accepts any NIP-01 protocol message in JSON format, including:
 
 ### Important: Loop Behavior
 
-Unlike WebSocket connections, cassettes return one message per `send` call. The `send` method now automatically detects REQ messages and loops internally to collect all events until EOSE.
+Unlike WebSocket connections, cassettes return one message per `scrub` call. The `scrub` method now automatically detects REQ messages and loops internally to collect all events until EOSE.
 
 **Automatic Looping**: All language bindings now handle looping automatically:
-- **REQ messages**: `send()` returns all events in an array/list/vector
-- **Other messages**: `send()` returns a single response string
+- **REQ messages**: `scrub()` returns all events in an array/list/vector
+- **Other messages**: `scrub()` returns a single response string
 
 The method signatures vary by language:
 - **JavaScript/TypeScript**: Returns `string | string[]`
@@ -527,13 +528,13 @@ import { loadCassette } from 'cassette-loader';
 
 const result = await loadCassette('/path/to/cassette.wasm');
 if (result.success) {
-    // Send automatically handles looping for REQ messages
-    const response = result.cassette.methods.send('["REQ", "sub1", {"kinds": [1]}]');
+    // Scrub automatically handles looping for REQ messages
+    const response = result.cassette.methods.scrub('["REQ", "sub1", {"kinds": [1]}]');
     // response is string[] for REQ messages
     console.log(`Received ${response.length} events`);
     
     // For non-REQ messages, returns single string
-    const closeResponse = result.cassette.methods.send('["CLOSE", "sub1"]');
+    const closeResponse = result.cassette.methods.scrub('["CLOSE", "sub1"]');
     console.log(closeResponse);
 }
 ```
@@ -550,13 +551,13 @@ from cassette_loader import load_cassette
 result = load_cassette(wasm_bytes, name='my-cassette')
 if result['success']:
     cassette = result['cassette']
-    # Send automatically handles looping for REQ messages
-    response = cassette.send('["REQ", "sub1", {"kinds": [1]}]')
+    # Scrub automatically handles looping for REQ messages
+    response = cassette.scrub('["REQ", "sub1", {"kinds": [1]}]')
     # response is List[str] for REQ messages
     print(f"Received {len(response)} events")
     
     # For non-REQ messages, returns single str
-    close_response = cassette.send('["CLOSE", "sub1"]')
+    close_response = cassette.scrub('["CLOSE", "sub1"]')
     print(close_response)
 ```
 
@@ -570,7 +571,7 @@ if result['success']:
 use cassette_loader::{Cassette, SendResult};
 
 let mut cassette = Cassette::load("path/to/cassette.wasm", true)?;
-let response = cassette.send(r#"["REQ", "sub1", {"kinds": [1]}]"#)?;
+let response = cassette.scrub(r#"["REQ", "sub1", {"kinds": [1]}]"#)?;
 match response {
     SendResult::Multiple(events) => println!("Received {} events", events.len()),
     SendResult::Single(msg) => println!("Single response: {}", msg),
@@ -587,7 +588,7 @@ match response {
 import cassette "github.com/cassette/loaders/go"
 
 c, err := cassette.LoadCassette("path/to/cassette.wasm", true)
-result, err := c.Send(`["REQ", "sub1", {"kinds": [1]}]`)
+result, err := c.Scrub(`["REQ", "sub1", {"kinds": [1]}]`)
 if result.IsSingle {
     fmt.Println("Single response:", result.Single)
 } else {
@@ -605,7 +606,7 @@ if result.IsSingle {
 #include <cassette_loader.hpp>
 
 cassette::Cassette cassette("path/to/cassette.wasm", true);
-std::string response = cassette.send(R"(["REQ", "sub1", {"kinds": [1]}])");
+auto response = cassette.scrub(R"(["REQ", "sub1", {"kinds": [1]}])");
 ```
 
 #### Dart
@@ -618,13 +619,13 @@ std::string response = cassette.send(R"(["REQ", "sub1", {"kinds": [1]}])");
 import 'package:cassette_loader/cassette_loader.dart';
 
 final cassette = await Cassette.load('path/to/cassette.wasm');
-final response = cassette.send('["REQ", "sub1", {"kinds": [1]}]');
+final response = cassette.scrub('["REQ", "sub1", {"kinds": [1]}]');
 ```
 
 ### Common Features
 
 All loaders provide:
-- **Unified Interface**: Single `send()` method for all NIP-01 messages
+- **Unified Interface**: Single `scrub()` method for all NIP-01 messages
 - **Event Deduplication**: Automatic filtering of duplicate events
 - **Memory Management**: Proper handling of WASM memory allocation/deallocation
 - **Debug Support**: Optional verbose logging for troubleshooting
@@ -636,7 +637,7 @@ If you need to create a loader for a language not listed above, implement these 
 
 1. **Load WASM module** - Instantiate the WebAssembly module
 2. **Memory management** - Handle string passing between host and WASM
-3. **Call `send()` function** - Pass messages and retrieve responses
+3. **Call `scrub()` function** - Pass messages and retrieve responses
 4. **Event tracking** - Implement deduplication for EVENT messages
 
 See the existing loader implementations for reference patterns.
@@ -663,7 +664,7 @@ Beyond recording existing events, you can create cassettes programmatically usin
 use cassette_tools::{string_to_ptr, ptr_to_string};
 
 #[no_mangle]
-pub extern "C" fn send(ptr: *const u8, len: usize) -> *mut u8 {
+pub extern "C" fn scrub(ptr: *const u8, len: usize) -> *mut u8 {
     let message = ptr_to_string(ptr, len);
     
     // Parse the message to determine type

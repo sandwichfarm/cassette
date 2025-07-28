@@ -305,7 +305,7 @@ class Cassette:
                 event_count=0
             )
             
-    def send(self, message: str) -> Union[str, List[str]]:
+    def scrub(self, message: str) -> Union[str, List[str]]:
         """Send any NIP-01 message to the cassette
         
         For REQ messages, returns a list of all events until EOSE.
@@ -351,9 +351,18 @@ class Cassette:
         if msg_ptr == 0:
             return json.dumps(["NOTICE", "Failed to allocate memory for message"])
             
-        # Call send function
-        send_func = self.instance.exports(self.store)['send']
-        result_ptr = send_func(self.store, msg_ptr, len(message.encode('utf-8')))
+        # Call scrub function (or fall back to send for backward compatibility)
+        exports = self.instance.exports(self.store)
+        if 'scrub' in exports:
+            scrub_func = exports['scrub']
+            result_ptr = scrub_func(self.store, msg_ptr, len(message.encode('utf-8')))
+        elif 'send' in exports:
+            if self.debug:
+                print("WARNING: Using deprecated 'send' function. Cassette should implement 'scrub' instead.")
+            send_func = exports['send']
+            result_ptr = send_func(self.store, msg_ptr, len(message.encode('utf-8')))
+        else:
+            raise RuntimeError("Neither scrub nor send function found in cassette")
         
         # Read result
         if result_ptr == 0:
@@ -523,6 +532,17 @@ class Cassette:
             if self.debug:
                 print(f"[Cassette] Error calling info: {e}")
             return json.dumps({"supported_nips": []})
+    
+    def send(self, message: str) -> Union[str, List[str]]:
+        """Deprecated: Use scrub() instead.
+        
+        Send any NIP-01 message to the cassette.
+        For REQ messages, returns a list of all events until EOSE.
+        For other messages, returns a single response string.
+        """
+        if self.debug:
+            print("DEPRECATION WARNING: send() is deprecated. Please use scrub() instead.")
+        return self.scrub(message)
             
         
     def _safe_parse(self, s: str) -> bool:
@@ -633,9 +653,9 @@ if __name__ == "__main__":
         print("\n📋 Testing describe:")
         print(cassette.describe())
         
-        # Test REQ using send() - collects all events until EOSE
+        # Test REQ using scrub() - collects all events until EOSE
         print("\n📤 Testing REQ:")
-        req_response = cassette.send('["REQ", "sub1", {"kinds": [1], "limit": 3}]')
+        req_response = cassette.scrub('["REQ", "sub1", {"kinds": [1], "limit": 3}]')
         if isinstance(req_response, list):
             for event in req_response:
                 print(event)

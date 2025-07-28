@@ -110,7 +110,7 @@ pub struct Cassette {
     instance: Instance,
     memory_manager: MemoryManager,
     event_tracker: EventTracker,
-    send_func: TypedFunc<(i32, i32), i32>,
+    scrub_func: TypedFunc<(i32, i32), i32>,
     info_func: Option<TypedFunc<(), i32>>,
     dealloc_func: Option<TypedFunc<(i32, i32), ()>>,
     get_size_func: Option<TypedFunc<i32, i32>>,
@@ -127,9 +127,18 @@ impl Cassette {
 
         let memory_manager = MemoryManager::new(&mut store, &instance)?;
 
-        let send_func = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "send")
-            .context("send function not found")?;
+        // Get scrub function (or fall back to send for backward compatibility)
+        let scrub_func = match instance.get_typed_func::<(i32, i32), i32>(&mut store, "scrub") {
+            Ok(func) => func,
+            Err(_) => {
+                if debug {
+                    eprintln!("WARNING: Using deprecated 'send' function. Cassette should implement 'scrub' instead.");
+                }
+                instance
+                    .get_typed_func::<(i32, i32), i32>(&mut store, "send")
+                    .context("Neither scrub nor send function found in cassette")?
+            }
+        };
 
         let info_func = instance
             .get_typed_func::<(), i32>(&mut store, "info")
@@ -148,7 +157,7 @@ impl Cassette {
             instance,
             memory_manager,
             event_tracker: EventTracker::new(),
-            send_func,
+            scrub_func,
             info_func,
             dealloc_func,
             get_size_func,
@@ -239,14 +248,22 @@ impl Cassette {
             Ok(SendResult::Single(result))
         }
     }
+    
+    /// Deprecated: Use scrub() instead
+    pub fn send(&mut self, message: &str) -> Result<SendResult> {
+        if self.debug {
+            eprintln!("DEPRECATION WARNING: send() is deprecated. Please use scrub() instead.");
+        }
+        self.scrub(message)
+    }
 
     // Private method for single send call
     fn _send_single(&mut self, message: &str) -> Result<String> {
         // Write message to memory
         let msg_ptr = self.memory_manager.write_string(&mut self.store, message)?;
 
-        // Call send function
-        let result_ptr = self.send_func.call(&mut self.store, (msg_ptr, message.len() as i32))?;
+        // Call scrub function
+        let result_ptr = self.scrub_func.call(&mut self.store, (msg_ptr, message.len() as i32))?;
 
         // Deallocate message
         if let Some(dealloc) = &self.dealloc_func {
@@ -254,7 +271,7 @@ impl Cassette {
         }
 
         if result_ptr == 0 {
-            return Ok(json!(["NOTICE", "send() returned null pointer"]).to_string());
+            return Ok(json!(["NOTICE", "scrub() returned null pointer"]).to_string());
         }
 
         // Read result

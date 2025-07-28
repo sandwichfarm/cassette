@@ -24,7 +24,7 @@ void main(List<String> args) async {
     print('');
     
     // Send REQ - automatically collects all events until EOSE
-    final result = cassette.send(req);
+    final result = cassette.scrub(req);
     
     int eventCount = 0;
     if (result is List<String>) {
@@ -47,7 +47,7 @@ void main(List<String> args) async {
     final closeMsg = jsonEncode(['CLOSE', 'example-sub']);
     print('');
     print('Sending CLOSE: $closeMsg');
-    final closeResult = cassette.send(closeMsg);
+    final closeResult = cassette.scrub(closeMsg);
     print('CLOSE result: $closeResult');
     
   } catch (e) {

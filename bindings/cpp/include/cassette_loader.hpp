@@ -49,7 +49,7 @@ private:
     std::unique_ptr<MemoryManager> memory_manager;
     std::unique_ptr<EventTracker> event_tracker;
     
-    wasmtime::Func send_func;
+    wasmtime::Func scrub_func;
     std::optional<wasmtime::Func> describe_func;
     std::optional<wasmtime::Func> info_func;
     std::optional<wasmtime::Func> dealloc_func;
@@ -67,7 +67,8 @@ public:
     Cassette(const std::string& path, bool debug = false);
     
     std::string describe();
-    SendResult send(const std::string& message);
+    SendResult scrub(const std::string& message);
+    SendResult send(const std::string& message);  // Deprecated: Use scrub() instead
     std::string info();
 };
 

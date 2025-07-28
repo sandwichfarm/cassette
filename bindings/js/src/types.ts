@@ -108,6 +108,13 @@ export interface Cassette {
    */
   methods: {
     /**
+     * Universal scrub method for all NIP-01 messages
+     * Returns array of strings for REQ messages, single string for others
+     */
+    scrub: (messageStr: string) => string | string[];
+    
+    /**
+     * @deprecated Use scrub() instead. This method will be removed in a future version.
      * Universal send method for all NIP-01 messages
      * Returns array of strings for REQ messages, single string for others
      */
@@ -256,7 +263,10 @@ export class CassetteLoadError extends Error {
  * Object containing available methods for interacting with a cassette
  */
 export interface CassetteMethods {
-  /** Universal send method for all NIP-01 messages - returns array for REQ, string for others */
+  /** Universal scrub method for all NIP-01 messages - returns array for REQ, string for others */
+  scrub: (messageStr: string) => string | string[];
+  
+  /** @deprecated Use scrub() instead. Universal send method for all NIP-01 messages - returns array for REQ, string for others */
   send: (messageStr: string) => string | string[];
   
   /** Get metadata about the cassette */

@@ -77,7 +77,7 @@ class Cassette {
   late final WasmInstance _instance;
   late final MemoryManager _memoryManager;
   late final EventTracker _eventTracker;
-  late final WasmFunction _sendFunc;
+  late final WasmFunction _scrubFunc;
   WasmFunction? _infoFunc;
   WasmFunction? _deallocFunc;
   WasmFunction? _getSizeFunc;
@@ -100,11 +100,24 @@ class Cassette {
     _memoryManager = MemoryManager(memory: memory, allocFunc: allocFunc);
     _eventTracker = EventTracker();
 
-    // Get required functions
-    _sendFunc = _instance.exports.whereType<WasmFunction>().firstWhere(
-      (export) => export.name == 'send',
-      orElse: () => throw Exception('send function not found'),
-    );
+    // Get required functions (try scrub first, fall back to send)
+    try {
+      _scrubFunc = _instance.exports.whereType<WasmFunction>().firstWhere(
+        (export) => export.name == 'scrub',
+      );
+    } catch (_) {
+      // Try deprecated send function
+      try {
+        _scrubFunc = _instance.exports.whereType<WasmFunction>().firstWhere(
+          (export) => export.name == 'send',
+        );
+        if (debug) {
+          print('WARNING: Using deprecated \'send\' function. Cassette should implement \'scrub\' instead.');
+        }
+      } catch (_) {
+        throw Exception('Neither scrub nor send function found in cassette');
+      }
+    }
 
     // Get optional functions
 
@@ -167,7 +180,7 @@ class Cassette {
 
   /// Send any NIP-01 message
   /// For REQ messages, returns a List<String>. For other messages, returns a String.
-  dynamic send(String message) {
+  dynamic scrub(String message) {
     // Parse message to determine type
     bool isReqMessage = false;
     String subscriptionId = '';
@@ -203,19 +216,27 @@ class Cassette {
     return _sendSingle(message);
   }
 
+  /// Deprecated: Use scrub() instead
+  dynamic send(String message) {
+    if (debug) {
+      print('DEPRECATION WARNING: send() is deprecated. Please use scrub() instead.');
+    }
+    return scrub(message);
+  }
+
   // Private method for single send call
   String _sendSingle(String message) {
     // Write message to memory
     final msgPtr = _memoryManager.writeString(message);
 
-    // Call send function
-    final resultPtr = _sendFunc.call([msgPtr, message.length]) as int;
+    // Call scrub function
+    final resultPtr = _scrubFunc.call([msgPtr, message.length]) as int;
 
     // Deallocate message
     _deallocFunc?.call([msgPtr, message.length]);
 
     if (resultPtr == 0) {
-      return jsonEncode(['NOTICE', 'send() returned null pointer']);
+      return jsonEncode(['NOTICE', 'scrub() returned null pointer']);
     }
 
     // Read result
