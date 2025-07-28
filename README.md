@@ -42,7 +42,7 @@ Download the latest `cli` binary from [releases](https://github.com/dskvr/casset
 _Pipe the events or provide the path to a json file with events._
 
 ```bash
-# Basic cassette (NIP-01 only)
+# cassette with NIP-50 "Search" and NIP-45 "Count"
 nak req -k 1 -l 100 wss://nos.lol | cassette record --name my-notes --nip-50 --nip-45
 cassette scrub my-notes.wasm -l 5
 cassette scrub --count -k 0
