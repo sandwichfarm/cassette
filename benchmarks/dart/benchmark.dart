@@ -105,7 +105,7 @@ Future<BenchmarkResult> benchmarkCassette(String cassettePath, int iterations) a
     print('🔥 Warming up...');
     for (int i = 0; i < 10; i++) {
       final req = jsonEncode(['REQ', 'warmup-$i', {'limit': 1}]);
-      cassette.send(req);
+      cassette.scrub(req);
     }
     
     // Test filters
@@ -127,7 +127,7 @@ Future<BenchmarkResult> benchmarkCassette(String cassettePath, int iterations) a
         final reqMessage = jsonEncode(['REQ', subId, test.filter]);
         
         final stopwatch = Stopwatch()..start();
-        final response = cassette.send(reqMessage);
+        final response = cassette.scrub(reqMessage);
         stopwatch.stop();
         
         times.add(stopwatch.elapsedMicroseconds / 1000.0);

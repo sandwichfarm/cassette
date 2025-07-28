@@ -477,7 +477,7 @@ fn send(ptr, len) -> ptr       // Deprecated: Use scrub() instead (kept for back
 fn info() -> ptr               // Relay information document
 
 // NIP-11 dynamic configuration
-fn set_relay_info(ptr, len) -> i32  // Set relay metadata at runtime
+fn set_info(ptr, len) -> i32  // Set relay metadata at runtime
 
 // Memory management
 fn alloc_buffer(size) -> ptr

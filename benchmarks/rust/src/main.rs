@@ -363,7 +363,7 @@ impl CassetteBenchmark {
     fn get_event_count(&mut self) -> Result<u32> {
         // Use COUNT query (NIP-45) to get event count
         let count_req = json!(["COUNT", "count-sub", {}]).to_string();
-        let responses = self.send(&count_req)?;
+        let responses = self.scrub(&count_req)?;
         
         for response in responses {
             if let Ok(parsed) = serde_json::from_str::<Value>(&response) {
@@ -443,7 +443,7 @@ fn benchmark_cassette(path: &Path, iterations: usize, _debug: bool) -> Result<Be
         .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7}")?);
     
     for _ in 0..10 {
-        let _ = cassette.send(&json!(["REQ", "warmup", {"limit": 1}]).to_string());
+        let _ = cassette.scrub(&json!(["REQ", "warmup", {"limit": 1}]).to_string());
         pb.inc(1);
     }
     pb.finish_and_clear();
@@ -468,7 +468,7 @@ fn benchmark_cassette(path: &Path, iterations: usize, _debug: bool) -> Result<Be
             let req = json!(["REQ", sub_id, filter_obj]).to_string();
 
             let start = Instant::now();
-            let responses = cassette.send(&req)?;
+            let responses = cassette.scrub(&req)?;
             let elapsed = start.elapsed();
 
             times.push(elapsed.as_secs_f64() * 1000.0);

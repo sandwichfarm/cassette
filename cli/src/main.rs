@@ -2126,8 +2126,8 @@ fn load_cassette_with_nip11(
     instance: &Instance,
     nip11_args: &Nip11Args,
 ) -> Result<()> {
-    // Check if the cassette exports set_relay_info function
-    if let Ok(set_relay_info) = instance.get_typed_func::<(i32, i32), i32>(&mut *store, "set_relay_info") {
+    // Check if the cassette exports set_info function
+    if let Ok(set_info) = instance.get_typed_func::<(i32, i32), i32>(&mut *store, "set_info") {
         // Build RelayInfo from CLI arguments
         let mut relay_info = serde_json::Map::new();
         
@@ -2170,8 +2170,8 @@ fn load_cassette_with_nip11(
         // Write JSON to memory
         memory.write(&mut *store, json_ptr as usize, json_bytes)?;
         
-        // Call set_relay_info
-        let result = set_relay_info.call(&mut *store, (json_ptr, json_bytes.len() as i32))?;
+        // Call set_info
+        let result = set_info.call(&mut *store, (json_ptr, json_bytes.len() as i32))?;
         
         // Clean up allocated memory
         if let Ok(dealloc_func) = instance.get_typed_func::<(i32, i32), ()>(&mut *store, "dealloc_string") {
