@@ -118,7 +118,7 @@ BenchmarkResult benchmark_cassette(const std::string& cassette_path, int iterati
         std::cout << "🔥 Warming up..." << std::endl;
         for (int i = 0; i < 10; ++i) {
             json req = json::array({"REQ", "warmup-" + std::to_string(i), json{{"limit", 1}}});
-            auto response = cassette.send(req.dump());
+            auto response = cassette.scrub(req.dump());
         }
         
         // Test filters
@@ -141,7 +141,7 @@ BenchmarkResult benchmark_cassette(const std::string& cassette_path, int iterati
                 json req_message = json::array({"REQ", sub_id, test.filter});
                 
                 auto start = high_resolution_clock::now();
-                auto response = cassette.send(req_message.dump());
+                auto response = cassette.scrub(req_message.dump());
                 auto end = high_resolution_clock::now();
                 
                 double elapsed_ms = duration_cast<microseconds>(end - start).count() / 1000.0;

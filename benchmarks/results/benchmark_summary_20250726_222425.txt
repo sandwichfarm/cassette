@@ -1,4 +1,0 @@
-Cassette Benchmark Summary - 20250726_222425
-========================================
-
-py: FAILED

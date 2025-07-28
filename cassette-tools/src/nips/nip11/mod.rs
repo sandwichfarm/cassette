@@ -146,7 +146,7 @@ pub static mut RELAY_INFO_JSON: Option<String> = None;
 
 /// Initialize relay info from JSON string (called by CLI)
 #[no_mangle]
-pub extern "C" fn set_relay_info(json_ptr: *const u8, json_len: usize) -> i32 {
+pub extern "C" fn set_info(json_ptr: *const u8, json_len: usize) -> i32 {
     unsafe {
         if json_ptr.is_null() || json_len == 0 {
             return -1;

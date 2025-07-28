@@ -164,9 +164,9 @@ async def measure_request(websocket, message: Any) -> Tuple[float, bool, str]:
     try:
         if message is None:
             # Send empty message
-            await websocket.send("")
+            await websocket.scrub("")
         else:
-            await websocket.send(json.dumps(message))
+            await websocket.scrub(json.dumps(message))
         
         # Wait for response with timeout
         response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
@@ -246,7 +246,7 @@ async def req_benchmark(websocket, duration: int, target_rps: int):
             metrics["req_event_counts"].append(event_count)
             
             # Send CLOSE
-            await websocket.send(json.dumps(["CLOSE", sub_id]))
+            await websocket.scrub(json.dumps(["CLOSE", sub_id]))
         else:
             errors["req_errors"] += 1
         

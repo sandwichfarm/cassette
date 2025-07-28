@@ -167,7 +167,7 @@ func benchmarkCassette(cassettePath string, iterations int) (*BenchmarkResult, e
 	for i := 0; i < 10; i++ {
 		req := []interface{}{"REQ", fmt.Sprintf("warmup-%d", i), map[string]interface{}{"limit": 1}}
 		reqBytes, _ := json.Marshal(req)
-		c.Send(string(reqBytes))
+		c.Scrub(string(reqBytes))
 	}
 
 	// Test filters
@@ -191,7 +191,7 @@ func benchmarkCassette(cassettePath string, iterations int) (*BenchmarkResult, e
 			reqBytes, _ := json.Marshal(req)
 
 			start := time.Now()
-			response := c.Send(string(reqBytes))
+			response := c.Scrub(string(reqBytes))
 			elapsed := time.Since(start).Seconds() * 1000 // Convert to milliseconds
 
 			times = append(times, elapsed)

@@ -86,7 +86,7 @@ def benchmark_cassette(cassette_path: str, iterations: int = 100, debug: bool = 
     
     # Use COUNT query to get event count (NIP-45)
     try:
-        count_response = cassette.send(json.dumps(["COUNT", "count-sub", {}]))
+        count_response = cassette.scrub(json.dumps(["COUNT", "count-sub", {}]))
         if isinstance(count_response, str):
             parsed = json.loads(count_response)
             if parsed[0] == "COUNT" and len(parsed) > 2:
@@ -124,7 +124,7 @@ def benchmark_cassette(cassette_path: str, iterations: int = 100, debug: bool = 
             if debug:
                 print(f"  Warmup {i+1}/10...")
             req = json.dumps(["REQ", f"warmup-{i}", {"limit": 1}])
-            response = cassette.send(req)
+            response = cassette.scrub(req)
             if debug:
                 print(f"  Got response: {type(response)}, length: {len(response) if isinstance(response, list) else 'single'}")
     except Exception as e:
@@ -136,7 +136,7 @@ def benchmark_cassette(cassette_path: str, iterations: int = 100, debug: bool = 
     # Quick test to see what we're dealing with
     print("\n🔍 Quick cassette test...")
     try:
-        test_response = cassette.send(json.dumps(["REQ", "test", {"limit": 1}]))
+        test_response = cassette.scrub(json.dumps(["REQ", "test", {"limit": 1}]))
         if isinstance(test_response, list):
             print(f"   Got {len(test_response)} responses")
             for i, resp in enumerate(test_response[:3]):  # Show first 3
@@ -171,7 +171,7 @@ def benchmark_cassette(cassette_path: str, iterations: int = 100, debug: bool = 
             
             try:
                 start = time.time()
-                responses = cassette.send(req_message)
+                responses = cassette.scrub(req_message)
                 elapsed = time.time() - start
             except Exception as e:
                 print(f"\n    ❌ Error on iteration {i}: {e}")
@@ -225,7 +225,7 @@ def benchmark_cassette(cassette_path: str, iterations: int = 100, debug: bool = 
                 count_message = json.dumps(["COUNT", sub_id, filter_obj])
                 
                 start = time.time()
-                response = cassette.send(count_message)
+                response = cassette.scrub(count_message)
                 elapsed = time.time() - start
                 
                 times.append(elapsed)
