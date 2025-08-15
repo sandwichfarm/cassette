@@ -454,7 +454,6 @@ cassette/
 │   ├── go/                 # Go loader
 │   ├── cpp/                # C++ loader
 │   └── dart/               # Dart loader
-├── boombox/               # WebSocket relay server for cassettes
 └── gui/                   # Web interface for testing
 ```
 
@@ -463,7 +462,6 @@ cassette/
 - **CLI**: Command-line tool for creating and querying cassettes
 - **Cassette Tools**: Rust library providing memory management and modular NIP implementations (NIP-01, NIP-11, NIP-42, NIP-45, NIP-50)
 - **Loaders**: Language-specific libraries for loading and executing cassettes in JavaScript/TypeScript, Python, Rust, Go, C++, and Dart
-- **Boombox**: WebSocket server that serves cassettes as Nostr relays
 - **GUI**: Web interface for testing cassettes in the browser
 
 ## WebAssembly Interface
@@ -645,18 +643,6 @@ If you need to create a loader for a language not listed above, implement these 
 See the existing loader implementations for reference patterns.
 
 ## Advanced Usage
-
-### Running Cassettes as Relays
-
-Using the Boombox server, cassettes can be served as WebSocket endpoints:
-
-```bash
-cd boombox
-bun install
-bun index.ts
-
-# Cassettes in ./cassettes directory are now available at ws://localhost:3001
-```
 
 ### Creating Custom Cassettes
 
