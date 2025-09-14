@@ -19,7 +19,6 @@ Initially written on a Saturday over brunch at [SEC-04](https://sovereignenginee
 - **🐛 Fixed Handlebars HTML escaping**: Resolved issue where new cassettes couldn't be read due to JSON content being HTML-escaped
 - **📊 Comprehensive benchmark suite**: Added benchmarks for all language bindings and deck performance testing
 - **🐳 Docker support**: Official Docker image and docker-compose configuration for easy deployment
-- **📁 Bindings restructure**: Renamed `loaders` directory to `bindings` for clarity
 
 ## NIPs Look:
 
@@ -447,7 +446,7 @@ cargo build --release
 cassette/
 ├── cli/                    # Command-line interface
 ├── cassette-tools/         # Core WASM functionality and modular NIP support
-├── bindings/                # Language-specific cassette loaders
+├── bindings/                # Language-specific cassette bindings
 │   ├── js/                 # JavaScript/TypeScript loader
 │   ├── py/                 # Python loader
 │   ├── rust/               # Rust loader
@@ -461,7 +460,7 @@ cassette/
 
 - **CLI**: Command-line tool for creating and querying cassettes
 - **Cassette Tools**: Rust library providing memory management and modular NIP implementations (NIP-01, NIP-11, NIP-42, NIP-45, NIP-50)
-- **Loaders**: Language-specific libraries for loading and executing cassettes in JavaScript/TypeScript, Python, Rust, Go, C++, and Dart
+- **Bindings**: Available in JavaScript/TypeScript, Python, Rust, Go, C++, and Dart
 - **GUI**: Web interface for testing cassettes in the browser
 
 ## WebAssembly Interface
@@ -509,19 +508,19 @@ The method signatures vary by language:
 
 The unified interface allows cassettes to be loaded by any compatible runtime.
 
-## Language Loaders
+## Bindings
 
-Cassette provides official loaders for multiple programming languages, allowing you to integrate cassettes into your applications regardless of your tech stack. All loaders implement the same interface and provide consistent functionality across languages.
+Cassette provides official bindings for multiple programming languages, allowing you to integrate cassettes into your applications regardless of your tech stack. All bindings implement the same interface and provide consistent functionality across languages.
 
 > IMPORTANT: Packages are not yet published, to test you'll need to import locally.
 
-### Available Loaders
+### Available Bindings
 
 #### JavaScript/TypeScript
 - **Package**: `cassette-loader`
 - **Installation**: `npm install cassette-loader`
 - **Features**: Browser and Node.js support, TypeScript definitions, event deduplication
-- **[Documentation](./loaders/js/README.md)**
+- **[Documentation](./bindings/js/README.md)**
 
 ```javascript
 import { loadCassette } from 'cassette-loader';
@@ -543,7 +542,7 @@ if (result.success) {
 - **Package**: `cassette-loader`
 - **Installation**: `pip install cassette-loader`
 - **Features**: Memory management, event deduplication, debug mode
-- **[Documentation](./loaders/py/README.md)**
+- **[Documentation](./bindings/py/README.md)**
 
 ```python
 from cassette_loader import load_cassette
@@ -565,7 +564,7 @@ if result['success']:
 - **Crate**: `cassette-deck`
 - **Installation**: Add to `Cargo.toml`
 - **Features**: Native performance, thread-safe event tracking, comprehensive error handling
-- **[Documentation](./loaders/rust/README.md)**
+- **[Documentation](./bindings/rust/README.md)**
 
 ```rust
 use cassette_loader::{Cassette, SendResult};
@@ -579,13 +578,13 @@ match response {
 ```
 
 #### Go
-- **Package**: `github.com/cassette/loaders/go`
-- **Installation**: `go get github.com/cassette/loaders/go`
+- **Package**: `github.com/cassette/bindings/go`
+- **Installation**: `go get github.com/cassette/bindings/go`
 - **Features**: Thread-safe operations, debug logging
-- **[Documentation](./loaders/go/README.md)**
+- **[Documentation](./bindings/go/README.md)**
 
 ```go
-import cassette "github.com/cassette/loaders/go"
+import cassette "github.com/cassette/bindings/go"
 
 c, err := cassette.LoadCassette("path/to/cassette.wasm", true)
 result, err := c.Scrub(`["REQ", "sub1", {"kinds": [1]}]`)
@@ -600,7 +599,7 @@ if result.IsSingle {
 - **Library**: `cassette-loader`
 - **Installation**: CMake integration
 - **Features**: Exception-based error handling, MSGB format support
-- **[Documentation](./loaders/cpp/README.md)**
+- **[Documentation](./bindings/cpp/README.md)**
 
 ```cpp
 #include <cassette_loader.hpp>
@@ -613,7 +612,7 @@ auto response = cassette.scrub(R"(["REQ", "sub1", {"kinds": [1]}])");
 - **Package**: `cassette_loader`
 - **Installation**: Add to `pubspec.yaml`
 - **Features**: Web support, async operations
-- **[Documentation](./loaders/dart/README.md)**
+- **[Documentation](./bindings/dart/README.md)**
 
 ```dart
 import 'package:cassette_loader/cassette_loader.dart';
@@ -624,7 +623,7 @@ final response = cassette.scrub('["REQ", "sub1", {"kinds": [1]}]');
 
 ### Common Features
 
-All loaders provide:
+All bindings provide:
 - **Unified Interface**: Single `scrub()` method for all NIP-01 messages
 - **Event Deduplication**: Automatic filtering of duplicate events
 - **Memory Management**: Proper handling of WASM memory allocation/deallocation
