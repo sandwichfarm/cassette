@@ -28,14 +28,20 @@ jobs:
       matrix:
         platform:
           - name: Linux-x86_64
-            os: ubuntu-latest
+            os: ubuntu-20.04
             target: x86_64-unknown-linux-gnu
             bin: cassette
             archive: tar.gz
 
           - name: Linux-aarch64
-            os: ubuntu-latest
+            os: ubuntu-20.04
             target: aarch64-unknown-linux-gnu
+            bin: cassette
+            archive: tar.gz
+
+          - name: Linux-x86_64-musl
+            os: ubuntu-20.04
+            target: x86_64-unknown-linux-musl
             bin: cassette
             archive: tar.gz
 
@@ -78,6 +84,12 @@ jobs:
           echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
 
+      - name: Install MUSL toolchain (Linux musl)
+        if: matrix.platform.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt update
+          sudo apt install -y musl-tools
+
       - name: Prepare Cargo.toml (non-Windows)
         if: runner.os != 'Windows'
         run: |
@@ -118,6 +130,11 @@ jobs:
           cd cli
           cargo build --release --target ${{ matrix.platform.target }} --bin cassette
           cd ..
+
+      - name: Smoke test binary (Linux x86_64 and macOS)
+        if: matrix.platform.target == 'x86_64-unknown-linux-gnu' || matrix.platform.target == 'x86_64-apple-darwin' || matrix.platform.target == 'x86_64-unknown-linux-musl'
+        run: |
+          ./cli/target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }} --version
 
       - name: Restore Cargo.toml (non-Windows)
         if: runner.os != 'Windows'

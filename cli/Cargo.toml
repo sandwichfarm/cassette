@@ -39,6 +39,7 @@ sha2 = "0.10"
 hex = "0.4"
 secp256k1 = { version = "0.27", features = ["global-context", "rand-std"] }
 glob = "0.3"
+include_dir = "0.7"
 
 [dev-dependencies]
 # Add any test-specific dependencies here if needed
