@@ -189,7 +189,11 @@ jobs:
       - name: Generate release notes
         id: release_notes
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.tag }}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           
           cat > release_notes.md << EOF
@@ -231,6 +235,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ steps.release_notes.outputs.VERSION }}
           name: Cassette ${{ steps.release_notes.outputs.VERSION }}
           body_path: release_notes.md
           files: artifacts/*
