@@ -23,6 +23,7 @@ jobs:
   build:
     name: Build - ${{ matrix.platform.name }}
     runs-on: ${{ matrix.platform.os }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -74,8 +75,8 @@ jobs:
       - name: Install cross-compilation tools
         if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
         run: |
-          sudo apt update
-          sudo apt install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - name: Set up cross-compilation environment
         if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
@@ -87,8 +88,8 @@ jobs:
       - name: Install MUSL toolchain (Linux musl)
         if: matrix.platform.target == 'x86_64-unknown-linux-musl'
         run: |
-          sudo apt update
-          sudo apt install -y musl-tools
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
 
       - name: Prepare Cargo.toml (non-Windows)
         if: runner.os != 'Windows'
@@ -175,6 +176,7 @@ jobs:
     name: Release
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
