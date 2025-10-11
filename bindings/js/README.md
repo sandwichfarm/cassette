@@ -32,7 +32,7 @@ if (!isWebAssemblySupported()) {
 // Load a cassette from a file or URL
 async function loadMyCassette() {
   try {
-    const result = await loadCassette('/path/to/cassette.wasm', 'cassette.wasm');
+    const result = await loadCassette('/path/to/cassette.cassette', 'cassette.cassette');
     
     if (result.success && result.cassette) {
       console.log(`Successfully loaded cassette: ${result.cassette.name}`);
@@ -91,7 +91,7 @@ manager.loadStandardCassettes().then(cassettes => {
 });
 
 // Load a cassette from a URL
-manager.loadCassetteFromUrl('/cassettes/my-cassette.wasm').then(cassette => {
+manager.loadCassetteFromUrl('/cassettes/my-cassette.cassette').then(cassette => {
   if (cassette) {
     console.log(`Loaded cassette: ${cassette.name}`);
   }
@@ -106,7 +106,7 @@ dropZone.addEventListener('drop', async (event) => {
     for (const item of event.dataTransfer.items) {
       if (item.kind === 'file') {
         const file = item.getAsFile();
-        if (file && file.name.endsWith('.wasm')) {
+        if (file && (file.name.endsWith('.cassette') || file.name.endsWith('.wasm'))) {
           const cassette = await manager.loadCassetteFromFile(file);
           if (cassette) {
             console.log(`Loaded cassette from drop: ${cassette.name}`);
@@ -144,7 +144,7 @@ import http from 'http';
 const cassettes = new Map<string, Cassette>();
 
 async function loadCassettes() {
-  const result = await loadCassette('/path/to/cassette.wasm');
+  const result = await loadCassette('/path/to/cassette.cassette');
   if (result.success && result.cassette) {
     cassettes.set(result.cassette.id, result.cassette);
   }
@@ -189,7 +189,7 @@ server.listen(3000);
 The `loadCassette` function accepts options for configuring the loader:
 
 ```typescript
-const result = await loadCassette('/path/to/cassette.wasm', 'cassette.wasm', {
+const result = await loadCassette('/path/to/cassette.cassette', 'cassette.cassette', {
   // Initial memory size in pages (64KB per page)
   memoryInitialSize: 16,
   
@@ -252,7 +252,7 @@ Here's an example of how to use the library in a Svelte application:
   async function handleFileUpload(event) {
     const files = event.target.files;
     for (const file of files) {
-      if (file.name.endsWith('.wasm')) {
+      if (file.name.endsWith('.cassette') || file.name.endsWith('.wasm')) {
         await manager.loadCassetteFromFile(file);
       }
     }
@@ -274,13 +274,13 @@ Here's an example of how to use the library in a Svelte application:
   {:else}
     <div class="upload-zone">
       <h2>Upload Cassette</h2>
-      <input type="file" accept=".wasm" on:change={handleFileUpload} multiple />
+      <input type="file" accept=".cassette,.wasm" on:change={handleFileUpload} multiple />
     </div>
     
     <div class="cassettes">
       <h2>Loaded Cassettes ({cassettes.length})</h2>
       {#if cassettes.length === 0}
-        <p>No cassettes loaded. Upload a .wasm file or drag and drop it here.</p>
+        <p>No cassettes loaded. Upload a .cassette file or drag and drop it here.</p>
       {:else}
         {#each cassettes as cassette}
           <div class="cassette-card">
@@ -331,7 +331,7 @@ The cassette-loader library is now bundled for browser use with esbuild. You can
   const manager = new CassetteManager();
   
   // Load a cassette from a URL
-  const cassette = await manager.loadCassetteFromUrl('path/to/your-cassette.wasm');
+  const cassette = await manager.loadCassetteFromUrl('path/to/your-cassette.cassette');
   
   // Process a request
   const request = JSON.stringify(['REQ', 'subscription-id', { kinds: [1], limit: 5 }]);

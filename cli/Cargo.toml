@@ -11,10 +11,11 @@ name = "cassette"
 path = "src/main.rs"
 
 # Keep the library functionality
-[lib]
-name = "cassette_cli"
-path = "src/lib.rs"
-crate-type = ["cdylib", "rlib"]
+# Temporarily disabled due to linker conflict with cassette-tools
+# [lib]
+# name = "cassette_cli"
+# path = "src/lib.rs"
+# crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["deck"]
@@ -22,6 +23,7 @@ deck = []
 
 [dependencies]
 cassette-tools = { path = "../cassette-tools" }
+cassette-loader = { path = "../bindings/rust" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = "0.4"

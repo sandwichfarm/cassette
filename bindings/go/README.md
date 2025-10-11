@@ -22,7 +22,7 @@ import (
 
 func main() {
     // Load a cassette
-    c, err := cassette.LoadCassette("path/to/cassette.wasm", true)
+    c, err := cassette.LoadCassette("path/to/cassette.cassette", true)
     if err != nil {
         log.Fatal(err)
     }

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
+use cassette_loader::{Cassette, SendResult};
 use std::fs;
 use std::io::{Read, Write, BufReader, BufRead, Seek};
 use std::path::PathBuf;
@@ -13,8 +14,10 @@ use wasmtime::{Store, Module, Instance, Memory, TypedFunc, Engine};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message, accept_async};
 use futures_util::{StreamExt, SinkExt};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{Mutex, RwLock};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::{timeout, Duration};
 use glob::glob;
 use secp256k1::{XOnlyPublicKey, Secp256k1, Message as Secp256k1Message};
 use sha2::{Sha256, Digest};
@@ -45,13 +48,19 @@ fn sanitize_filename(name: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-");
-    
+
     // If the result is empty, use "bruh"
     if sanitized.is_empty() {
         "bruh".to_string()
     } else {
         sanitized
     }
+}
+
+/// Check if a file is a cassette file (.cassette or .wasm for backwards compatibility)
+fn is_cassette_file(path: &std::path::Path) -> bool {
+    path.extension()
+        .map_or(false, |ext| ext == "cassette" || ext == "wasm")
 }
 
 /// Validate a Nostr event using rust-nostr
@@ -707,7 +716,7 @@ mod generator {
 
             // Copy the WASM file to the output directory with a simple filename
             let sanitized_name = sanitize_filename(&self.name);
-            let dest_path = self.output_dir.join(format!("{}.wasm", sanitized_name));
+            let dest_path = self.output_dir.join(format!("{}.cassette", sanitized_name));
             
             // Debug output to diagnose any issues
             debugln!(self.verbose, "  Copying from: {:?}", wasm_path);
@@ -1542,7 +1551,7 @@ fn process_dub_command(
     
     // Rename the generated file to the specified output name if needed
     let sanitized_name = sanitize_filename(&cassette_name);
-    let generated_path = output_dir.join(format!("{}.wasm", sanitized_name));
+    let generated_path = output_dir.join(format!("{}.cassette", sanitized_name));
     if generated_path != *output_path {
         fs::rename(&generated_path, output_path)
             .context("Failed to rename output file")?;
@@ -2255,16 +2264,42 @@ async fn process_deck_relay_mode(
     }));
     let _event_store = Arc::new(RwLock::new(DeckEventStore::new()));
     
-    // Load existing cassettes from output directory
+    // Load existing cassettes from output directory (both .cassette and .wasm for backwards compatibility)
     {
-        let pattern = output_dir.join("*.wasm");
-        let pattern_str = pattern.to_string_lossy();
         let mut loaded_count = 0;
-        
-        for entry in glob(&pattern_str)? {
+
+        // Load .cassette files (new format)
+        let cassette_pattern = output_dir.join("*.cassette");
+        for entry in glob(&cassette_pattern.to_string_lossy())? {
             match entry {
                 Ok(path) => {
-                    if path.is_file() && path.extension().map_or(false, |ext| ext == "wasm") {
+                    if path.is_file() && is_cassette_file(&path) {
+                        match fs::read(&path) {
+                            Ok(wasm_bytes) => {
+                                let engine = wasmtime::Engine::default();
+                                match Module::new(&engine, &wasm_bytes) {
+                                    Ok(module) => {
+                                        let mut cassettes = active_cassettes.write().await;
+                                        cassettes.push((path.clone(), module, engine));
+                                        loaded_count += 1;
+                                    }
+                                    Err(e) => eprintln!("Warning: Failed to load cassette module from {:?}: {}", path, e),
+                                }
+                            }
+                            Err(e) => eprintln!("Warning: Failed to read cassette file {:?}: {}", path, e),
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Warning: Error reading glob pattern: {}", e),
+            }
+        }
+
+        // Load .wasm files (backwards compatibility)
+        let wasm_pattern = output_dir.join("*.wasm");
+        for entry in glob(&wasm_pattern.to_string_lossy())? {
+            match entry {
+                Ok(path) => {
+                    if path.is_file() && is_cassette_file(&path) {
                         match fs::read(&path) {
                             Ok(wasm_bytes) => {
                                 let engine = wasmtime::Engine::default();
@@ -4059,13 +4094,13 @@ async fn process_listen_command(
     _tls_key: Option<&std::path::Path>,
     verbose: bool,
 ) -> Result<()> {
-    // Expand glob patterns and collect cassette files
+    // Expand glob patterns and collect cassette files (supports both .cassette and .wasm)
     let mut cassette_files = Vec::new();
     for pattern in cassette_patterns {
         for entry in glob(pattern)? {
             match entry {
                 Ok(path) => {
-                    if path.is_file() && path.extension().map_or(false, |ext| ext == "wasm") {
+                    if path.is_file() && is_cassette_file(&path) {
                         cassette_files.push(path);
                     }
                 }
@@ -4085,14 +4120,8 @@ async fn process_listen_command(
         }
     }
     
-    // Load cassettes into memory
-    let mut loaded_cassettes = Vec::new();
-    for path in cassette_files {
-        let wasm_bytes = fs::read(&path)?;
-        let engine = wasmtime::Engine::default();
-        let module = Module::new(&engine, &wasm_bytes)?;
-        loaded_cassettes.push((path.clone(), Arc::new(module), Arc::new(engine)));
-    }
+    // Store cassette paths (load on-demand to save memory and enable thread safety)
+    let cassette_paths: Vec<PathBuf> = cassette_files;
     
     // Find available port if not specified
     let port = if let Some(p) = port {
@@ -4111,19 +4140,36 @@ async fn process_listen_command(
     println!("   WebSocket: {}://{}:{}", protocol, bind_address, port);
     println!("   HTTP (NIP-11): {}://{}:{}", http_protocol, bind_address, port);
     println!("   Press Ctrl+C to stop");
-    
-    // Create shared state for cassettes
-    let cassettes = Arc::new(loaded_cassettes);
-    
+
+    // Create shared state for cassettes (just paths for lazy loading)
+    let cassettes = Arc::new(cassette_paths);
+
+    // Connection limiting to prevent OOM
+    let active_connections = Arc::new(AtomicUsize::new(0));
+    const MAX_CONNECTIONS: usize = 100;
+
     // Accept connections
     while let Ok((stream, addr)) = listener.accept().await {
-        if verbose {
-            println!("New connection from: {}", addr);
+        let current = active_connections.fetch_add(1, Ordering::SeqCst);
+
+        if current >= MAX_CONNECTIONS {
+            active_connections.fetch_sub(1, Ordering::SeqCst);
+            eprintln!("⚠️  Connection limit reached ({}/{}), rejecting connection from {}",
+                     current, MAX_CONNECTIONS, addr);
+            drop(stream); // Close the connection
+            continue;
         }
-        
+
+        if verbose {
+            println!("New connection from: {} ({}/{})", addr, current + 1, MAX_CONNECTIONS);
+        }
+
         let cassettes_clone = cassettes.clone();
+        let active_connections_clone = active_connections.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, cassettes_clone, verbose).await {
+            let result = handle_connection(stream, cassettes_clone, verbose).await;
+            active_connections_clone.fetch_sub(1, Ordering::SeqCst);
+            if let Err(e) = result {
                 if verbose {
                     eprintln!("Error handling connection from {}: {}", addr, e);
                 }
@@ -4156,7 +4202,7 @@ async fn find_available_port(bind_address: &str) -> Result<u16> {
 /// Handle individual connection
 async fn handle_connection(
     stream: TcpStream,
-    cassettes: Arc<Vec<(PathBuf, Arc<Module>, Arc<wasmtime::Engine>)>>,
+    cassette_paths: Arc<Vec<PathBuf>>,
     verbose: bool,
 ) -> Result<()> {
     
@@ -4174,54 +4220,48 @@ async fn handle_connection(
     
     if is_nip11_request {
         // Serve NIP-11 JSON
-        handle_http_request(stream, cassettes, verbose).await
+        handle_http_request(stream, cassette_paths, verbose).await
     } else {
         // Everything else is WebSocket upgrade
-        handle_websocket_connection(stream, cassettes, verbose).await
+        handle_websocket_connection(stream, cassette_paths, verbose).await
     }
 }
 
 /// Handle HTTP requests (for NIP-11)
 async fn handle_http_request(
     stream: TcpStream,
-    cassettes: Arc<Vec<(PathBuf, Arc<Module>, Arc<wasmtime::Engine>)>>,
+    cassette_paths: Arc<Vec<PathBuf>>,
     verbose: bool,
 ) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    
+
     let mut stream = stream;
     let mut buffer = vec![0; 1024];
     let n = stream.read(&mut buffer).await?;
     let request = String::from_utf8_lossy(&buffer[..n]);
-    
+
     // Parse the request line
     let lines: Vec<&str> = request.lines().collect();
     if lines.is_empty() {
         return Ok(());
     }
-    
+
     // Check if Accept header indicates NIP-11 request
     let has_nip11_header = lines.iter().any(|line| {
-        line.to_lowercase().contains("accept") && 
+        line.to_lowercase().contains("accept") &&
         line.contains("application/nostr+json")
     });
-    
+
     if has_nip11_header {
         // Get NIP-11 info from the first cassette (or merge from all)
-        if let Some((_, module, engine)) = cassettes.first() {
-            let mut store = Store::new(engine, ());
-            let instance = Instance::new(&mut store, module, &[])?;
-            
+        if let Some(path) = cassette_paths.first() {
+            // Load cassette on-demand
+            let path_str = path.to_string_lossy();
+            let mut cassette = Cassette::load(&path_str, false)?;
+
             // Try to get relay info
-            if let Ok(info_func) = instance.get_typed_func::<(), i32>(&mut store, "info") {
-                let result_ptr = info_func.call(&mut store, ())?;
-                
-                if result_ptr != 0 {
-                    let memory = instance.get_memory(&mut store, "memory")
-                        .ok_or_else(|| anyhow!("Memory export not found"))?;
-                    
-                    let info = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
-                    
+            match cassette.info() {
+                Ok(info) => {
                     // Send HTTP response with NIP-11 info
                     let response = format!(
                         "HTTP/1.1 200 OK\r\n\
@@ -4235,13 +4275,31 @@ async fn handle_http_request(
                         info.len(),
                         info
                     );
-                    
+
                     stream.write_all(response.as_bytes()).await?;
                     stream.flush().await?;
-                    
+
                     if verbose {
                         println!("Served NIP-11 info via HTTP");
                     }
+                }
+                Err(_) => {
+                    // Return empty NIP-11 if info() not available
+                    let info = json!({"supported_nips": []}).to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                        Content-Type: application/nostr+json\r\n\
+                        Access-Control-Allow-Origin: *\r\n\
+                        Access-Control-Allow-Headers: *\r\n\
+                        Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n\
+                        Content-Length: {}\r\n\
+                        \r\n\
+                        {}",
+                        info.len(),
+                        info
+                    );
+                    stream.write_all(response.as_bytes()).await?;
+                    stream.flush().await?;
                 }
             }
         }
@@ -4260,12 +4318,12 @@ async fn handle_http_request(
 /// Handle WebSocket connections
 async fn handle_websocket_connection(
     stream: TcpStream,
-    cassettes: Arc<Vec<(PathBuf, Arc<Module>, Arc<wasmtime::Engine>)>>,
+    cassette_paths: Arc<Vec<PathBuf>>,
     verbose: bool,
 ) -> Result<()> {
     let ws_stream = accept_async(stream).await?;
     let (mut write, mut read) = ws_stream.split();
-    
+
     // Handle incoming messages
     while let Some(msg) = read.next().await {
         match msg {
@@ -4273,90 +4331,69 @@ async fn handle_websocket_connection(
                 if verbose {
                     println!("Received: {}", text);
                 }
-                
-                // Parse the message to determine type
-                if let Ok(parsed) = serde_json::from_str::<Vec<Value>>(&text) {
-                    if let Some(cmd) = parsed.get(0).and_then(|v| v.as_str()) {
-                        match cmd {
-                            "REQ" | "CLOSE" | "EVENT" | "COUNT" => {
-                                // Send to all cassettes and collect responses
-                                let mut all_events = Vec::new();
-                                let mut sent_eose = false;
-                                
-                                // Create fresh instances for each message to avoid state issues
-                                for (_path, module, engine) in cassettes.iter() {
-                                    let mut store = Store::new(engine, ());
-                                    let instance = Instance::new(&mut store, module, &[])?;
-                                    if let Ok(send_func) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "send")
-                .or_else(|_| instance.get_typed_func::<(i32, i32), i32>(&mut store, "req")) {
-                                        let memory = instance.get_memory(&mut store, "memory")
-                                            .ok_or_else(|| anyhow!("Memory export not found"))?;
-                                        let alloc_func = instance.get_typed_func::<i32, i32>(&mut store, "alloc_buffer")?;
-                                        let dealloc_func = instance.get_typed_func::<(i32, i32), ()>(&mut store, "dealloc_string")?;
-                                        
-                                        // Keep calling send until we get EOSE or no more events
-                                        loop {
-                                            // Allocate and write request
-                                            let bytes = text.as_bytes();
-                                            let req_ptr = alloc_func.call(&mut store, bytes.len() as i32)?;
-                                            memory.write(&mut store, req_ptr as usize, bytes)?;
-                                            
-                                            // Call send function
-                                            let result_ptr = send_func.call(&mut store, (req_ptr, bytes.len() as i32))?;
-                                            
-                                            // Deallocate request memory
-                                            dealloc_func.call(&mut store, (req_ptr, bytes.len() as i32))?;
-                                            
-                                            if result_ptr == 0 {
-                                                break; // No more events from this cassette
-                                            }
-                                            
-                                            let response = read_string_from_memory(&mut store, &instance, &memory, result_ptr)?;
-                                            
-                                            // Try to deallocate the result
-                                            if let Ok(get_size_func) = instance.get_typed_func::<i32, i32>(&mut store, "get_allocation_size") {
-                                                let size = get_size_func.call(&mut store, result_ptr)?;
-                                                if size > 0 {
-                                                    let _ = dealloc_func.call(&mut store, (result_ptr, size));
-                                                }
-                                            }
-                                            
-                                            // Parse response
-                                            if let Ok(parsed_response) = serde_json::from_str::<Value>(&response) {
-                                                if let Some(arr) = parsed_response.as_array() {
-                                                    if arr.len() >= 1 && arr[0].as_str() == Some("EOSE") {
-                                                        if !sent_eose {
-                                                            all_events.push(parsed_response);
-                                                            sent_eose = true;
-                                                        }
-                                                        break; // End of events from this cassette
-                                                    } else if arr.len() >= 1 && arr[0].as_str() == Some("EVENT") {
-                                                        all_events.push(parsed_response);
-                                                    } else if arr.len() >= 1 && arr[0].as_str() == Some("NOTICE") {
-                                                        all_events.push(parsed_response);
-                                                        if response.contains("No more events") {
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
+
+                // Process request against all cassettes
+                for path in cassette_paths.iter() {
+                    // Clone text for each cassette query
+                    let text_clone = text.clone();
+
+                    // Load cassette on-demand (memory efficient, automatically freed after use)
+                    let path_str = path.to_string_lossy();
+                    let mut cassette = match Cassette::load(&path_str, false) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            if verbose {
+                                eprintln!("Failed to load cassette {:?}: {}", path, e);
+                            }
+                            continue;
+                        }
+                    };
+
+                    // Use cassette-loader's scrub method which handles looping automatically
+                    // This eliminates the memory leak from manual looping
+                    // Wrap in timeout to prevent infinite loops (30 second timeout)
+                    match timeout(Duration::from_secs(30), tokio::task::spawn_blocking(move || {
+                        cassette.scrub(&text_clone)
+                    })).await {
+                        Ok(Ok(Ok(result))) => {
+                            match result {
+                                SendResult::Multiple(events) => {
+                                    // REQ message - send all events
+                                    for event in events {
+                                        write.send(Message::Text(event)).await?;
                                     }
                                 }
-                                
-                                // Send all collected events
-                                for event in all_events {
-                                    let response = serde_json::to_string(&event)?;
-                                    write.send(Message::Text(response)).await?;
+                                SendResult::Single(response) => {
+                                    // Other messages - send single response
+                                    if !response.is_empty() {
+                                        write.send(Message::Text(response)).await?;
+                                    }
                                 }
                             }
-                            _ => {
-                                // Unknown command
-                                let notice = json!(["NOTICE", "Unknown command"]);
-                                write.send(Message::Text(notice.to_string())).await?;
+                        }
+                        Ok(Ok(Err(e))) => {
+                            if verbose {
+                                eprintln!("Error processing request: {}", e);
                             }
+                            let notice = json!(["NOTICE", format!("Error: {}", e)]);
+                            write.send(Message::Text(notice.to_string())).await?;
+                        }
+                        Ok(Err(e)) => {
+                            if verbose {
+                                eprintln!("Task join error: {}", e);
+                            }
+                            let notice = json!(["NOTICE", "Internal error processing request"]);
+                            write.send(Message::Text(notice.to_string())).await?;
+                        }
+                        Err(_) => {
+                            if verbose {
+                                eprintln!("Request timeout after 30s for cassette: {:?}", path);
+                            }
+                            let notice = json!(["NOTICE", "Request timeout - query took too long"]);
+                            write.send(Message::Text(notice.to_string())).await?;
                         }
                     }
+                    // Cassette is automatically dropped here, freeing all memory
                 }
             }
             Ok(Message::Close(_)) => {
@@ -4368,7 +4405,7 @@ async fn handle_websocket_connection(
             _ => {}
         }
     }
-    
+
     Ok(())
 }
 

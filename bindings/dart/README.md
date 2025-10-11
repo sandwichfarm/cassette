@@ -19,7 +19,7 @@ import 'package:cassette_loader/cassette_loader.dart';
 
 void main() async {
   // Load a cassette
-  final cassette = await Cassette.load('path/to/cassette.wasm', debug: true);
+  final cassette = await Cassette.load('path/to/cassette.cassette', debug: true);
   
   // Get cassette description
   final desc = cassette.describe();
@@ -87,7 +87,7 @@ import 'package:cassette_loader/cassette_loader.dart';
 void loadCassetteWeb() async {
   // Fetch the WASM file
   final response = await html.HttpRequest.request(
-    'cassette.wasm',
+    'cassette.cassette',
     responseType: 'arraybuffer',
   );
   

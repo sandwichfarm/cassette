@@ -44,10 +44,12 @@ impl MemoryManager {
         let memory = instance
             .get_memory(&mut *store, "memory")
             .context("memory export not found")?;
-        
+
+        // Try alloc_buffer first (cassette-tools), fall back to alloc_string for compatibility
         let alloc_func = instance
-            .get_typed_func::<i32, i32>(&mut *store, "alloc_string")
-            .context("alloc_string function not found")?;
+            .get_typed_func::<i32, i32>(&mut *store, "alloc_buffer")
+            .or_else(|_| instance.get_typed_func::<i32, i32>(&mut *store, "alloc_string"))
+            .context("Neither alloc_buffer nor alloc_string function found")?;
 
         Ok(Self { memory, alloc_func })
     }
@@ -203,14 +205,14 @@ impl Cassette {
         }
     }
 
-    /// Send any NIP-01 message to the cassette
+    /// Scrub/query the cassette with any NIP-01 message
     /// For REQ messages, returns a Vec of responses. For other messages, returns a single response.
-    pub fn send(&mut self, message: &str) -> Result<SendResult> {
+    pub fn scrub(&mut self, message: &str) -> Result<SendResult> {
         // Parse message to determine type
         let (is_req_message, subscription_id) = if let Ok(msg_data) = serde_json::from_str::<Vec<Value>>(message) {
             if msg_data.len() >= 2 {
                 let msg_type = msg_data[0].as_str().unwrap_or("");
-                
+
                 match msg_type {
                     "REQ" => {
                         // New REQ, reset event tracker
@@ -248,7 +250,7 @@ impl Cassette {
             Ok(SendResult::Single(result))
         }
     }
-    
+
     /// Deprecated: Use scrub() instead
     pub fn send(&mut self, message: &str) -> Result<SendResult> {
         if self.debug {
