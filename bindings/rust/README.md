@@ -19,7 +19,7 @@ use anyhow::Result;
 
 fn main() -> Result<()> {
     // Load a cassette
-    let mut cassette = Cassette::load("path/to/cassette.wasm", true)?;
+    let mut cassette = Cassette::load("path/to/cassette.cassette", true)?;
     
     // Get cassette description
     let desc = cassette.describe()?;

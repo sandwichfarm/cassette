@@ -22,7 +22,7 @@ pip install .
 from cassette_loader import load_cassette
 
 # Load WASM file
-with open('path/to/cassette.wasm', 'rb') as f:
+with open('path/to/cassette.cassette', 'rb') as f:
     wasm_bytes = f.read()
 
 # Load cassette
@@ -87,7 +87,7 @@ print(f"Cleaned up {dispose_result['allocationsCleanedUp']} allocations")
 
 ```bash
 # Test a cassette
-python cassette_loader.py path/to/cassette.wasm
+python cassette_loader.py path/to/cassette.cassette
 ```
 
 ## Features

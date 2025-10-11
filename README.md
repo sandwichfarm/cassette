@@ -8,6 +8,7 @@ Initially written on a Saturday over brunch at [SEC-04](https://sovereignenginee
 
 ## What's New in v0.9.x
 
+- **📼 New `.cassette` file extension**: Cassettes now use the `.cassette` extension instead of `.wasm`. Backwards compatibility maintained - `.wasm` files continue to work
 - **🚀 Automatic REQ looping in all language bindings**: All bindings now automatically detect REQ messages and loop until EOSE
   - JavaScript/TypeScript: Returns `string | string[]`
   - Python: Returns `Union[str, List[str]]`
@@ -43,7 +44,7 @@ _Pipe the events or provide the path to a json file with events._
 ```bash
 # cassette with NIP-50 "Search" and NIP-45 "Count"
 nak req -k 1 -l 100 wss://nos.lol | cassette record --name my-notes --nip-50 --nip-45
-cassette scrub my-notes.wasm -l 5
+cassette scrub my-notes.cassette -l 5
 cassette scrub --count -k 0
 cassette scrub --search "gm"
 ```
@@ -109,9 +110,9 @@ cassette scrub [OPTIONS] <CASSETTE>
 #   --relay-pubkey     Set owner pubkey for dynamic NIP-11 info
 
 # Examples:
-cassette scrub my-notes.wasm --kinds 1 --limit 50
-cassette scrub archive.wasm --filter '{"#t": ["bitcoin", "lightning"]}'
-cassette scrub events.wasm --output ndjson | grep "pattern"
+cassette scrub my-notes.cassette --kinds 1 --limit 50
+cassette scrub archive.cassette --filter '{"#t": ["bitcoin", "lightning"]}'
+cassette scrub events.cassette --output ndjson | grep "pattern"
 ```
 
 ### `dub` - Combine cassettes into a Mixtape
@@ -131,9 +132,9 @@ cassette dub [OPTIONS] <CASSETTES...> <OUTPUT>
 #   --until            Events before timestamp
 
 # Examples:
-cassette dub cassette1.wasm cassette2.wasm combined.wasm
-cassette dub *.wasm all-events.wasm --name "Complete Archive"
-cassette dub raw/*.wasm clean.wasm --kinds 1 --kinds 30023
+cassette dub cassette1.cassette cassette2.cassette combined.cassette
+cassette dub *.cassette all-events.cassette --name "Complete Archive"
+cassette dub raw/*.cassette clean.cassette --kinds 1 --kinds 30023
 ```
 
 ### `play` - Broadcast events to Nostr relays
@@ -149,9 +150,9 @@ cassette play [OPTIONS] <CASSETTES...> --relays <RELAYS...>
 #   --dry-run          Preview without sending
 
 # Examples:
-cassette play events.wasm --relays wss://relay.damus.io
-cassette play *.wasm --relays wss://nos.lol wss://relay.nostr.band
-cassette play archive.wasm --relays ws://localhost:7000 --dry-run
+cassette play events.cassette --relays wss://relay.damus.io
+cassette play *.cassette --relays wss://nos.lol wss://relay.nostr.band
+cassette play archive.cassette --relays ws://localhost:7000 --dry-run
 
 # Note: The 'cast' command is deprecated and will show a warning
 ```
@@ -170,10 +171,10 @@ cassette listen [OPTIONS] <CASSETTES...>
 #   -v, --verbose      Show connection details
 
 # Examples:
-cassette listen my-notes.wasm                                    # Auto-select port
-cassette listen *.wasm --port 8080                              # Serve all cassettes
-cassette listen dir/*.wasm --bind 0.0.0.0 --port 1337          # Listen on all interfaces
-cassette listen archive.wasm --verbose                          # Debug mode
+cassette listen my-notes.cassette                                    # Auto-select port
+cassette listen *.cassette --port 8080                              # Serve all cassettes
+cassette listen dir/*.cassette --bind 0.0.0.0 --port 1337          # Listen on all interfaces
+cassette listen archive.cassette --verbose                          # Debug mode
 
 # Features:
 # - Serves cassettes as a NIP-01 compliant WebSocket relay
@@ -253,10 +254,10 @@ cassette record events.json --name my-relay \
   --relay-pubkey "npub1abc..."
 
 # View relay information
-cassette scrub my-relay.wasm --info
+cassette scrub my-relay.cassette --info
 
 # Dynamic relay info at runtime
-cassette scrub any-cassette.wasm --info \
+cassette scrub any-cassette.cassette --info \
   --relay-name "Custom Name" \
   --relay-description "Runtime description"
 ```
@@ -271,9 +272,9 @@ Adds COUNT query support for efficient event counting without retrieving full ev
 cassette record events.json --name countable --nip-45
 
 # Query event counts
-cassette scrub countable.wasm --count --kinds 1        # Count kind 1 events
-cassette scrub countable.wasm --count --authors npub1...  # Count by author
-cassette scrub countable.wasm --count --since 1700000000 # Count recent events
+cassette scrub countable.cassette --count --kinds 1        # Count kind 1 events
+cassette scrub countable.cassette --count --authors npub1...  # Count by author
+cassette scrub countable.cassette --count --since 1700000000 # Count recent events
 ```
 
 #### NIP-42 (Authentication)
@@ -292,14 +293,14 @@ Adds text search functionality with relevance-based ranking instead of chronolog
 cassette record events.json --name searchable --nip-50
 
 # Basic text search
-cassette scrub searchable.wasm --search "bitcoin lightning"
+cassette scrub searchable.cassette --search "bitcoin lightning"
 
 # Search with additional filters
-cassette scrub searchable.wasm --search "nostr protocol" --kinds 1 --limit 20
+cassette scrub searchable.cassette --search "nostr protocol" --kinds 1 --limit 20
 
 # Search supports extensions (advanced)
-cassette scrub searchable.wasm --search "bitcoin domain:example.com"
-cassette scrub searchable.wasm --search "news language:en"
+cassette scrub searchable.cassette --search "bitcoin domain:example.com"
+cassette scrub searchable.cassette --search "news language:en"
 ```
 
 ### Combining NIPs
@@ -315,10 +316,10 @@ cassette record events.json --name full-relay \
   --relay-pubkey "npub1abc..."
 
 # Test all features
-cassette scrub full-relay.wasm --info                    # Show relay info
-cassette scrub full-relay.wasm --count --kinds 1         # Count events
-cassette scrub full-relay.wasm --search "bitcoin"        # Search events
-cassette scrub full-relay.wasm --kinds 1 --limit 10      # Get events
+cassette scrub full-relay.cassette --info                    # Show relay info
+cassette scrub full-relay.cassette --count --kinds 1         # Count events
+cassette scrub full-relay.cassette --search "bitcoin"        # Search events
+cassette scrub full-relay.cassette --kinds 1 --limit 10      # Get events
 ```
 
 ### Filtering and Querying
@@ -327,22 +328,22 @@ Cassettes support comprehensive NIP-01 filtering:
 
 ```bash
 # By event kind
-cassette scrub relay.wasm --kinds 1 --kinds 30023
+cassette scrub relay.cassette --kinds 1 --kinds 30023
 
 # By author (accepts npub, hex, or partial)
-cassette scrub relay.wasm --authors npub1abc... --authors npub1def...
+cassette scrub relay.cassette --authors npub1abc... --authors npub1def...
 
 # Time-based filtering
-cassette scrub relay.wasm --since 1700000000 --until 1700100000
+cassette scrub relay.cassette --since 1700000000 --until 1700100000
 
 # Combination filters
-cassette scrub relay.wasm --kinds 1 --authors npub1abc... --limit 50
+cassette scrub relay.cassette --kinds 1 --authors npub1abc... --limit 50
 
 # Custom JSON filters (advanced)
-cassette scrub relay.wasm --filter '{"#t": ["bitcoin"], "#p": ["npub1..."]}'
+cassette scrub relay.cassette --filter '{"#t": ["bitcoin"], "#p": ["npub1..."]}'
 
 # Output formats
-cassette scrub relay.wasm --kinds 1 --output ndjson | jq .
+cassette scrub relay.cassette --kinds 1 --output ndjson | jq .
 ```
 
 ### Performance and Size Optimization
@@ -525,7 +526,7 @@ Cassette provides official bindings for multiple programming languages, allowing
 ```javascript
 import { loadCassette } from 'cassette-loader';
 
-const result = await loadCassette('/path/to/cassette.wasm');
+const result = await loadCassette('/path/to/cassette.cassette');
 if (result.success) {
     // Scrub automatically handles looping for REQ messages
     const response = result.cassette.methods.scrub('["REQ", "sub1", {"kinds": [1]}]');
@@ -569,7 +570,7 @@ if result['success']:
 ```rust
 use cassette_loader::{Cassette, SendResult};
 
-let mut cassette = Cassette::load("path/to/cassette.wasm", true)?;
+let mut cassette = Cassette::load("path/to/cassette.cassette", true)?;
 let response = cassette.scrub(r#"["REQ", "sub1", {"kinds": [1]}]"#)?;
 match response {
     SendResult::Multiple(events) => println!("Received {} events", events.len()),
@@ -586,7 +587,7 @@ match response {
 ```go
 import cassette "github.com/cassette/bindings/go"
 
-c, err := cassette.LoadCassette("path/to/cassette.wasm", true)
+c, err := cassette.LoadCassette("path/to/cassette.cassette", true)
 result, err := c.Scrub(`["REQ", "sub1", {"kinds": [1]}]`)
 if result.IsSingle {
     fmt.Println("Single response:", result.Single)
@@ -604,7 +605,7 @@ if result.IsSingle {
 ```cpp
 #include <cassette_loader.hpp>
 
-cassette::Cassette cassette("path/to/cassette.wasm", true);
+cassette::Cassette cassette("path/to/cassette.cassette", true);
 auto response = cassette.scrub(R"(["REQ", "sub1", {"kinds": [1]}])");
 ```
 
@@ -617,7 +618,7 @@ auto response = cassette.scrub(R"(["REQ", "sub1", {"kinds": [1]}])");
 ```dart
 import 'package:cassette_loader/cassette_loader.dart';
 
-final cassette = await Cassette.load('path/to/cassette.wasm');
+final cassette = await Cassette.load('path/to/cassette.cassette');
 final response = cassette.scrub('["REQ", "sub1", {"kinds": [1]}]');
 ```
 

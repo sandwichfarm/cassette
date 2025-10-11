@@ -46,7 +46,7 @@ sudo make install
 int main() {
     try {
         // Load a cassette
-        cassette::Cassette cassette("path/to/cassette.wasm", true);
+        cassette::Cassette cassette("path/to/cassette.cassette", true);
         
         // Get cassette description
         std::string desc = cassette.describe();
