@@ -2027,23 +2027,27 @@ enum Commands {
     Listen {
         /// Cassette files to serve (supports globs like "*.wasm" or "dir/*.wasm")
         cassettes: Vec<String>,
-        
+
         /// Port to listen on (finds an available port if not specified)
         #[arg(short, long)]
         port: Option<u16>,
-        
+
         /// Bind address
         #[arg(long, default_value = "127.0.0.1")]
         bind: String,
-        
+
+        /// Maximum number of concurrent connections
+        #[arg(long, default_value = "100")]
+        max_connections: usize,
+
         /// Enable HTTPS/WSS with auto-generated self-signed certificate
         #[arg(long)]
         tls: bool,
-        
+
         /// Path to TLS certificate file (for custom certificate)
         #[arg(long)]
         tls_cert: Option<PathBuf>,
-        
+
         /// Path to TLS key file (for custom certificate)
         #[arg(long)]
         tls_key: Option<PathBuf>,
@@ -4089,6 +4093,7 @@ async fn process_listen_command(
     cassette_patterns: &[String],
     port: Option<u16>,
     bind_address: &str,
+    max_connections: usize,
     tls: bool,
     _tls_cert: Option<&std::path::Path>,
     _tls_key: Option<&std::path::Path>,
@@ -4146,22 +4151,21 @@ async fn process_listen_command(
 
     // Connection limiting to prevent OOM
     let active_connections = Arc::new(AtomicUsize::new(0));
-    const MAX_CONNECTIONS: usize = 100;
 
     // Accept connections
     while let Ok((stream, addr)) = listener.accept().await {
         let current = active_connections.fetch_add(1, Ordering::SeqCst);
 
-        if current >= MAX_CONNECTIONS {
+        if current >= max_connections {
             active_connections.fetch_sub(1, Ordering::SeqCst);
             eprintln!("⚠️  Connection limit reached ({}/{}), rejecting connection from {}",
-                     current, MAX_CONNECTIONS, addr);
+                     current, max_connections, addr);
             drop(stream); // Close the connection
             continue;
         }
 
         if verbose {
-            println!("New connection from: {} ({}/{})", addr, current + 1, MAX_CONNECTIONS);
+            println!("New connection from: {} ({}/{})", addr, current + 1, max_connections);
         }
 
         let cassettes_clone = cassettes.clone();
@@ -4821,6 +4825,7 @@ async fn main() -> Result<()> {
             cassettes,
             port,
             bind,
+            max_connections,
             tls,
             tls_cert,
             tls_key,
@@ -4857,6 +4862,7 @@ async fn main() -> Result<()> {
                 cassettes,
                 *port,
                 bind,
+                *max_connections,
                 *tls,
                 tls_cert.as_deref(),
                 tls_key.as_deref(),
