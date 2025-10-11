@@ -73,6 +73,29 @@ jobs:
         with:
           targets: ${{ matrix.platform.target }}
 
+      - name: Set version from tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.tag }}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
+          # Remove 'v' prefix (v0.9.4 -> 0.9.4)
+          VERSION=${VERSION#v}
+          echo "RELEASE_VERSION=$VERSION" >> $GITHUB_ENV
+
+          # Update version in cli/Cargo.toml (compatible with both Linux and macOS)
+          cd cli
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          else
+            sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          fi
+          echo "Updated version to $VERSION"
+          grep "^version" Cargo.toml
+          cd ..
+
       - name: Install cross-compilation tools
         if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
         run: |
@@ -136,7 +159,15 @@ jobs:
       - name: Smoke test binary (Linux x86_64 and macOS)
         if: matrix.platform.target == 'x86_64-unknown-linux-gnu' || matrix.platform.target == 'x86_64-apple-darwin' || matrix.platform.target == 'x86_64-unknown-linux-musl'
         run: |
-          ./cli/target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }} --version
+          VERSION_OUTPUT=$(./cli/target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }} --version)
+          echo "Binary version: $VERSION_OUTPUT"
+          # Verify version matches what we set
+          if [[ "$VERSION_OUTPUT" == *"$RELEASE_VERSION"* ]]; then
+            echo "✅ Version check passed: $RELEASE_VERSION"
+          else
+            echo "❌ Version check failed: expected $RELEASE_VERSION in output"
+            exit 1
+          fi
 
       - name: Restore Cargo.toml (non-Windows)
         if: runner.os != 'Windows'
