@@ -8,6 +8,6 @@
   },
   "dependencies": {
     "cassette-wasm": "file:../../bindings/js",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.1.1"
   }
 }
